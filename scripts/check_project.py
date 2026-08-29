@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,8 @@ def _check_documentation() -> None:
 
 def _build_and_check_wheel(directory: Path) -> Path:
     """Build, inspect, and Twine-check exactly one direct universal wheel."""
+    shutil.rmtree(_ROOT / "build", ignore_errors=True)
+    shutil.rmtree(_ROOT / "src" / "ppar.egg-info", ignore_errors=True)
     _run(
         [
             sys.executable,

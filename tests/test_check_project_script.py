@@ -14,6 +14,8 @@ class TestCheckProjectScript(unittest.TestCase):
     def test_product_gate_uses_direct_wheel_only(self) -> None:
         """The build path creates a wheel and explicitly rejects an sdist."""
         source = inspect.getsource(check_project._build_and_check_wheel)
+        self.assertIn('shutil.rmtree(_ROOT / "build"', source)
+        self.assertIn('shutil.rmtree(_ROOT / "src" / "ppar.egg-info"', source)
         self.assertIn('"--wheel"', source)
         self.assertIn('"--no-isolation"', source)
         self.assertNotIn('"--sdist"', source)

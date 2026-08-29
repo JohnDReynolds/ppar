@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
+import hashlib
 import io
 from pathlib import Path
 import re
@@ -10,7 +12,7 @@ import shutil
 import subprocess
 import tempfile
 
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, PngImagePlugin
 
 from ppar import Analytics
 from ppar.attribution import Attribution, Chart, View
@@ -22,6 +24,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 _IMAGE_DIRECTORY = _ROOT / "docs" / "images"
 _INPUT = _ROOT / "src" / "ppar" / "templates" / "generic" / "input"
 _RAW_PREFIX = "https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/"
+_FINGERPRINT_KEY = "ppar-source-fingerprint"
+_FINGERPRINT_VERSION = "ppar-readme-images-v1"
 _CHROME_CANDIDATES = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "google-chrome",
@@ -43,6 +47,20 @@ _TABLE_SIZES = {
     "CumulativeAttributionByEconomicSector": (2600, 1800),
     "OverallAttributionByEconomicSector": (2600, 1600),
     "RiskStatistics": (1800, 2600),
+}
+_IMAGE_SIZES = {
+    "ActiveContributionsByEconomicSector.png": (1400, 480),
+    "CumulativeAttributionByEconomicSector.jpg": (3262, 1863),
+    "CumulativeAttributionEffectsByEconomicSector.png": (1400, 600),
+    "CumulativeReturns.png": (1400, 600),
+    "OverallAttributionByEconomicSector.jpg": (2138, 1287),
+    "OverallAttributionByEconomicSector.png": (1400, 480),
+    "OverallAttributionBySecurity.jpg": (2504, 8199),
+    "OverallContributionByEconomicSector.png": (1400, 480),
+    "RiskStatistics.jpg": (1094, 2592),
+    "SubPeriodAttributionEffectsByEconomicSector.png": (1200, 600),
+    "SubPeriodReturns.png": (1200, 600),
+    "TotalAttributionEffectsByEconomicSector.png": (1400, 480),
 }
 
 
@@ -83,12 +101,14 @@ def _readme_inventory() -> tuple[str, ...]:
     return names
 
 
-def _render(directory: Path) -> None:
+def _render(directory: Path, fingerprint: str) -> None:
     """Render the complete image inventory into an empty directory."""
     directory.mkdir(parents=True, exist_ok=True)
     analytics, sector = _analytics_outputs()
     for chart, file_name in _CHART_FILES.items():
-        (directory / file_name).write_bytes(sector.to_chart(chart))
+        destination = directory / file_name
+        destination.write_bytes(sector.to_chart(chart))
+        _write_png_fingerprint(destination, fingerprint)
 
     html_by_name = {
         "OverallAttributionBySecurity": analytics.attribution(
@@ -112,7 +132,7 @@ def _render(directory: Path) -> None:
             _TABLE_SIZES[name],
             directory / f".{name}_profile",
         )
-        _crop_and_save_jpg(png_path, directory / f"{name}.jpg")
+        _crop_and_save_jpg(png_path, directory / f"{name}.jpg", fingerprint)
         html_path.unlink()
         png_path.unlink()
         shutil.rmtree(directory / f".{name}_profile", ignore_errors=True)
@@ -176,7 +196,7 @@ def _render_png(
             shutil.rmtree(profile, ignore_errors=True)
 
 
-def _crop_and_save_jpg(source: Path, destination: Path) -> None:
+def _crop_and_save_jpg(source: Path, destination: Path, fingerprint: str) -> None:
     """Crop a browser screenshot to nonwhite content and save deterministic JPEG."""
     with Image.open(source) as opened:
         image = opened.convert("RGB")
@@ -195,8 +215,88 @@ def _crop_and_save_jpg(source: Path, destination: Path) -> None:
             )
         )
         with io.BytesIO() as output:
-            cropped.save(output, format="JPEG", quality=92, subsampling=0, optimize=False)
+            cropped.save(
+                output,
+                format="JPEG",
+                quality=92,
+                subsampling=0,
+                optimize=False,
+                comment=f"{_FINGERPRINT_KEY}:{fingerprint}".encode("ascii"),
+            )
             destination.write_bytes(output.getvalue())
+
+
+def _write_png_fingerprint(path: Path, fingerprint: str) -> None:
+    """Embed the current source fingerprint in one lossless chart image."""
+    temporary = path.with_name(f".{path.name}.fingerprinted")
+    with Image.open(path) as opened:
+        opened.load()
+        metadata = PngImagePlugin.PngInfo()
+        for key, value in opened.info.items():
+            if (
+                isinstance(key, str)
+                and isinstance(value, str)
+                and key != _FINGERPRINT_KEY
+            ):
+                metadata.add_text(key, value)
+        metadata.add_text(_FINGERPRINT_KEY, fingerprint)
+        opened.save(temporary, format="PNG", pnginfo=metadata)
+    temporary.replace(path)
+
+
+def _fingerprint_files() -> Iterable[Path]:
+    """Yield every repository input that can affect the marketing images."""
+    yield _ROOT / "scripts" / "render_readme_images.py"
+    yield _ROOT / "constraints" / "ci.txt"
+    yield _ROOT / "pyproject.toml"
+    for path in sorted((_ROOT / "src" / "ppar").rglob("*")):
+        if path.is_file() and (
+            path.suffix in {".csv", ".md", ".py", ".yaml"} or path.name == "py.typed"
+        ):
+            yield path
+
+
+def _source_fingerprint() -> str:
+    """Return a stable digest of code, inputs, and pinned rendering dependencies."""
+    digest = hashlib.sha256()
+    digest.update(f"{_FINGERPRINT_VERSION}\0".encode("ascii"))
+    for path in _fingerprint_files():
+        content = path.read_bytes()
+        relative = path.relative_to(_ROOT).as_posix()
+        digest.update(f"{relative}\0{len(content)}\0".encode("utf-8"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def _embedded_fingerprint(path: Path, image: Image.Image) -> str | None:
+    """Return the source fingerprint embedded in one supported image."""
+    if path.suffix == ".png":
+        value = image.info.get(_FINGERPRINT_KEY)
+        return value if isinstance(value, str) else None
+    comment = image.info.get("comment")
+    prefix = f"{_FINGERPRINT_KEY}:".encode("ascii")
+    if isinstance(comment, bytes) and comment.startswith(prefix):
+        return comment[len(prefix) :].decode("ascii")
+    return None
+
+
+def _validate_images(directory: Path) -> None:
+    """Validate image formats, dimensions, decodability, and source fingerprints."""
+    expected_fingerprint = _source_fingerprint()
+    for name, expected_size in _IMAGE_SIZES.items():
+        path = directory / name
+        with Image.open(path) as image:
+            expected_format = "PNG" if path.suffix == ".png" else "JPEG"
+            if image.format != expected_format or image.size != expected_size:
+                raise RuntimeError(
+                    f"README image has unexpected format or dimensions: {name}"
+                )
+            if _embedded_fingerprint(path, image) != expected_fingerprint:
+                raise RuntimeError(
+                    f"README image source fingerprint is stale: {name}; "
+                    f"rerun {Path(__file__).as_posix()}"
+                )
+            image.verify()
 
 
 def _validate_inventory(directory: Path) -> None:
@@ -211,25 +311,21 @@ def _validate_inventory(directory: Path) -> None:
 
 
 def main() -> int:
-    """Regenerate tracked images or compare a temporary render byte-for-byte."""
+    """Regenerate tracked images or verify their source fingerprints."""
     args = _parse_args()
+    if args.check:
+        _validate_inventory(_IMAGE_DIRECTORY)
+        _validate_images(_IMAGE_DIRECTORY)
+        print("README images are current.")
+        return 0
+
     with tempfile.TemporaryDirectory(prefix="ppar_readme_images_") as temporary:
         rendered = Path(temporary) / "images"
-        _render(rendered)
+        _render(rendered, _source_fingerprint())
         _validate_inventory(rendered)
-        if args.check:
-            _validate_inventory(_IMAGE_DIRECTORY)
-            changed = [
-                name
-                for name in _readme_inventory()
-                if (rendered / name).read_bytes()
-                != (_IMAGE_DIRECTORY / name).read_bytes()
-            ]
-            if changed:
-                raise RuntimeError("README images have drifted: " + ", ".join(changed))
-        else:
-            for source in rendered.iterdir():
-                shutil.copyfile(source, _IMAGE_DIRECTORY / source.name)
+        _validate_images(rendered)
+        for source in rendered.iterdir():
+            shutil.copyfile(source, _IMAGE_DIRECTORY / source.name)
     print("README images are current.")
     return 0
 

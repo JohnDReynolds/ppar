@@ -36,10 +36,10 @@ To intentionally refresh README images, run:
 ./.venv/bin/python scripts/render_readme_images.py
 ```
 
-Then review the changed images and run the routine gate. The gate regenerates into a
-temporary directory and compares bytes; it never updates tracked images.
-Compatibility CI uses macOS 15 as the canonical raster-rendering platform so the
-byte comparison is independent of Linux font and graphics-library differences.
+Then review the changed images and run the routine gate. Generated images embed a
+fingerprint of the renderer, relevant package sources, demonstration inputs, and
+pinned dependencies. The gate checks that fingerprint, the README inventory, image
+formats and dimensions, and image decodability without platform-specific rasterizing.
 
 Build releases as a direct wheel only. Do not build or publish an sdist. Publishing,
 tagging, GitHub changes, and PyPI changes require separate authorization.

@@ -25,6 +25,20 @@ class TestRenderReadmeImages(unittest.TestCase):
         self.assertEqual(expected, actual)
         self.assertEqual(len(expected), 12)
 
+    def test_images_carry_current_source_fingerprint(self) -> None:
+        """Every retained image proves which code, inputs, and dependencies made it."""
+        render_readme_images._validate_images(Path("docs") / "images")
+
+    def test_check_mode_validates_without_rasterizing(self) -> None:
+        """Portable checks validate provenance without invoking platform rasterizers."""
+        arguments = mock.Mock(check=True)
+        with (
+            mock.patch.object(render_readme_images, "_parse_args", return_value=arguments),
+            mock.patch.object(render_readme_images, "_render") as renderer,
+        ):
+            self.assertEqual(render_readme_images.main(), 0)
+        renderer.assert_not_called()
+
     def test_render_png_retries_one_transient_browser_crash(self) -> None:
         """A first browser abort receives one fresh-profile retry."""
         with tempfile.TemporaryDirectory() as directory:

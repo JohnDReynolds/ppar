@@ -38,6 +38,8 @@ To intentionally refresh README images, run:
 
 Then review the changed images and run the routine gate. The gate regenerates into a
 temporary directory and compares bytes; it never updates tracked images.
+Compatibility CI uses macOS 15 as the canonical raster-rendering platform so the
+byte comparison is independent of Linux font and graphics-library differences.
 
 Build releases as a direct wheel only. Do not build or publish an sdist. Publishing,
 tagging, GitHub changes, and PyPI changes require separate authorization.

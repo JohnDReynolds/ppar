@@ -1,43 +1,37 @@
-"""Public contracts for structured PPAR errors and exact pair inputs."""
+"""Public contracts for structured ppar errors and exact pair inputs."""
 
 import unittest
 from typing import cast, Sequence
 
 import numpy as np
 
-from ppar.analytics.attribution import Attribution
-from ppar.analytics.frequency import Frequency
-from ppar.analytics.performance import Performance
-from ppar.analytics.riskstatistics import RiskStatistics
-import ppar.errors as errs
-from ppar.errors import PpaError
+from ppar.attribution import Attribution
+from ppar.frequency import Frequency
+from ppar.performance import Performance
+from ppar.risk import RiskStatistics
+from ppar.errors import PparError
 
 
-class TestPpaErrorContracts(unittest.TestCase):
-    """Verify package failures expose stable machine-readable metadata."""
+class TestPparErrorContracts(unittest.TestCase):
+    """Verify package failures expose concise text and optional context."""
 
-    def test_error_exposes_code_detail_context_and_compatible_text(self) -> None:
-        """Structured metadata supplements rather than replaces readable text."""
-        error = PpaError(
+    def test_error_exposes_message_and_context(self) -> None:
+        """Diagnostic context supplements rather than replaces readable text."""
+        error = PparError(
             "calculation detail",
-            203,
             context={"portfolio_id": "BALANCED", "period": "2024-01"},
         )
 
-        self.assertEqual(error.code, 203)
-        self.assertEqual(error.detail, "calculation detail")
         self.assertEqual(
             error.context,
             {"portfolio_id": "BALANCED", "period": "2024-01"},
         )
-        self.assertEqual(str(error), f"{errs.ERRORS[203]}calculation detail")
+        self.assertEqual(str(error), "calculation detail")
 
-    def test_uncoded_error_retains_detail_and_empty_context(self) -> None:
-        """Compatibility failures without a registry code remain structured."""
-        error = PpaError("plain detail", None)
+    def test_error_defaults_to_empty_context(self) -> None:
+        """Callers need not provide diagnostic context."""
+        error = PparError("plain detail")
 
-        self.assertIsNone(error.code)
-        self.assertEqual(error.detail, "plain detail")
         self.assertEqual(error.context, {})
         self.assertEqual(str(error), "plain detail")
 
@@ -50,14 +44,14 @@ class TestExactPairContracts(unittest.TestCase):
         returns = np.array([0.01, 0.02], dtype=np.float64)
         for sequence in ((), (returns,), (returns, returns, returns)):
             with self.subTest(length=len(sequence)):
-                with self.assertRaisesRegex(PpaError, errs.ERRORS[805]):
+                with self.assertRaises(PparError):
                     RiskStatistics(sequence, Frequency.MONTHLY)
 
     def test_attribution_rejects_wrong_performance_sequence_lengths(self) -> None:
         """Direct Attribution construction validates its pair before indexing."""
         for sequence in ((), (None,), (None, None, None)):
             with self.subTest(length=len(sequence)):
-                with self.assertRaisesRegex(PpaError, errs.ERRORS[805]):
+                with self.assertRaises(PparError):
                     Attribution(
                         cast(Sequence[Performance], sequence),
                         classification_name=None,

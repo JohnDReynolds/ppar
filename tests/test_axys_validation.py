@@ -18,8 +18,7 @@ from tests import test_utilities as test_util
 
 # Project Imports
 from ppar.axys_apx import AxysData
-import ppar.errors as errs
-from ppar.errors import PpaError
+from ppar.errors import PparError
 
 
 @dataclass(frozen=True)
@@ -42,14 +41,14 @@ class _AxysArguments:
 
 def _assert_axys_error(
     test: unittest.TestCase,
-    error_code: int,
+    _error_code: int,
     arguments: _AxysArguments | None = None,
     message_contains: str | None = None,
 ) -> None:
-    """Assert that constructing AxysData fails with a numbered PpaError."""
+    """Assert that constructing AxysData fails with an actionable PparError."""
     arguments = arguments or _AxysArguments()
 
-    with test.assertRaises(PpaError) as context:
+    with test.assertRaises(PparError) as context:
         data = AxysData(
             arguments.specifications_path,
             arguments.portfolio_performance_path,
@@ -60,10 +59,7 @@ def _assert_axys_error(
         if arguments.classification_name is not None:
             data.get_classification_sources(arguments.classification_name, portfolio)
 
-    test.assertTrue(
-        str(context.exception).startswith(errs.ERRORS[error_code]),
-        str(context.exception),
-    )
+    test.assertTrue(str(context.exception).strip(), str(context.exception))
     if message_contains is not None:
         test.assertIn(message_contains, str(context.exception))
 
@@ -307,10 +303,10 @@ class TestAxysValidation(unittest.TestCase):
         """Requested classification names must be defined in the specification."""
         _assert_axys_error(self, 504, _AxysArguments(classification_name="unknown"))
 
-    def test_invalid_analytics_date_raises_error_504(self) -> None:
-        """Configured Analytics date filters must be ISO dates."""
+    def test_invalid_configured_date_is_rejected(self) -> None:
+        """Configured date filters must be ISO dates."""
         specification = _fixture_specification()
-        specification["analytics"] = {"from_date": "01/01/2024"}
+        specification["from_date"] = "01/01/2024"
 
         with tempfile.TemporaryDirectory() as temp_dir:
             path = _write_yaml(Path(temp_dir), specification)
@@ -318,13 +314,13 @@ class TestAxysValidation(unittest.TestCase):
                 self,
                 504,
                 _AxysArguments(specifications_path=path),
-                "analytics.from_date must be an ISO date",
+                "from_date must be an ISO date",
             )
 
-    def test_invalid_analytics_classification_raises_error_504(self) -> None:
-        """Configured Analytics classification must be a string."""
+    def test_invalid_configured_classification_is_rejected(self) -> None:
+        """Configured classification must be a string."""
         specification = _fixture_specification()
-        specification["analytics"] = {"classification": ["Country"]}
+        specification["classification"] = ["Country"]
 
         with tempfile.TemporaryDirectory() as temp_dir:
             path = _write_yaml(Path(temp_dir), specification)
@@ -332,7 +328,7 @@ class TestAxysValidation(unittest.TestCase):
                 self,
                 504,
                 _AxysArguments(specifications_path=path),
-                "analytics.classification must be a string",
+                "classification must be a string",
             )
 
     def test_unknown_defaults_section_raises_error_504(self) -> None:
@@ -349,8 +345,8 @@ class TestAxysValidation(unittest.TestCase):
                 "unsupported top-level keys: defaults",
             )
 
-    def test_unknown_root_setting_raises_error_504(self) -> None:
-        """Typos in top-level Analytics sections fail closed."""
+    def test_invalid_root_classification_shape_is_rejected(self) -> None:
+        """The root classification selection must be a string."""
         specification = _fixture_specification()
         specification["classification"] = {"Security": {}}
 
@@ -360,7 +356,7 @@ class TestAxysValidation(unittest.TestCase):
                 self,
                 504,
                 _AxysArguments(specifications_path=path),
-                "unsupported top-level keys: classification",
+                "classification must be a string",
             )
 
     def test_unknown_source_settings_raise_error_504(self) -> None:
@@ -385,7 +381,7 @@ class TestAxysValidation(unittest.TestCase):
             test_util.axys_data_path("secperf.csv"),
         )
 
-        with self.assertRaises(PpaError) as context:
+        with self.assertRaises(PparError) as context:
             data.get_portfolio(
                 "UNKNOWN_PORTFOLIO",
                 from_date=dt.date(2024, 1, 1),

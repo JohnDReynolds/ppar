@@ -1,7 +1,7 @@
 # =========================
-# PPAR Axys Configuration
+# ppar Axys Configuration
 # =========================
-# This file tells PPAR where to find your Axys exports and how to interpret
+# This file tells ppar where to find your Axys exports and how to interpret
 # the columns in those files.
 #
 # General Rules:
@@ -12,18 +12,10 @@
 # - Unknown fields are rejected so spelling mistakes fail loudly.
 
 
-# =========================
-# Analytics selection
-# =========================
-analytics:
-  # Inclusive earliest reporting date to retain.
-  from_date: 2024-01-01
-
-  # Inclusive latest thru date to retain.
-  thru_date: 2024-12-31
-
-  # Classification loaded with each portfolio.
-  classification: Country
+# Inclusive reporting window and classification loaded with each portfolio.
+from_date: 2024-01-01
+thru_date: 2024-12-31
+classification: Country
 
 
 # =========================
@@ -134,7 +126,7 @@ classifications:
 # Mappings
 # =========================
 # Groupings From The Security Master
-# Each mapping tells PPAR how to roll securities up to a grouping such as
+# Each mapping tells ppar how to roll securities up to a grouping such as
 # sector, country, currency, or asset class.
 mappings:
   # Security -> asset class.

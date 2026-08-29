@@ -5,14 +5,13 @@ import unittest
 
 import polars as pl
 
-from ppar.analytics import Analytics
-from ppar.analytics.attribution import View
-from ppar.analytics.classification import Classification
-import ppar.analytics.schema as cols
-import ppar.errors as errs
-from ppar.errors import PpaError
-from ppar.analytics.mapping import Mapping
-from ppar.analytics.performance import Performance
+from ppar import Analytics
+from ppar.attribution import View
+from ppar.classification import Classification
+import ppar.schema as cols
+from ppar.errors import PparError
+from ppar.mapping import Mapping
+from ppar.performance import Performance
 
 
 def _named_performance(
@@ -47,6 +46,11 @@ def _narrow_performance() -> pl.DataFrame:
             cols.WEIGHT: [0.60, 0.40],
         }
     )
+
+
+def _pairs(values: dict[str, str]) -> pl.DataFrame:
+    """Return a two-column Polars source from a compact test mapping."""
+    return pl.DataFrame({"key": list(values), "value": list(values.values())})
 
 
 class ClassificationTests(unittest.TestCase):
@@ -121,7 +125,7 @@ class ClassificationTests(unittest.TestCase):
         """Mutating a returned classification table cannot alter stored metadata."""
         classification = Classification(
             "Security",
-            {"A": "Alpha", "B": "Beta"},
+            _pairs({"A": "Alpha", "B": "Beta"}),
             (_named_performance(), _named_performance()),
         )
         returned = classification.df
@@ -138,7 +142,7 @@ class ClassificationTests(unittest.TestCase):
         """Explicit classification sources must supply identifier and name columns."""
         source = pl.DataFrame({"identifier": ["A", "B"]})
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[302]):
+        with self.assertRaises(PparError):
             Classification("Security", source, (_named_performance(), _named_performance()))
 
 
@@ -147,13 +151,13 @@ class MappingTests(unittest.TestCase):
 
     def test_mapping_rolls_multiple_items_to_same_target(self) -> None:
         """Several source identifiers may roll up to one target identifier."""
-        mapping = Mapping(("A", "B"), {"A": "TECH", "B": "TECH"})
+        mapping = Mapping(("A", "B"), _pairs({"A": "TECH", "B": "TECH"}))
 
         self.assertEqual(dict(mapping.to_froms), {"TECH": ["A", "B"]})
 
     def test_mapping_keeps_unmapped_item_at_its_own_identifier(self) -> None:
         """An unmapped identifier remains a standalone mapped group."""
-        mapping = Mapping(("A", "B"), {"A": "TECH"})
+        mapping = Mapping(("A", "B"), _pairs({"A": "TECH"}))
 
         self.assertEqual(
             dict(mapping.to_froms),
@@ -162,7 +166,10 @@ class MappingTests(unittest.TestCase):
 
     def test_mapping_filters_unused_source_items(self) -> None:
         """Mappings for identifiers outside the source performance are discarded."""
-        mapping = Mapping(("A", "B"), {"A": "TECH", "B": "FIN", "C": "OTHER"})
+        mapping = Mapping(
+            ("A", "B"),
+            _pairs({"A": "TECH", "B": "FIN", "C": "OTHER"}),
+        )
 
         self.assertEqual(
             dict(mapping.to_froms),
@@ -180,7 +187,7 @@ class MappingTests(unittest.TestCase):
 
     def test_mapping_dictionary_is_a_defensive_copy(self) -> None:
         """Mutating a returned reverse mapping cannot alter stored mappings."""
-        mapping = Mapping(("A", "B"), {"A": "TECH", "B": "TECH"})
+        mapping = Mapping(("A", "B"), _pairs({"A": "TECH", "B": "TECH"}))
         returned = mapping.to_froms
         returned["TECH"].append("CHANGED")
 
@@ -188,7 +195,7 @@ class MappingTests(unittest.TestCase):
 
     def test_one_column_mapping_source_raises_error_353(self) -> None:
         """Mapping sources must supply both from and to identifier columns."""
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[353]):
+        with self.assertRaises(PparError):
             Mapping(("A", "B"), pl.DataFrame({"from": ["A", "B"]}))
 
     def test_mapped_attribution_rollup_preserves_portfolio_contribution(self) -> None:
@@ -200,10 +207,10 @@ class MappingTests(unittest.TestCase):
             benchmark_classification_name="Security",
         )
 
-        attribution = analytics.get_attribution(
+        attribution = analytics.attribution(
             "Sector",
-            {"TECH": "Technology"},
-            ({"A": "TECH", "B": "TECH"}, {"A": "TECH", "B": "TECH"}),
+            _pairs({"TECH": "Technology"}),
+            (_pairs({"A": "TECH", "B": "TECH"}),) * 2,
         )
         details = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
 
@@ -224,7 +231,7 @@ class MappingTests(unittest.TestCase):
                 cols.WEIGHT: [0.50, -0.50, 1.0],
             }
         )
-        mapping = {"LONG": "HEDGE", "SHORT": "HEDGE", "CORE": "CORE"}
+        mapping = _pairs({"LONG": "HEDGE", "SHORT": "HEDGE", "CORE": "CORE"})
         analytics = Analytics(
             performance,
             performance.clone(),
@@ -232,9 +239,9 @@ class MappingTests(unittest.TestCase):
             benchmark_classification_name="Security",
         )
 
-        details = analytics.get_attribution(
+        details = analytics.attribution(
             "Strategy",
-            {"HEDGE": "Hedge", "CORE": "Core"},
+            _pairs({"HEDGE": "Hedge", "CORE": "Core"}),
             (mapping, mapping),
         ).to_polars(View.SUBPERIOD_ATTRIBUTION)
         hedge = details.filter(pl.col(cols.CLASSIFICATION_IDENTIFIER) == "HEDGE")
@@ -251,14 +258,14 @@ class MappingTests(unittest.TestCase):
             portfolio_classification_name="Security",
             benchmark_classification_name="Security",
         )
-        mapping = {"A": "TECH", "B": "TECH"}
+        mapping = _pairs({"A": "TECH", "B": "TECH"})
 
-        first = analytics.get_attribution(
+        first = analytics.attribution(
             "Sector",
             mapping_data_sources=(mapping, mapping),
         )
-        mapping["B"] = "FIN"
-        second = analytics.get_attribution(
+        mapping[1, "value"] = "FIN"
+        second = analytics.attribution(
             "Sector",
             mapping_data_sources=(mapping, mapping),
         )
@@ -290,8 +297,8 @@ class MappingTests(unittest.TestCase):
             benchmark_classification_name="Security",
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[804]):
-            analytics.get_attribution("Sector", mapping_data_sources=(None, None))
+        with self.assertRaises(PparError):
+            analytics.attribution("Sector", mapping_data_sources=(None, None))
 
 
 if __name__ == "__main__":

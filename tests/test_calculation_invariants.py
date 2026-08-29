@@ -6,13 +6,12 @@ import math
 import unittest
 
 # Project Imports
-from ppar.analytics import Analytics
-from ppar.analytics.attribution import View
-import ppar.analytics.schema as cols
-import ppar.errors as errs
-from ppar.errors import PpaError
-from ppar.analytics.frequency import Frequency
-from ppar.analytics.performance import Performance
+from ppar import Analytics
+from ppar.attribution import View
+import ppar.schema as cols
+from ppar.errors import PparError
+from ppar.frequency import Frequency
+from ppar.performance import Performance
 from tests import test_utilities as test_util
 
 
@@ -99,7 +98,7 @@ class TestCalculationInvariants(unittest.TestCase):
                 "B": ([-0.02, 0.04], [0.40, 0.45]),
             },
         )
-        attribution = Analytics(df, df).get_attribution()
+        attribution = Analytics(df, df).attribution()
 
         subperiods = attribution.to_polars(View.SUBPERIOD_SUMMARY)
         for column in (
@@ -133,7 +132,7 @@ class TestCalculationInvariants(unittest.TestCase):
             },
         )
 
-        overall = Analytics(portfolio, benchmark).get_attribution().to_polars(
+        overall = Analytics(portfolio, benchmark).attribution().to_polars(
             View.OVERALL_ATTRIBUTION
         )
         total_row = overall[-1]
@@ -159,7 +158,7 @@ class TestCalculationInvariants(unittest.TestCase):
             {"A": ([0.01, 0.02, -0.03, 0.04], [1.0, 1.0, 1.0, 1.0])},
         )
 
-        summary = Analytics(df, df, frequency=Frequency.MONTHLY).get_attribution().to_polars(
+        summary = Analytics(df, df, frequency=Frequency.MONTHLY).attribution().to_polars(
             View.SUBPERIOD_SUMMARY
         )
 
@@ -198,7 +197,7 @@ class TestCalculationInvariants(unittest.TestCase):
             {"A": ([0.02, 0.01, 0.04], [1.0, 1.0, 1.0])},
         )
 
-        summary = Analytics(portfolio, benchmark).get_attribution().to_polars(
+        summary = Analytics(portfolio, benchmark).attribution().to_polars(
             View.SUBPERIOD_SUMMARY
         )
 
@@ -217,7 +216,7 @@ class TestCalculationInvariants(unittest.TestCase):
             {"A": ([0.02], [1.0])},
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[202]):
+        with self.assertRaises(PparError):
             Analytics(portfolio, benchmark)
 
 

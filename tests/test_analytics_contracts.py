@@ -2,6 +2,7 @@
 
 # Python Imports
 import datetime as dt
+from collections.abc import Sequence
 import unittest
 from unittest import mock
 
@@ -9,13 +10,13 @@ from unittest import mock
 import polars as pl
 
 # Project Imports
-from ppar.analytics import Analytics
-from ppar.analytics.attribution import Attribution, View
-from ppar.analytics.frequency import Frequency
-from ppar.analytics.performance import Performance
-import ppar.analytics.schema as cols
-import ppar.errors as errs
-from ppar.errors import PpaError
+from ppar import Analytics
+from ppar.attribution import Attribution, View
+from ppar.frequency import Frequency
+from ppar.performance import Performance
+from ppar.utilities import MappingDataSource
+import ppar.schema as cols
+from ppar.errors import PparError
 
 
 _PERIODS = [
@@ -48,7 +49,7 @@ class TestAnalyticsContracts(unittest.TestCase):
             portfolio_classification_name="Security",
         )
 
-        attribution = analytics.get_attribution()
+        attribution = analytics.attribution()
         summary = attribution.to_polars(View.SUBPERIOD_SUMMARY)
 
         self.assertEqual(analytics.classification_names(), ("Security", "Security"))
@@ -63,7 +64,7 @@ class TestAnalyticsContracts(unittest.TestCase):
             thru_date=dt.date(2024, 3, 31),
         )
 
-        summary = analytics.get_attribution().to_polars(View.SUBPERIOD_SUMMARY)
+        summary = analytics.attribution().to_polars(View.SUBPERIOD_SUMMARY)
 
         self.assertEqual(
             summary[cols.FROM_DATE].to_list(),
@@ -83,8 +84,8 @@ class TestAnalyticsContracts(unittest.TestCase):
             benchmark_classification_name="Sector",
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[252]):
-            analytics.get_attribution()
+        with self.assertRaises(PparError):
+            analytics.attribution()
 
     def test_repeated_attribution_retrieval_reuses_cached_instance(self) -> None:
         """Repeated requests for a classification reuse calculated attribution."""
@@ -93,8 +94,8 @@ class TestAnalyticsContracts(unittest.TestCase):
             portfolio_classification_name="Security",
         )
 
-        first = analytics.get_attribution()
-        second = analytics.get_attribution()
+        first = analytics.attribution()
+        second = analytics.attribution()
 
         self.assertIs(first, second)
 
@@ -104,10 +105,15 @@ class TestAnalyticsContracts(unittest.TestCase):
             _two_asset_performance(),
             portfolio_classification_name="Security",
         )
-        for mapping_sources in ((), ({"A": "TECH"},), (None, None, None)):
+        invalid_sources: tuple[Sequence[MappingDataSource | None], ...] = (
+            (),
+            (pl.DataFrame({"from": ["A"], "to": ["TECH"]}),),
+            (None, None, None),
+        )
+        for mapping_sources in invalid_sources:
             with self.subTest(length=len(mapping_sources)):
-                with self.assertRaisesRegex(PpaError, errs.ERRORS[805]):
-                    analytics.get_attribution(
+                with self.assertRaises(PparError):
+                    analytics.attribution(
                         "Sector",
                         mapping_data_sources=mapping_sources,
                     )
@@ -119,7 +125,7 @@ class TestAnalyticsContracts(unittest.TestCase):
             pl.lit(1.0).alias(cols.WEIGHT)
         )
 
-        detail = Analytics(portfolio, benchmark).get_attribution().to_polars(
+        detail = Analytics(portfolio, benchmark).attribution().to_polars(
             View.SUBPERIOD_ATTRIBUTION
         )
         b_row = detail.filter(pl.col(cols.CLASSIFICATION_IDENTIFIER) == "B")
@@ -166,7 +172,7 @@ class TestAnalyticsContracts(unittest.TestCase):
             }
         )
 
-        summary = Analytics(portfolio, benchmark).get_attribution().to_polars(
+        summary = Analytics(portfolio, benchmark).attribution().to_polars(
             View.SUBPERIOD_SUMMARY
         )
 
@@ -208,7 +214,7 @@ class TestAnalyticsContracts(unittest.TestCase):
             performance,
             performance.clone(),
             frequency=Frequency.QUARTERLY,
-        ).get_attribution().to_polars(View.SUBPERIOD_ATTRIBUTION)
+        ).attribution().to_polars(View.SUBPERIOD_ATTRIBUTION)
 
         calculated_contributions = (
             details[cols.PORTFOLIO_WEIGHT] * details[cols.PORTFOLIO_RETURN]
@@ -222,7 +228,7 @@ class TestAnalyticsContracts(unittest.TestCase):
     def test_attribution_is_audited_when_created(self) -> None:
         """Normal attribution construction executes production invariants."""
         with mock.patch.object(Attribution, "audit", autospec=True) as audit:
-            attribution = Analytics(_two_asset_performance()).get_attribution()
+            attribution = Analytics(_two_asset_performance()).attribution()
 
         audit.assert_called_once_with(attribution)
 
@@ -250,7 +256,7 @@ class TestAnalyticsContracts(unittest.TestCase):
 
     def test_total_rows_are_appended_only_to_aggregate_views(self) -> None:
         """Cumulative and overall views end in totals; detail views do not."""
-        attribution = Analytics(_two_asset_performance()).get_attribution()
+        attribution = Analytics(_two_asset_performance()).attribution()
 
         cumulative = attribution.to_polars(View.CUMULATIVE_ATTRIBUTION)
         overall = attribution.to_polars(View.OVERALL_ATTRIBUTION)
@@ -275,7 +281,7 @@ class TestAnalyticsContracts(unittest.TestCase):
 
     def test_overall_sorting_leaves_total_row_at_end(self) -> None:
         """Sorting orders holdings before the appended overall total row."""
-        attribution = Analytics(_two_asset_performance()).get_attribution()
+        attribution = Analytics(_two_asset_performance()).attribution()
 
         overall = attribution.to_polars(
             View.OVERALL_ATTRIBUTION,

@@ -9,10 +9,10 @@ import unittest
 import polars as pl
 
 # Project Imports
-from ppar.analytics import Analytics
-from ppar.analytics.attribution import View
-import ppar.analytics.schema as cols
-from ppar.analytics.frequency import Frequency
+from ppar import Analytics
+from ppar.attribution import View
+import ppar.schema as cols
+from ppar.frequency import Frequency
 from tests import test_utilities as test_util
 
 _MONTHLY_PERIODS: tuple[test_util.Period, ...] = (
@@ -89,7 +89,7 @@ class TestNarrowModelContracts(unittest.TestCase):
             },
         )
 
-        attribution = Analytics(portfolio, benchmark).get_attribution()
+        attribution = Analytics(portfolio, benchmark).attribution()
         summary = attribution.to_polars(View.SUBPERIOD_SUMMARY)
         overall = attribution.to_polars(View.OVERALL_ATTRIBUTION)
         total = overall[-1]
@@ -141,10 +141,13 @@ class TestNarrowModelContracts(unittest.TestCase):
             benchmark_classification_name="Security",
         )
 
-        detail = analytics.get_attribution(
+        detail = analytics.attribution(
             "Sector",
-            {"TECH": "Technology"},
-            ({"A": "TECH", "B": "TECH"}, {"A": "TECH", "B": "TECH"}),
+            pl.DataFrame({"id": ["TECH"], "name": ["Technology"]}),
+            (
+                pl.DataFrame({"id": ["A", "B"], "sector": ["TECH", "TECH"]}),
+            )
+            * 2,
         ).to_polars(View.SUBPERIOD_ATTRIBUTION)
 
         self.assertEqual(detail.height, 1)
@@ -171,7 +174,7 @@ class TestNarrowModelContracts(unittest.TestCase):
             performance,
             performance,
             frequency=Frequency.MONTHLY,
-        ).get_attribution().to_polars(View.SUBPERIOD_SUMMARY)
+        ).attribution().to_polars(View.SUBPERIOD_SUMMARY)
 
         self.assertEqual(summary.height, 2)
         for actual, expected in zip(
@@ -195,7 +198,7 @@ class TestNarrowModelContracts(unittest.TestCase):
             portfolio,
             benchmark,
             frequency=Frequency.MONTHLY,
-        ).get_riskstatistics().to_polars()
+        ).risk_statistics().to_polars()
 
         portfolio_values = dict(zip(output["column"], output["Portfolio"]))
         benchmark_values = dict(zip(output["column"], output["Benchmark"]))
@@ -210,7 +213,7 @@ class TestNarrowModelContracts(unittest.TestCase):
         period_count = 12
         performance = _scalable_narrow_performance(identifier_count, period_count)
 
-        attribution = Analytics(performance, performance).get_attribution()
+        attribution = Analytics(performance, performance).attribution()
         detail = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
         summary = attribution.to_polars(View.SUBPERIOD_SUMMARY)
         expected_returns = (

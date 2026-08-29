@@ -10,10 +10,10 @@ import numpy as np
 import polars as pl
 
 # Project Imports
-from ppar.analytics import Analytics
-import ppar.analytics.schema as cols
-from ppar.analytics.frequency import Frequency
-from ppar.analytics.riskstatistics import RiskStatistics
+from ppar import Analytics
+import ppar.schema as cols
+from ppar.frequency import Frequency
+from ppar.risk import RiskStatistics
 import ppar.utilities as util
 
 
@@ -283,8 +283,8 @@ class TestRiskStatisticsInvariants(unittest.TestCase):
         )
         analytics = Analytics(data_source, frequency=Frequency.MONTHLY)
 
-        first = analytics.get_riskstatistics()
-        second = analytics.get_riskstatistics()
+        first = analytics.risk_statistics()
+        second = analytics.risk_statistics()
 
         self.assertIs(first, second)
 

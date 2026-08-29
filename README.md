@@ -1,175 +1,94 @@
-# PPAR Audit
+# ppar
 
-**Explain why reported portfolio performance changed.**
+Portfolio performance attribution, contribution, and ex-post risk analytics.
 
-PPAR Audit answers a difficult operational question: "Why did my reported portfolio
-performance change?" It compares two portfolio-accounting snapshots, quantifies
-supported causes across holdings, transactions, prices, FX, and related data, flags
-suspicious source-data relationships, and produces reviewer-ready Excel and HTML
-reports. When the available evidence is insufficient, the unexplained difference
-stays visible for human review.
+ppar compares a portfolio with a benchmark, explains active return by classification,
+and produces reviewable HTML tables and PNG charts. It runs locally and supports both
+Axys/APX exports and a small vendor-neutral CSV format.
 
-- Everything runs locally, so portfolio data stays inside your environment.
-- The Python implementation supports automated batch runs and local customization.
-- Standard output includes XLSX, HTML, CSV, JSON, and compact evidence bundles.
+## Start here
 
-[Download the product overview (PDF)](https://raw.githubusercontent.com/JohnDReynolds/portfolio-performance-analytics/main/PPAR.pdf) | [License](https://github.com/JohnDReynolds/portfolio-performance-analytics/blob/main/LICENSE)
-
-Downloading, installing, accessing, copying, or using PPAR constitutes
-acceptance of the license. The public package grants a time-limited internal
-evaluation license only; production and other commercial use require a separate
-written commercial agreement.
-
----
-
-## What PPAR Audit Answers
-
-PPAR Audit is built around one operational question:
-
-> **Why did my reported performance change?**
-
-- **Performance Comparison:** identifies changed portfolio and security performance
-  for each time period, quantitatively attributes defensible differences to supported
-  source-data changes, and highlights anything that still needs human review.
-- **Data Issues:** flags suspicious source-data relationships — including price
-  ranges, dividend rates, accrued-interest rates, and missing dividends — that may
-  indicate data-quality issues independently of the performance explanation.
-
-<img
-  src="https://raw.githubusercontent.com/JohnDReynolds/portfolio-performance-analytics/main/docs/images/readme/PerformanceAuditPortfolio.jpg"
-  alt="PPAR Audit portfolio report"
-  width="100%"
-/>
-
----
-
-## Setup
-
-PPAR requires Python 3.11.9 or newer.
-
-Install the PPAR package:
+ppar requires Python 3.11.9 or newer.
 
 ```bash
-pip install ppar
+python -m pip install ppar
+
+# Axys/APX demonstration workspace (the default)
+ppar setup ./my_ppar
+ppar run ./my_ppar
+
+# Vendor-neutral demonstration workspace
+ppar setup ./my_generic_ppar --generic
+ppar run ./my_generic_ppar
 ```
 
-Create a local PPAR Audit workspace. The workspace includes PPAR-normalized
-demonstration data modeled on Axys/APX source and report data, so you can run the
-complete workflow before replacing the CSV files with reviewed exports from your
-own environment.
-
-```bash
-ppar setup ./my_ppar_audit
-```
-
-Run Audit:
-
-```bash
-ppar audit ./my_ppar_audit
-```
-
-Follow the `Customizing With Your Own Data` section in
-`./my_ppar_audit/README.md` when you are ready to customize the workspace with
-your own data.
+Both setup commands create a complete runnable workspace:
 
 ```text
-my_ppar_audit/
+my_ppar/
   README.md
   ppar.yaml
-  run_audit.py
-  snapshot_a/
-    portperf.csv
-    holdings.csv
-    transactions.csv
-    secmast.csv
-    secperf.csv
-    splits.csv
-  snapshot_b/
-    portperf.csv
-    holdings.csv
-    transactions.csv
-    secmast.csv
-    secperf.csv
-    splits.csv
+  input/
+  output/
 ```
 
----
+Edit `ppar.yaml` and replace the demonstration files under `input/` with your data.
+Every run writes the complete result atomically to `output/`; a failed run leaves the
+previous successful output intact.
 
-## Inputs
+## What it produces
 
-The demonstration files are PPAR-normalized CSVs modeled on Axys/APX data.
-Production inputs may come from reviewed REP, IMEX, custom-report, or other
-controlled exports:
+The standard quarterly workspace writes security and classification attribution
+tables, attribution and contribution charts, cumulative return charts, heatmaps, and
+an ex-post risk-statistics table.
 
-- portfolio performance;
-- security performance;
-- holdings;
-- transactions;
-- security master data;
-- split factors.
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/OverallAttributionByEconomicSector.png" alt="Overall attribution by economic sector chart" width="100%" />
 
-Audit uses two source-data snapshots. Snapshot A is normally the older or original
-state and Snapshot B is normally the newer or restated state, but neither snapshot
-is presumed correct.
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/OverallContributionByEconomicSector.png" alt="Overall contribution by economic sector chart" width="100%" />
 
-PPAR normalizes those files through a customizable `ppar.yaml` file, so each site
-can configure its local field names, transaction-code treatment, comparison
-tolerances, and report assumptions. The setup-created file documents these choices
-in place.
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/SubPeriodAttributionEffectsByEconomicSector.png" alt="Sub-period attribution effects chart" width="100%" />
 
-The configured file and accounting contracts fail closed when required source
-treatment is missing or ambiguous. Optional evidence does not silently expand the
-calculation or policy surface.
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/SubPeriodReturns.png" alt="Sub-period portfolio and benchmark returns" width="100%" />
 
----
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/ActiveContributionsByEconomicSector.png" alt="Active contributions heatmap" width="100%" />
 
-## Outputs
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/TotalAttributionEffectsByEconomicSector.png" alt="Total attribution effects heatmap" width="100%" />
 
-PPAR Audit writes review packages:
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/CumulativeAttributionEffectsByEconomicSector.png" alt="Cumulative attribution effects" width="100%" />
 
-```text
-output/
-  portfolio/
-    portfolio_audit.xlsx
-    portfolio_audit.html
-    source_detail.csv
-    audit_support.zip
-  security/
-    security_audit.xlsx
-    security_audit.html
-    source_detail.csv
-    audit_support.zip
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/CumulativeReturns.png" alt="Cumulative portfolio and benchmark returns" width="100%" />
+
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/CumulativeAttributionByEconomicSector.jpg" alt="Cumulative attribution table" width="100%" />
+
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/OverallAttributionByEconomicSector.jpg" alt="Overall attribution table by economic sector" width="100%" />
+
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/OverallAttributionBySecurity.jpg" alt="Overall attribution table by security" width="100%" />
+
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/RiskStatistics.jpg" alt="Ex-post risk statistics table" width="100%" />
+
+## Python
+
+```python
+from ppar import Analytics
+from ppar.attribution import View
+
+analytics = Analytics("portfolio.csv", "benchmark.csv")
+overall = analytics.attribution().to_polars(View.OVERALL_ATTRIBUTION)
+print(overall)
 ```
 
-To prevent unusably large artifacts, Audit stops with a nonzero exit code before
-writing a report when any primary review table would exceed 100,000 rows. The error
-identifies the oversized table and its largest contributors so the user can narrow
-the portfolio or date scope or correct upstream differences.
+Public tabular results are Polars DataFrames. HTML, PNG, and CSV output is available
+from the owning attribution or risk object.
 
----
+## Documentation
 
-## Current Validation Scope
+- [Configuration](docs/configuration.md)
+- [Methodology](docs/methodology.md)
+- [Python API](docs/python_api.md)
+- [Maintenance](docs/maintenance.md)
 
-PPAR Audit has substantial automated coverage, financial invariants, report
-reconciliation checks, output-integrity checks, deterministic demonstrations, and
-maintained scale gates.
+[License](LICENSE)
 
-It has not yet been validated against a real client's production-style Axys/APX
-exports and approved local accounting policy. The current program is seeking a
-small number of strong validation partners to test source authenticity, setup
-burden, financial interpretation, false positives, and reviewer usefulness.
-
-PPAR Audit detects, compares, explains, and helps investigate supported
-portfolio-performance and source-data differences. It does not provide a
-financial-statement audit, GIPS verification, attestation, certification, or
-assurance opinion.
-
----
-
-## Additional Repository Capability
-
-This repository also contains
-[`ppar.analytics`](https://github.com/JohnDReynolds/portfolio-performance-analytics/blob/main/docs/analytics/README.md), a maintained module for
-benchmark-relative performance attribution, contribution, and ex-post risk
-reporting. It is retained for future PPAR packaging but is not part of the current
-PPAR Audit validation program or default onboarding workflow.
+Downloading, installing, accessing, copying, or using ppar constitutes acceptance of
+the license. The public package grants a time-limited internal evaluation license;
+production and other commercial use require a separate written agreement.

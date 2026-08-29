@@ -1,68 +1,39 @@
 [build-system]
-# Build backend and build-time requirements used to build the project.
-# - `requires`: list of build-time packages (PEP 517/518). Keep minimal and use
-#   lower bounds that are known to support this configuration.
-# - `build-backend`: setuptools entrypoint used by the build frontend (e.g., pip).
-# Build-time requirements for setuptools-based builds.
 requires = ["setuptools>=77.0.0"]
-# The build backend used by pip when building wheels/sdist.
 build-backend = "setuptools.build_meta"
 
 [project]
-# Project metadata (PEP 621).
-# - `name`, `version`, `description`: canonical package metadata used by PyPI.
-# - `authors`: contact info for package maintainers.
-# - `readme` and `license`: point to local files to include in source distributions.
-# - `keywords`: short search terms for discovery.
-# - `requires-python`: minimum Python version supported; use a conservative
-#   lower bound that reflects CI/test matrix.
-# - `dependencies`: runtime requirements expressed as minimum compatible versions.
 name = "ppar"
-version = "0.1.7"
-description = "Local-first software for explaining changes in reported portfolio performance."
+version = "0.2.0"
+description = "Local-first portfolio performance attribution and risk analytics."
 authors = [{ name = "John Reynolds", email = "jjjkreynolds@gmail.com" }]
-# README file included in the distribution and displayed on PyPI.
 readme = "README.md"
-# Use an SPDX custom license reference plus a local license file.
 license = "LicenseRef-Proprietary"
 license-files = ["LICENSE"]
-# Helpful search keywords — concise, comma-separated.
 keywords = [
     "portfolio",
     "performance",
-    "audit",
-    "reconciliation",
-    "restatement",
-    "data quality",
-    "portfolio accounting",
+    "analytics",
+    "attribution",
+    "risk",
+    "benchmark",
     "Axys",
     "APX",
 ]
-# Minimal Python runtime required to run the package.
 requires-python = ">=3.11.9"
-# Runtime dependencies. These are lower-bound constraints, not exact pins.
 dependencies = [
+    "matplotlib>=3.8.2",
+    "numpy>=1.26.4",
     "polars>=1.24.0",
-    "openpyxl>=3.1",
     "pyyaml>=6.0",
+    "seaborn>=0.13.2",
 ]
 
 [project.optional-dependencies]
-# Chart rendering used by the optional PPAR Analytics workflow.
-analytics = [
-    "lxml>=5.1.0",
-    "matplotlib>=3.8.2",
-    "numpy>=1.26.4",
-    "pandas>=2.2.2",
-    "pyarrow>=15.0.1",
-    "seaborn>=0.13.2",
-]
-# Developer tooling used for local checks and editor feedback.
 dev = [
     "build>=1.2",
-    "markdown-it-py>=4.0",
     "mypy>=1.10",
-    "pandas-stubs",
+    "pillow>=10.0",
     "pytest>=8.0",
     "pylint>=4.0",
     "pyright>=1.1.409",
@@ -73,23 +44,38 @@ dev = [
 ]
 
 [project.scripts]
-# Console entry points installed with the package.
 ppar = "ppar.cli:main"
+
+[project.urls]
+Repository = "https://github.com/JohnDReynolds/ppar"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ppar = [
+    "py.typed",
+    "templates/axys_apx/*.md",
+    "templates/axys_apx/*.yaml",
+    "templates/axys_apx/input/*.csv",
+    "templates/generic/*.md",
+    "templates/generic/*.yaml",
+    "templates/generic/input/*.csv",
+    "templates/generic/input/classifications/*.csv",
+    "templates/generic/input/mappings/*.csv",
+    "templates/generic/input/performance/*.csv",
+]
 
 [tool.mypy]
 python_version = "3.11"
-files = [
-    "ppar",
-    "scripts/demo_support",
-    "scripts/operational_demo_data/holdings.py",
-]
+files = ["src/ppar", "scripts"]
 strict = true
 show_error_codes = true
 warn_unused_configs = true
 
 [tool.pyright]
-include = ["ppar", "tests"]
-extraPaths = ["tests"]
+include = ["src/ppar", "tests"]
+extraPaths = ["src"]
 pythonVersion = "3.11"
 venvPath = "."
 venv = ".venv"
@@ -120,48 +106,3 @@ max-branches = 40
 max-locals = 30
 max-attributes = 12
 min-public-methods = 0
-
-[tool.setuptools]
-# setuptools-specific configuration.
-# - `packages`: list package names included in the distribution.
-# - `include-package-data`: include files specified in package-data or MANIFEST.in.
-packages = [
-    "ppar",
-    "ppar.analytics",
-    "ppar.axys_apx",
-    "ppar.setup_templates",
-    "ppar.setup_templates.axys_apx_analytics",
-    "ppar.setup_templates.axys_apx_audit",
-    "ppar.setup_templates.axys_apx_audit.snapshot_a",
-    "ppar.setup_templates.axys_apx_audit.snapshot_b",
-    "ppar.setup_templates.generic_analytics",
-    "ppar.setup_templates.generic_analytics.classifications",
-    "ppar.setup_templates.generic_analytics.mappings",
-    "ppar.setup_templates.generic_analytics.performance",
-    "ppar.audit",
-    "ppar.audit.cli",
-    "ppar.audit.data_issues",
-    "ppar.audit.performance_comparison",
-]
-include-package-data = true
-
-[tool.setuptools.package-data]
-# Explicit package-data patterns so demo CSVs and typing marker are included.
-# - Prefer explicit globs over recursive wildcard where possible for clarity.
-# The `py.typed` marker indicates PEP 561 typing support.
-# Include demo CSVs used by examples so installed package is usable offline.
-ppar = ["py.typed"]
-"ppar.setup_templates" = ["*.md"]
-"ppar.setup_templates.axys_apx_analytics" = ["*.yaml", "*.csv", "*.py"]
-"ppar.setup_templates.axys_apx_audit" = ["*.yaml", "*.md", "*.py"]
-"ppar.setup_templates.axys_apx_audit.snapshot_a" = ["*.csv"]
-"ppar.setup_templates.axys_apx_audit.snapshot_b" = ["*.csv"]
-"ppar.setup_templates.generic_analytics" = ["*.py", "*.md", "*.csv"]
-"ppar.setup_templates.generic_analytics.classifications" = ["*.csv"]
-"ppar.setup_templates.generic_analytics.mappings" = ["*.csv"]
-"ppar.setup_templates.generic_analytics.performance" = ["*.csv"]
-
-[project.urls]
-# Useful project URLs for documentation and source.
-# - `Repository`: canonical upstream repository URL.
-Repository = "https://github.com/JohnDReynolds/portfolio-performance-analytics"

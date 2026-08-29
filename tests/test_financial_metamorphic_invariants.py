@@ -10,9 +10,9 @@ import numpy as np
 import polars as pl
 
 # Project imports
-from ppar.analytics import Analytics
-from ppar.analytics.attribution import View
-import ppar.analytics.schema as cols
+from ppar import Analytics
+from ppar.attribution import View
+import ppar.schema as cols
 
 
 _PERIODS = (
@@ -63,11 +63,11 @@ class TestFinancialMetamorphicInvariants(unittest.TestCase):
                 portfolio, expected_portfolio_returns = _random_performance(rng)
                 benchmark, expected_benchmark_returns = _random_performance(rng)
 
-                attribution = Analytics(portfolio, benchmark).get_attribution()
+                attribution = Analytics(portfolio, benchmark).attribution()
                 shuffled_attribution = Analytics(
                     portfolio.sample(fraction=1.0, shuffle=True, seed=seed),
                     benchmark.sample(fraction=1.0, shuffle=True, seed=seed + 100),
-                ).get_attribution()
+                ).attribution()
 
                 for view in View:
                     self.assertTrue(

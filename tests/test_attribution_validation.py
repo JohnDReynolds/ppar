@@ -12,12 +12,11 @@ import polars as pl
 from tests import test_utilities as test_util
 
 # Project Imports
-from ppar.analytics import Analytics
-import ppar.analytics.attribution as attribution_module
-from ppar.analytics.attribution import View
-import ppar.analytics.schema as cols
-import ppar.errors as errs
-from ppar.errors import PpaError
+from ppar import Analytics
+import ppar.attribution as attribution_module
+from ppar.attribution import View
+import ppar.schema as cols
+from ppar.errors import PparError
 
 
 class TestAttributionValidation(unittest.TestCase):
@@ -35,8 +34,8 @@ class TestAttributionValidation(unittest.TestCase):
             }
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[203]):
-            Analytics(invalid_return, invalid_return.clone()).get_attribution()
+        with self.assertRaises(PparError):
+            Analytics(invalid_return, invalid_return.clone()).attribution()
 
     def test_large_detail_html_output_raises_error_204(self) -> None:
         """Overlarge detail HTML tables are rejected before rendering."""
@@ -45,8 +44,8 @@ class TestAttributionValidation(unittest.TestCase):
             test_util.performance_data_path("Large-Cap Portfolio"),
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[204]):
-            analytics.get_attribution().to_html(View.SUBPERIOD_ATTRIBUTION)
+        with self.assertRaises(PparError):
+            analytics.attribution().to_html(View.SUBPERIOD_ATTRIBUTION)
 
     def test_html_row_limit_accepts_1010_and_rejects_1011(self) -> None:
         """HTML output methods enforce the documented 1,010-row boundary."""
@@ -54,7 +53,7 @@ class TestAttributionValidation(unittest.TestCase):
             test_util.performance_data_path("Magnificent 7"),
             test_util.performance_data_path("Large-Cap Portfolio"),
         )
-        attribution = analytics.get_attribution()
+        attribution = analytics.attribution()
 
         with (
             mock.patch.object(
@@ -86,7 +85,7 @@ class TestAttributionValidation(unittest.TestCase):
         ):
             for output_method in (attribution.to_html, attribution.to_table):
                 with self.subTest(output_method=output_method.__name__):
-                    with self.assertRaisesRegex(PpaError, errs.ERRORS[204]):
+                    with self.assertRaises(PparError):
                         output_method(View.OVERALL_ATTRIBUTION)
 
     def test_runtime_audit_rejects_corrupted_smoothed_effect_total(self) -> None:
@@ -103,7 +102,7 @@ class TestAttributionValidation(unittest.TestCase):
             periods,
             {"A": ([0.01, -0.01], [1.0, 1.0])},
         )
-        attribution = Analytics(portfolio, benchmark).get_attribution()
+        attribution = Analytics(portfolio, benchmark).attribution()
         # pylint: disable-next=protected-access
         attribution._df_overall = attribution._df_overall.with_columns(
             (pl.col(cols.TOTAL_EFFECT_SMOOTHED) + 0.01).alias(
@@ -111,7 +110,7 @@ class TestAttributionValidation(unittest.TestCase):
             )
         )
 
-        with self.assertRaisesRegex(PpaError, "does not foot when summed"):
+        with self.assertRaisesRegex(PparError, "does not foot when summed"):
             attribution.audit()
 
 

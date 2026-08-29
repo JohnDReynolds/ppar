@@ -13,12 +13,11 @@ import polars as pl
 import yaml
 
 # Project Imports
-from ppar.analytics import Analytics
-from ppar.analytics.attribution import View
+from ppar import Analytics
+from ppar.attribution import View
 from ppar.axys_apx import AxysData
-import ppar.analytics.schema as cols
-import ppar.errors as errs
-from ppar.errors import PpaError
+import ppar.schema as cols
+from ppar.errors import PparError
 
 
 def _write_axys_inputs(directory: Path) -> Path:
@@ -452,17 +451,17 @@ class TestAxysPipeline(unittest.TestCase):
                 [dt.date(2024, 2, 29)],
             )
 
-    def test_get_portfolio_uses_configured_analytics_selection(self) -> None:
-        """Analytics settings supply omitted date filters and classification."""
+    def test_get_portfolio_uses_configured_selection(self) -> None:
+        """Root settings supply omitted date filters and classification."""
         with tempfile.TemporaryDirectory() as temp_dir:
             specification_path = _write_axys_inputs(Path(temp_dir))
             specification = yaml.safe_load(specification_path.read_text(encoding="utf-8"))
             assert isinstance(specification, dict)
-            specification["analytics"] = {
-                "from_date": dt.date(2024, 2, 1),
-                "thru_date": dt.date(2024, 2, 29),
-                "classification": "Country",
-            }
+            specification.update(
+                from_date=dt.date(2024, 2, 1),
+                thru_date=dt.date(2024, 2, 29),
+                classification="Country",
+            )
             specification_path.write_text(
                 yaml.safe_dump(specification),
                 encoding="utf-8",
@@ -479,17 +478,17 @@ class TestAxysPipeline(unittest.TestCase):
                 ["Canada", "United Kingdom", "United States"],
             )
 
-    def test_get_portfolio_arguments_override_analytics_selection(self) -> None:
-        """Explicit arguments override the configured Analytics selection."""
+    def test_get_portfolio_arguments_override_configured_selection(self) -> None:
+        """Explicit arguments override the configured root selection."""
         with tempfile.TemporaryDirectory() as temp_dir:
             specification_path = _write_axys_inputs(Path(temp_dir))
             specification = yaml.safe_load(specification_path.read_text(encoding="utf-8"))
             assert isinstance(specification, dict)
-            specification["analytics"] = {
-                "from_date": "2024-02-01",
-                "thru_date": "2024-02-29",
-                "classification": "Country",
-            }
+            specification.update(
+                from_date="2024-02-01",
+                thru_date="2024-02-29",
+                classification="Country",
+            )
             specification_path.write_text(
                 yaml.safe_dump(specification),
                 encoding="utf-8",
@@ -518,7 +517,7 @@ class TestAxysPipeline(unittest.TestCase):
             portfolio = data.get_portfolio("P1", classification_name="Sector")
 
             analytics = portfolio.to_analytics()
-            attribution = analytics.get_attribution()
+            attribution = analytics.attribution()
             detail = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
 
             self.assertEqual(
@@ -550,7 +549,7 @@ class TestAxysPipeline(unittest.TestCase):
             portfolio = data.get_portfolio("P1", classification_name="Sector")
 
             analytics = portfolio.to_analytics()
-            attribution = analytics.get_attribution()
+            attribution = analytics.attribution()
             detail = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
 
             self.assertEqual(analytics.classification_names(), ("Security", "Security"))
@@ -567,7 +566,7 @@ class TestAxysPipeline(unittest.TestCase):
             benchmark = data.get_portfolio("P2", classification_name="Country")
 
             analytics = portfolio.to_analytics(benchmark)
-            attribution = analytics.get_attribution()
+            attribution = analytics.attribution()
             detail = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
 
             self.assertEqual(analytics.classification_names(), ("Security", "Security"))
@@ -583,7 +582,7 @@ class TestAxysPipeline(unittest.TestCase):
             portfolio = data.get_portfolio("P1", classification_name="Country")
             benchmark = data.get_portfolio("P2", classification_name="Sector")
 
-            with self.assertRaisesRegex(PpaError, errs.ERRORS[506]):
+            with self.assertRaises(PparError):
                 portfolio.to_analytics(benchmark)
 
     def test_portfolio_convenience_method_requires_overlapping_periods(self) -> None:
@@ -603,7 +602,7 @@ class TestAxysPipeline(unittest.TestCase):
                 classification_name="Country",
             )
 
-            with self.assertRaisesRegex(PpaError, errs.ERRORS[202]):
+            with self.assertRaises(PparError):
                 portfolio.to_analytics(benchmark)
 
     def test_required_classification_sources_requires_attached_sources(self) -> None:
@@ -612,13 +611,10 @@ class TestAxysPipeline(unittest.TestCase):
             data = AxysData(_write_axys_inputs(Path(temp_dir)))
             portfolio = data.get_portfolio("P1")
 
-            with self.assertRaises(PpaError) as context:
+            with self.assertRaises(PparError) as context:
                 _ = portfolio.required_classification_sources
 
-            self.assertTrue(
-                str(context.exception).startswith(errs.ERRORS[999]),
-                str(context.exception),
-            )
+            self.assertIn("classification", str(context.exception).lower())
 
     def test_source_path_overrides_replace_configured_defaults(self) -> None:
         """Constructor overrides can replace configured classification files."""
@@ -694,12 +690,12 @@ class TestAxysPipeline(unittest.TestCase):
 
             sector_sources = data.get_classification_sources("Sector", portfolio)
             lookup_sources = data.get_classification_sources("SectorLookup", portfolio)
-            sector_detail = analytics.get_attribution(
+            sector_detail = analytics.attribution(
                 sector_sources.classification_name,
                 sector_sources.classification_data_source,
                 sector_sources.mapping_data_sources,
             ).to_polars(View.SUBPERIOD_ATTRIBUTION)
-            lookup_detail = analytics.get_attribution(
+            lookup_detail = analytics.attribution(
                 lookup_sources.classification_name,
                 lookup_sources.classification_data_source,
                 lookup_sources.mapping_data_sources,

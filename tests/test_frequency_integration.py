@@ -15,10 +15,10 @@ import warnings
 from tests import test_utilities as test_util
 
 # Project Imports
-from ppar.analytics import Analytics
-from ppar.analytics.attribution import View
-import ppar.analytics.schema as cols
-from ppar.analytics.frequency import (
+from ppar import Analytics
+from ppar.attribution import View
+import ppar.schema as cols
+from ppar.frequency import (
     date_matches_frequency,
     Frequency,
     frequency_bucket,
@@ -26,9 +26,8 @@ from ppar.analytics.frequency import (
     frequency_bucket_effective_end,
     load_holidays,
 )
-from ppar.analytics.performance import Performance
-import ppar.errors as errs
-from ppar.errors import PpaError
+from ppar.performance import Performance
+from ppar.errors import PparError
 import ppar.utilities as util
 
 _HOLIDAYS_PATH = Path("tests/data/holidays.csv")
@@ -167,7 +166,7 @@ class TestFrequencyIntegration(unittest.TestCase):
         )
 
         self.assertEqual(
-            len(test_util.get_attribution(analytics).to_pandas(View.SUBPERIOD_SUMMARY)),
+            len(test_util.attribution(analytics).to_polars(View.SUBPERIOD_SUMMARY)),
             3,
         )
 
@@ -180,7 +179,7 @@ class TestFrequencyIntegration(unittest.TestCase):
             frequency=Frequency.MONTHLY,
             holidays=_HOLIDAYS_PATH,
         )
-        attribution = test_util.get_attribution(analytics)
+        attribution = test_util.attribution(analytics)
         output = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
 
         self.assertEqual(output[cols.FROM_DATE].item(0), dt.date(2021, 1, 1))
@@ -209,7 +208,7 @@ class TestFrequencyIntegration(unittest.TestCase):
             frequency=Frequency.QUARTERLY,
             holidays=_HOLIDAYS_PATH,
         )
-        attribution = test_util.get_attribution(analytics)
+        attribution = test_util.attribution(analytics)
         output = attribution.to_polars(View.SUBPERIOD_SUMMARY)
 
         self.assertEqual(output[cols.FROM_DATE].item(0), dt.date(2021, 1, 1))
@@ -233,7 +232,7 @@ class TestFrequencyIntegration(unittest.TestCase):
             portfolio_classification_name="Security",
             benchmark_classification_name="Economic Sector",
         )
-        attribution = test_util.get_attribution(analytics, "Economic Sector")
+        attribution = test_util.attribution(analytics, "Economic Sector")
         classifications = attribution.to_polars(View.OVERALL_ATTRIBUTION)[
             cols.CLASSIFICATION_IDENTIFIER
         ]
@@ -249,7 +248,7 @@ class TestFrequencyIntegration(unittest.TestCase):
         )
 
         self.assertEqual(
-            len(test_util.get_attribution(analytics).to_polars(View.SUBPERIOD_SUMMARY)),
+            len(test_util.attribution(analytics).to_polars(View.SUBPERIOD_SUMMARY)),
             3,
         )
 
@@ -261,7 +260,7 @@ class TestFrequencyIntegration(unittest.TestCase):
             from_date=dt.date(2021, 1, 1),
             frequency=Frequency.YEARLY,
         )
-        output = test_util.get_attribution(analytics).to_polars(View.SUBPERIOD_SUMMARY)
+        output = test_util.attribution(analytics).to_polars(View.SUBPERIOD_SUMMARY)
 
         self.assertEqual(len(output), 3)
         self.assertEqual(output[cols.FROM_DATE].item(0), dt.date(2021, 1, 1))
@@ -277,7 +276,7 @@ class TestFrequencyIntegration(unittest.TestCase):
             {"A": ([0.01, 0.02], [1.0, 1.0])},
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[253]):
+        with self.assertRaises(PparError):
             Analytics(
                 performance,
                 performance.clone(),
@@ -300,7 +299,7 @@ class TestFrequencyIntegration(unittest.TestCase):
             frequency=Frequency.MONTHLY,
         )
 
-        summary = analytics.get_attribution().to_polars(View.SUBPERIOD_SUMMARY)
+        summary = analytics.attribution().to_polars(View.SUBPERIOD_SUMMARY)
         self.assertEqual(summary.height, 2)
         self.assertEqual(
             summary[cols.THRU_DATE].to_list(),
@@ -318,7 +317,7 @@ class TestFrequencyIntegration(unittest.TestCase):
             {"A": ([0.02], [1.0])},
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[253]):
+        with self.assertRaises(PparError):
             Analytics(
                 portfolio,
                 benchmark,
@@ -341,7 +340,7 @@ class TestFrequencyIntegration(unittest.TestCase):
             performance,
             performance.clone(),
             frequency=Frequency.MONTHLY,
-        ).get_attribution().to_polars(View.SUBPERIOD_SUMMARY)
+        ).attribution().to_polars(View.SUBPERIOD_SUMMARY)
 
         self.assertEqual(summary.height, 1)
         self.assertEqual(summary[cols.THRU_DATE].item(), dt.date(2023, 12, 31))
@@ -363,7 +362,7 @@ class TestFrequencyIntegration(unittest.TestCase):
             performance,
             performance.clone(),
             frequency=Frequency.MONTHLY,
-        ).get_attribution().to_polars(View.SUBPERIOD_SUMMARY)
+        ).attribution().to_polars(View.SUBPERIOD_SUMMARY)
 
         self.assertEqual(summary.height, 1)
         self.assertEqual(summary[cols.THRU_DATE].item(), dt.date(2023, 11, 30))
@@ -379,7 +378,7 @@ class TestFrequencyIntegration(unittest.TestCase):
             {"A": ([0.02], [1.0])},
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[202]):
+        with self.assertRaises(PparError):
             Analytics(
                 portfolio,
                 benchmark,
@@ -403,7 +402,7 @@ class TestFrequencyIntegration(unittest.TestCase):
                 performance,
                 performance.clone(),
                 frequency=Frequency.MONTHLY,
-            ).get_attribution().to_polars(View.SUBPERIOD_SUMMARY)
+            ).attribution().to_polars(View.SUBPERIOD_SUMMARY)
 
         self.assertEqual(summary[cols.THRU_DATE].to_list(), [dt.date(2023, 11, 30)])
         self.assertEqual(len(caught), 1)
@@ -429,7 +428,7 @@ class TestFrequencyIntegration(unittest.TestCase):
                 performance.clone(),
                 frequency=Frequency.QUARTERLY,
                 holidays=holidays_path,
-            ).get_attribution().to_polars(View.SUBPERIOD_SUMMARY)
+            ).attribution().to_polars(View.SUBPERIOD_SUMMARY)
 
         self.assertEqual(
             summary[cols.THRU_DATE].to_list(),
@@ -461,7 +460,7 @@ class TestFrequencyIntegration(unittest.TestCase):
             ):
                 with self.subTest(invalid_text=invalid_text):
                     holidays_path.write_text(invalid_text, encoding="utf-8")
-                    with self.assertRaisesRegex(PpaError, errs.ERRORS[254]):
+                    with self.assertRaises(PparError):
                         load_holidays(holidays_path)
 
     def test_specify_dates(self) -> None:

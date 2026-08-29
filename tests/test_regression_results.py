@@ -18,10 +18,10 @@ import polars as pl
 from tests import test_utilities as test_util
 
 # Project Imports
-from ppar.analytics import Analytics
-from ppar.analytics.attribution import Chart, View
-import ppar.analytics.schema as cols
-from ppar.analytics.frequency import Frequency
+from ppar import Analytics
+from ppar.attribution import Chart, View
+import ppar.schema as cols
+from ppar.frequency import Frequency
 import ppar.utilities as util
 
 _EXPECTED_RESULTS_DIRECTORIES = [
@@ -45,7 +45,7 @@ class TestRegressionResults(unittest.TestCase):
             test_util.performance_data_path("abcde_portfolio1"),
             test_util.performance_data_path("abcde_portfolio2"),
         )
-        attribution = test_util.get_attribution(analytics)
+        attribution = test_util.attribution(analytics)
         contribution = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
 
         portfolio_contributions = contribution[cols.PORTFOLIO_CONTRIB_SIMPLE]
@@ -68,7 +68,7 @@ class TestRegressionResults(unittest.TestCase):
             test_util.performance_data_path("abcde_portfolio1"),
             test_util.performance_data_path("abcde_benchmark1"),
         )
-        attribution = test_util.get_attribution(analytics)
+        attribution = test_util.attribution(analytics)
         subperiods = attribution.to_polars(View.SUBPERIOD_SUMMARY)
         detail = attribution.to_polars(View.OVERALL_ATTRIBUTION)
 
@@ -114,7 +114,7 @@ class TestRegressionResults(unittest.TestCase):
         benchmark_df = pl.read_csv(
             test_util.performance_data_path("Large-Cap Portfolio"),
             try_parse_dates=True,
-        ).to_pandas()
+        )
         analytics = Analytics(
             portfolio_df,
             benchmark_df,
@@ -126,7 +126,7 @@ class TestRegressionResults(unittest.TestCase):
         )
 
         for classification_name in ("Security", "Economic Sector"):
-            attribution = test_util.get_attribution(analytics, classification_name)
+            attribution = test_util.attribution(analytics, classification_name)
             for view in View:
                 columns_to_sort: str | list[str] | None = None
                 sort_descendings: bool | list[bool] = False
@@ -148,10 +148,6 @@ class TestRegressionResults(unittest.TestCase):
                     file_name,
                 )
                 self.assertTrue(output.equals(pl.read_csv(expected_path)))
-
-                if classification_name == "Economic Sector":
-                    attribution.to_json(view)
-                    attribution.to_xml(view)
 
             if classification_name == "Economic Sector":
                 if not _CHART_DEPENDENCIES_AVAILABLE:
@@ -175,8 +171,8 @@ class TestRegressionResults(unittest.TestCase):
             frequency=Frequency.MONTHLY,
             holidays=_HOLIDAYS_PATH,
         )
-        economic_sector = test_util.get_attribution(analytics, "Economic Sector")
-        security = test_util.get_attribution(analytics, "Security")
+        economic_sector = test_util.attribution(analytics, "Economic Sector")
+        security = test_util.attribution(analytics, "Security")
 
         self.assertTrue(
             util.are_near(
@@ -239,7 +235,7 @@ class TestRegressionResults(unittest.TestCase):
             frequency=Frequency.QUARTERLY,
             annual_minimum_acceptable_return=-0.16,
         )
-        risk_statistics = analytics.get_riskstatistics()
+        risk_statistics = analytics.risk_statistics()
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "riskstatistics.csv"
@@ -251,8 +247,6 @@ class TestRegressionResults(unittest.TestCase):
         )
 
         self.assertTrue(output.equals(pl.read_csv(expected_path)))
-        risk_statistics.to_json()
-        risk_statistics.to_xml()
 
     def test_short_positions(self) -> None:
         """Short-position inputs process successfully through attribution."""
@@ -262,7 +256,7 @@ class TestRegressionResults(unittest.TestCase):
         )
 
         self.assertEqual(
-            len(test_util.get_attribution(analytics).to_polars(View.SUBPERIOD_SUMMARY)),
+            len(test_util.attribution(analytics).to_polars(View.SUBPERIOD_SUMMARY)),
             5,
         )
 

@@ -1,341 +1,214 @@
-"""Run the project's local health checks with the repository virtual environment.
-
-The script is intentionally local-checkout oriented. It refuses to run unless invoked
-with ``./.venv/bin/python`` so type checkers, tests, and developer tools all see the
-same dependency environment that VS Code and the project documentation expect.
-"""
+"""Run the complete routine ppar product gate."""
 
 from __future__ import annotations
 
-import argparse
 import os
-import shutil
+from pathlib import Path
 import subprocess
 import sys
-import sysconfig
 import tempfile
-from collections.abc import Sequence
-from pathlib import Path
-from zipfile import ZipFile
+import venv
+import zipfile
 
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_VENV_PYTHON = _PROJECT_ROOT / ".venv" / "bin" / "python"
-_CHECK_CACHE_DIR = _PROJECT_ROOT / ".cache" / "check_project"
-_MPLCONFIGDIR = _CHECK_CACHE_DIR / "matplotlib"
-_REMOVED_TRANSACTION_POLICY_WHEEL_PATHS = frozenset(
-    {
-        "ppar/audit/fixed_income.py",
-        "ppar/audit/performance_comparison/backlog_gates.py",
-        "ppar/audit/performance_comparison/transaction_boundary_registry.py",
-        "ppar/audit/transaction_policy.py",
-        "ppar/setup_templates/axys_apx_audit/transaction_semantics_policy.yaml",
-    }
-)
-
-
-def _format_command(command: Sequence[str | Path]) -> str:
-    """Return a readable command line for status output."""
-    return " ".join(str(part) for part in command)
-
-
-def _require_venv_python() -> None:
-    """Validate that this script is running under the project virtual environment.
-
-    Raises:
-        SystemExit: If ``./.venv/bin/python`` is missing or the current interpreter is
-            not the project virtual-environment interpreter.
-    """
-    if not _VENV_PYTHON.exists():
-        raise SystemExit(
-            "Missing .venv/bin/python. Create the project virtual environment before "
-            "running scripts/check_project.py."
-        )
-
-    if Path(sys.executable).resolve() != _VENV_PYTHON.resolve():
-        raise SystemExit(
-            "Run this check with the project virtual environment:\n"
-            "  ./.venv/bin/python scripts/check_project.py"
-        )
+_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _run(
-    command: Sequence[str | Path],
+    command: list[str | Path],
     *,
-    cwd: Path = _PROJECT_ROOT,
-    isolate_python_path: bool = False,
+    cwd: Path = _ROOT,
+    env: dict[str, str] | None = None,
 ) -> None:
-    """Run a project check command and stop on failure.
-
-    Args:
-        command: Command and arguments to execute.
-        cwd: Directory from which to run the command.
-        isolate_python_path: Whether to remove ``PYTHONPATH`` so an installed-
-            package check cannot import from the source checkout through the
-            caller's environment.
-
-    Raises:
-        subprocess.CalledProcessError: If the command exits with a non-zero status.
-    """
-    print(f"\n==> {_format_command(command)}", flush=True)
-    _MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env["XDG_CACHE_HOME"] = str(_CHECK_CACHE_DIR)
-    env["MPLCONFIGDIR"] = str(_MPLCONFIGDIR)
-    env["PIP_CACHE_DIR"] = str(_CHECK_CACHE_DIR / "pip")
-    if isolate_python_path:
-        env.pop("PYTHONPATH", None)
-    subprocess.run(
-        [str(part) for part in command],
-        cwd=cwd,
-        check=True,
-        env=env,
-    )
+    """Run one gate command and stop on failure."""
+    normalized = [str(part) for part in command]
+    print(f"==> {' '.join(normalized)}", flush=True)
+    subprocess.run(normalized, cwd=cwd, check=True, env=env)
 
 
-def _virtual_environment_command(venv_path: Path, command_name: str) -> Path:
-    """Return one executable path inside a virtual environment."""
-    command_directory = "Scripts" if os.name == "nt" else "bin"
+def _venv_command(environment: Path, name: str) -> Path:
+    """Return an executable path inside a temporary virtual environment."""
+    scripts = "Scripts" if os.name == "nt" else "bin"
     suffix = ".exe" if os.name == "nt" else ""
-    return venv_path / command_directory / f"{command_name}{suffix}"
+    return environment / scripts / f"{name}{suffix}"
 
 
-def _virtual_environment_site_packages(venv_path: Path) -> Path:
-    """Return the site-packages directory inside a virtual environment."""
-    if os.name == "nt":
-        return venv_path / "Lib" / "site-packages"
-    version = f"python{sys.version_info.major}.{sys.version_info.minor}"
-    return venv_path / "lib" / version / "site-packages"
+def _check_documentation() -> None:
+    """Check the small documentation spine and canonical configuration references."""
+    required = (
+        "README.md",
+        "docs/configuration.md",
+        "docs/methodology.md",
+        "docs/python_api.md",
+        "docs/maintenance.md",
+    )
+    for relative in required:
+        if not (_ROOT / relative).is_file():
+            raise RuntimeError(f"Missing active documentation: {relative}")
+    configuration = (_ROOT / "docs/configuration.md").read_text(encoding="utf-8")
+    for key in (
+        "source",
+        "portfolio",
+        "benchmark",
+        "frequency",
+        "holidays",
+        "from_date",
+        "thru_date",
+        "classification",
+        "annual_minimum_acceptable_return",
+        "annual_risk_free_rate",
+        "confidence_level",
+        "portfolio_value",
+        "currency_symbol",
+    ):
+        if f"`{key}`" not in configuration:
+            raise RuntimeError(f"Configuration documentation omits {key}.")
+    readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+    for command in (
+        "ppar setup ./my_ppar",
+        "ppar setup ./my_generic_ppar --generic",
+        "ppar run ./my_ppar",
+    ):
+        if command not in readme:
+            raise RuntimeError(f"README omits executable command: {command}")
 
 
-def _run_installed_wheel_smoke(wheel_path: Path, smoke_root: Path) -> None:
-    """Install and exercise a built wheel outside the source checkout.
-
-    Args:
-        wheel_path: Wheel produced by the current build.
-        smoke_root: Temporary directory that will receive the virtual
-            environment, setup workspace, and generated output.
-
-    Notes:
-        The temporary environment reuses the already-verified release
-        environment's dependencies, then installs only the candidate wheel into
-        its own site-packages. Commands run outside the checkout with
-        ``PYTHONPATH`` removed, and an explicit origin check proves that ``ppar``
-        resolves from the temporary environment.
-    """
-    smoke_root.mkdir(parents=True, exist_ok=True)
-    venv_path = smoke_root / "venv"
-    audit_path = smoke_root / "my_ppar_audit"
-    analytics_path = smoke_root / "my_ppar_analytics"
+def _build_and_check_wheel(directory: Path) -> Path:
+    """Build, inspect, and Twine-check exactly one direct universal wheel."""
     _run(
         [
-            _VENV_PYTHON,
+            sys.executable,
             "-m",
-            "venv",
-            venv_path,
-        ],
-        cwd=smoke_root,
-        isolate_python_path=True,
+            "build",
+            "--wheel",
+            "--no-isolation",
+            "--outdir",
+            directory,
+        ]
     )
-    smoke_python = _virtual_environment_command(venv_path, "python")
-    smoke_ppar = _virtual_environment_command(venv_path, "ppar")
-    _run(
-        [
-            smoke_python,
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--no-deps",
-            wheel_path,
-        ],
-        cwd=smoke_root,
-        isolate_python_path=True,
-    )
-    dependency_site_packages = Path(sysconfig.get_paths()["purelib"]).resolve()
-    dependency_link = (
-        _virtual_environment_site_packages(venv_path)
-        / "_ppar_release_dependencies.pth"
-    )
-    dependency_link.parent.mkdir(parents=True, exist_ok=True)
-    dependency_link.write_text(
-        f"{dependency_site_packages}\n",
-        encoding="utf-8",
-    )
-    _run(
-        [smoke_python, "-m", "pip", "check"],
-        cwd=smoke_root,
-        isolate_python_path=True,
-    )
-    origin_check = (
-        "from pathlib import Path; import ppar, sys; "
-        "package_path = Path(ppar.__file__).resolve(); "
-        "environment_path = Path(sys.prefix).resolve(); "
-        "assert package_path.is_relative_to(environment_path), "
-        "f'{package_path} is not installed under {environment_path}'"
-    )
-    _run(
-        [smoke_python, "-c", origin_check],
-        cwd=smoke_root,
-        isolate_python_path=True,
-    )
-    _run(
-        [smoke_ppar, "setup", audit_path],
-        cwd=smoke_root,
-        isolate_python_path=True,
-    )
-    _run(
-        [smoke_ppar, "audit", audit_path],
-        cwd=smoke_root,
-        isolate_python_path=True,
-    )
-    _run(
-        [smoke_ppar, "setup", analytics_path, "--analytics"],
-        cwd=smoke_root,
-        isolate_python_path=True,
-    )
-    _run(
-        [smoke_ppar, "analytics", analytics_path],
-        cwd=smoke_root,
-        isolate_python_path=True,
-    )
-    for comparison_level in ("portfolio", "security"):
-        _run(
-            [
-                smoke_python,
-                "-m",
-                "ppar.audit.cli.validate_bundle",
-                audit_path / "output" / comparison_level,
-            ],
-            cwd=smoke_root,
-            isolate_python_path=True,
-        )
-
-
-def _validate_wheel_contents(wheel_path: Path) -> None:
-    """Reject obsolete transaction-policy files in a candidate wheel.
-
-    Args:
-        wheel_path: Wheel produced by the current build.
-
-    Raises:
-        RuntimeError: If a removed runtime policy file survives in the wheel.
-    """
-    with ZipFile(wheel_path) as wheel:
-        obsolete_paths = sorted(
-            _REMOVED_TRANSACTION_POLICY_WHEEL_PATHS.intersection(wheel.namelist())
-        )
-    if obsolete_paths:
+    wheels = list(directory.glob("*.whl"))
+    if len(wheels) != 1 or not wheels[0].name.endswith("-py3-none-any.whl"):
+        raise RuntimeError(f"Expected one universal wheel, found: {wheels}")
+    if list(directory.glob("*.tar.gz")):
+        raise RuntimeError("The direct-wheel gate must not create an sdist.")
+    wheel = wheels[0]
+    with zipfile.ZipFile(wheel) as archive:
+        names = set(archive.namelist())
+    if not any(name.startswith("ppar/") for name in names):
+        raise RuntimeError("Wheel does not contain the ppar package.")
+    forbidden = [
+        name
+        for name in names
+        if name.startswith(("perfaud/", "tests/", "scripts/"))
+        or "/__pycache__/" in name
+        or name.startswith("ppar/analytics/")
+        or name.startswith("ppar/audit/")
+    ]
+    if forbidden:
+        raise RuntimeError(f"Wheel contains forbidden files: {forbidden}")
+    required_resources = {
+        "ppar/py.typed",
+        "ppar/templates/axys_apx/ppar.yaml",
+        "ppar/templates/axys_apx/README.md",
+        "ppar/templates/axys_apx/input/portperf.csv",
+        "ppar/templates/generic/ppar.yaml",
+        "ppar/templates/generic/README.md",
+        "ppar/templates/generic/input/performance/Mega-Cap Alpha Portfolio.csv",
+    }
+    if not required_resources.issubset(names):
         raise RuntimeError(
-            "Candidate wheel contains removed transaction-policy files: "
-            f"{', '.join(obsolete_paths)}."
+            f"Wheel is missing resources: {sorted(required_resources - names)}"
         )
+    _run([sys.executable, "-m", "twine", "check", wheel])
+    return wheel
 
 
-def _run_build_check() -> None:
-    """Build distributions and smoke-test the installed candidate wheel."""
-    try:
-        # setuptools otherwise reuses deleted files from an ignored prior build tree.
-        shutil.rmtree(_PROJECT_ROOT / "build", ignore_errors=True)
-        with tempfile.TemporaryDirectory(prefix="ppar-build-check-") as temp_dir:
-            build_directory = Path(temp_dir)
-            _run(
-                [
-                    _VENV_PYTHON,
-                    "-m",
-                    "build",
-                    "--wheel",
-                    "--sdist",
-                    "--no-isolation",
-                    "--outdir",
-                    build_directory,
-                ]
-            )
-            wheel_paths = sorted(build_directory.glob("*.whl"))
-            if len(wheel_paths) != 1:
-                raise RuntimeError(
-                    "Build check expected exactly one wheel, found "
-                    f"{len(wheel_paths)}."
-                )
-            _validate_wheel_contents(wheel_paths[0])
-            _run_installed_wheel_smoke(
-                wheel_paths[0],
-                build_directory / "installed-wheel-smoke",
-            )
-    finally:
-        # setuptools creates these intermediate directories in the project checkout
-        # even when the final artifacts are written to a temporary output directory.
-        for generated_path in (_PROJECT_ROOT / "build", _PROJECT_ROOT / "ppar.egg-info"):
-            shutil.rmtree(generated_path, ignore_errors=True)
-
-
-def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(
-        description=(
-            "Run project health checks using the mandatory .venv/bin/python interpreter."
+def _installed_wheel_smoke(wheel: Path, directory: Path) -> None:
+    """Run both installed workflows outside the checkout with no perfaud available."""
+    environment = directory / "venv"
+    venv.EnvBuilder(with_pip=True).create(environment)
+    python = _venv_command(environment, "python")
+    pip = _venv_command(environment, "pip")
+    _run([pip, "install", "--no-deps", wheel], cwd=directory)
+    smoke = directory / "smoke"
+    smoke.mkdir()
+    dependency_paths = [
+        path
+        for path in sys.path
+        if "site-packages" in path and Path(path).is_dir()
+    ]
+    if not dependency_paths:
+        raise RuntimeError("Could not locate the product-gate dependency environment.")
+    smoke_env = os.environ.copy()
+    smoke_env["PYTHONPATH"] = os.pathsep.join(dependency_paths)
+    code = (
+        "from pathlib import Path; import importlib.util, ppar; "
+        "origin=Path(ppar.__file__).resolve(); "
+        "assert 'site-packages' in str(origin), origin; "
+        "assert importlib.util.find_spec('perfaud') is None; "
+        "assert ppar.__all__ == ['Analytics', 'run', '__version__']; "
+        "print(origin)"
+    )
+    _run([python, "-c", code], cwd=smoke, env=smoke_env)
+    _run([python, "-m", "pip", "check"], cwd=smoke, env=smoke_env)
+    _run([python, "-m", "ppar.cli", "--version"], cwd=smoke, env=smoke_env)
+    for name, generic in (("axys", False), ("generic", True)):
+        workspace = smoke / name
+        setup_command: list[str | Path] = [
+            python,
+            "-m",
+            "ppar.cli",
+            "setup",
+            workspace,
+        ]
+        if generic:
+            setup_command.append("--generic")
+        _run(setup_command, cwd=smoke, env=smoke_env)
+        _run(
+            [python, "-m", "ppar.cli", "run", workspace],
+            cwd=smoke,
+            env=smoke_env,
         )
+        artifacts = [path for path in (workspace / "output").iterdir() if path.is_file()]
+        if len(artifacts) != 11:
+            raise RuntimeError(
+                f"Installed {name} workflow wrote {len(artifacts)} artifacts, not 11."
+            )
+
+
+def main() -> int:
+    """Run tests, static checks, drift checks, and installed-wheel acceptance."""
+    _run([sys.executable, "-m", "pytest", "-q"])
+    _run([sys.executable, "-m", "mypy", "src/ppar", "scripts"])
+    _run(
+        [
+            sys.executable,
+            "-m",
+            "pyright",
+            "--pythonpath",
+            sys.executable,
+            "src/ppar",
+            "tests",
+        ]
     )
-    parser.add_argument(
-        "--build",
-        action="store_true",
-        help=(
-            "Also build wheel and sdist, then install and smoke-test the wheel "
-            "outside the source checkout."
-        ),
+    _run(
+        [
+            sys.executable,
+            "-m",
+            "pylint",
+            "--errors-only",
+            "src/ppar",
+            "scripts",
+            "tests",
+        ]
     )
-    parser.add_argument(
-        "--quick",
-        action="store_true",
-        help="Run the faster routine check set: tests, pyright errors, and pylint errors.",
-    )
-    parser.add_argument(
-        "--skip-tests",
-        action="store_true",
-        help="Skip the unit test suite.",
-    )
-    parser.add_argument(
-        "--skip-types",
-        action="store_true",
-        help="Skip mypy and pyright.",
-    )
-    parser.add_argument(
-        "--skip-pylint",
-        action="store_true",
-        help="Skip pylint error checks.",
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run selected project checks.
-
-    Args:
-        argv: Optional command-line arguments. Defaults to ``sys.argv[1:]``.
-
-    Returns:
-        Process exit code. Returns ``0`` when all selected checks pass.
-    """
-    _require_venv_python()
-    args = _parse_args(sys.argv[1:] if argv is None else argv)
-
-    if not args.skip_tests:
-        _run([_VENV_PYTHON, "-m", "unittest", "discover", "tests"])
-
-    if not args.skip_types:
-        if not args.quick:
-            _run([_VENV_PYTHON, "-m", "mypy"])
-        _run([_VENV_PYTHON, "-m", "pyright", "--level", "error"])
-
-    if not args.skip_pylint:
-        # Existing design/refactor warnings are handled separately; this gate catches
-        # pylint error-level regressions without requiring unrelated cleanup first.
-        _run([_VENV_PYTHON, "-m", "pylint", "--errors-only", "ppar", "scripts", "tests"])
-
-    if args.build:
-        _run_build_check()
-
-    print("\nAll selected project checks passed.", flush=True)
+    _check_documentation()
+    _run([sys.executable, "scripts/render_readme_images.py", "--check"])
+    with tempfile.TemporaryDirectory(prefix="ppar_product_gate_") as directory:
+        temporary = Path(directory)
+        wheel = _build_and_check_wheel(temporary / "dist")
+        _installed_wheel_smoke(wheel, temporary)
+    print("ppar product gate passed.")
     return 0
 
 

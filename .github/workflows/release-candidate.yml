@@ -1,4 +1,4 @@
-name: Python compatibility
+name: ppar compatibility
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: python-compatibility-${{ github.ref }}
+  group: ppar-compatibility-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -45,7 +45,7 @@ jobs:
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/python -m pip install \
             --constraint constraints/ci.txt \
-            --editable ".[analytics,dev]"
+            --editable ".[dev]"
 
       - name: Run complete compatibility checks
-        run: ./.venv/bin/python scripts/check_project.py --build
+        run: ./.venv/bin/python scripts/check_project.py

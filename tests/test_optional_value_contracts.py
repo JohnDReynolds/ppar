@@ -8,10 +8,10 @@ import unittest
 import polars as pl
 
 # Project Imports
-from ppar.analytics import Analytics
-from ppar.analytics.attribution import View
-import ppar.analytics.schema as cols
-from ppar.analytics.performance import Performance
+from ppar import Analytics
+from ppar.attribution import View
+import ppar.schema as cols
+from ppar.performance import Performance
 import ppar.utilities as util
 
 
@@ -49,8 +49,8 @@ class TestOptionalValueContracts(unittest.TestCase):
 
     def test_blank_attribution_arguments_match_omitted_arguments(self) -> None:
         """Blank string arguments select the same output as omissions."""
-        implicit = Analytics(_performance_rows()).get_attribution()
-        explicit = Analytics(_performance_rows()).get_attribution(
+        implicit = Analytics(_performance_rows()).attribution()
+        explicit = Analytics(_performance_rows()).attribution(
             classification_name="",
             classification_data_source="",
             mapping_data_sources=("", ""),
@@ -70,7 +70,7 @@ class TestOptionalValueContracts(unittest.TestCase):
         """Omitted attribution source arguments select default analytics output."""
         analytics = Analytics(_performance_rows())
 
-        attribution = analytics.get_attribution(
+        attribution = analytics.attribution(
             classification_name=None,
             classification_data_source=None,
             mapping_data_sources=(None, None),
@@ -79,7 +79,7 @@ class TestOptionalValueContracts(unittest.TestCase):
 
     def test_blank_sort_string_matches_omitted_sorting(self) -> None:
         """A blank sorting argument preserves default output ordering."""
-        attribution = Analytics(_performance_rows()).get_attribution()
+        attribution = Analytics(_performance_rows()).attribution()
 
         default_output = attribution.to_polars(View.OVERALL_ATTRIBUTION)
         legacy_output = attribution.to_polars(

@@ -10,12 +10,11 @@ import numpy as np
 import polars as pl
 
 # Project Imports
-import ppar.analytics.schema as cols
-import ppar.errors as errs
-from ppar.errors import PpaError
-from ppar.analytics.frequency import Frequency
-from ppar.analytics.performance import Performance
-from ppar.analytics.riskstatistics import RiskStatistics
+import ppar.schema as cols
+from ppar.errors import PparError
+from ppar.frequency import Frequency
+from ppar.performance import Performance
+from ppar.risk import RiskStatistics
 
 
 class TestRiskStatisticsValidation(unittest.TestCase):
@@ -23,7 +22,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
 
     def test_unsupported_frequency_raises_error_402(self) -> None:
         """Daily-frequency risk statistics are not supported."""
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[402]):
+        with self.assertRaises(PparError):
             RiskStatistics(
                 (np.array([np.nan, np.nan]), np.array([np.nan, np.nan])),
                 Frequency.AS_OFTEN_AS_POSSIBLE,
@@ -31,7 +30,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
 
     def test_insufficient_returns_raise_error_403(self) -> None:
         """At least two observations are required to calculate statistics."""
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[403]):
+        with self.assertRaises(PparError):
             RiskStatistics(
                 (np.array([np.nan]), np.array([np.nan])),
                 Frequency.MONTHLY,
@@ -39,7 +38,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
 
     def test_mismatched_return_counts_raise_error_404(self) -> None:
         """Portfolio and benchmark arrays must contain matching periods."""
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[404]):
+        with self.assertRaises(PparError):
             RiskStatistics(
                 (np.array([np.nan, np.nan]), np.array([np.nan, np.nan, np.nan])),
                 Frequency.MONTHLY,
@@ -47,7 +46,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
 
     def test_nan_returns_raise_error_405(self) -> None:
         """Missing observations are not valid calculated risk inputs."""
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[405]):
+        with self.assertRaises(PparError):
             RiskStatistics(
                 (np.array([1.0, 2.0]), np.array([1.0, np.nan])),
                 Frequency.MONTHLY,
@@ -55,7 +54,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
 
     def test_infinite_returns_raise_error_405(self) -> None:
         """Infinite observations cannot enter risk calculations."""
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[405]):
+        with self.assertRaises(PparError):
             RiskStatistics(
                 (np.array([1.0, 2.0]), np.array([1.0, np.inf])),
                 Frequency.MONTHLY,
@@ -74,7 +73,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
         )
         for arguments in invalid_arguments:
             with self.subTest(arguments=arguments):
-                with self.assertRaisesRegex(PpaError, errs.ERRORS[406]):
+                with self.assertRaises(PparError):
                     RiskStatistics(returns, Frequency.MONTHLY, **arguments)  # type: ignore[arg-type]
 
     def test_invalid_return_source_shapes_and_types_raise_error_407(self) -> None:
@@ -87,7 +86,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
         )
         for returns in invalid_returns:
             with self.subTest(returns=returns):
-                with self.assertRaisesRegex(PpaError, errs.ERRORS[407]):
+                with self.assertRaises(PparError):
                     RiskStatistics(returns, Frequency.MONTHLY)  # type: ignore[arg-type]
 
     def test_annualized_statistics_are_nan_for_less_than_one_year(self) -> None:
@@ -146,7 +145,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
             )
         )
 
-        with self.assertRaises(PpaError):
+        with self.assertRaises(PparError):
             RiskStatistics((portfolio, benchmark), Frequency.MONTHLY)
 
 

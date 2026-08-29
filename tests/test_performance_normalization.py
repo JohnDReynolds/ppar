@@ -5,14 +5,12 @@ import datetime as dt
 import unittest
 
 # Third-Party Imports
-import pandas as pd
 import polars as pl
 
 # Project Imports
-import ppar.analytics.schema as cols
-import ppar.errors as errs
-from ppar.errors import PpaError
-from ppar.analytics.performance import Performance
+import ppar.schema as cols
+from ppar.errors import PparError
+from ppar.performance import Performance
 
 _PERIODS = (
     (dt.date(2024, 1, 1), dt.date(2024, 1, 31)),
@@ -37,15 +35,13 @@ def _narrow_performance_df(include_names: bool = False) -> pl.DataFrame:
 class TestPerformanceNormalization(unittest.TestCase):
     """Test narrow input forms and validation boundaries without CSV fixtures."""
 
-    def test_pandas_and_polars_inputs_produce_same_normalized_dataframe(self) -> None:
-        """Equivalent supported DataFrame implementations normalize identically."""
+    def test_polars_input_is_copied_before_normalization(self) -> None:
+        """Mutating caller-owned Polars data cannot alter normalized state."""
         polars_input = _narrow_performance_df()
-        pandas_input = pd.DataFrame(polars_input.to_dict(as_series=False))
-
         from_polars = Performance(polars_input)
-        from_pandas = Performance(pandas_input)
+        polars_input[0, cols.RETURN] = 99.0
 
-        self.assertTrue(from_polars.narrow_df.equals(from_pandas.narrow_df))
+        self.assertNotEqual(from_polars.narrow_df[cols.RETURN].item(0), 99.0)
 
     def test_input_rows_are_sorted_by_thru_date(self) -> None:
         """Chronologically reversed input rows are normalized to period order."""
@@ -131,7 +127,7 @@ class TestPerformanceNormalization(unittest.TestCase):
         """Calculated-state replacement rejects an incomplete internal table."""
         performance = Performance(_narrow_performance_df())
 
-        with self.assertRaises(PpaError):
+        with self.assertRaises(PparError):
             performance.reset_narrow_df(
                 performance.narrow_df.drop(cols.TOTAL_RETURN)
             )
@@ -155,7 +151,7 @@ class TestPerformanceNormalization(unittest.TestCase):
             .alias(cols.CONTRIBUTION)
         )
 
-        with self.assertRaises(PpaError):
+        with self.assertRaises(PparError):
             performance.reset_narrow_df(inconsistent)
 
     def test_overall_rows_are_a_defensive_copy(self) -> None:
@@ -178,19 +174,19 @@ class TestPerformanceNormalization(unittest.TestCase):
             }
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[102]):
+        with self.assertRaises(PparError):
             Performance(duplicate_dates)
 
     def test_empty_filtered_input_raises_error_103(self) -> None:
         """Date filtering that leaves no periods reports an input error."""
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[103]):
+        with self.assertRaises(PparError):
             Performance(_narrow_performance_df(), thru_date=dt.date(1900, 1, 31))
 
     def test_duplicate_narrow_date_identifier_rows_raise_error_112(self) -> None:
         """A duplicate narrow asset row is rejected during validation."""
         duplicate = pl.concat([_narrow_performance_df(), _narrow_performance_df().head(1)])
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[112]):
+        with self.assertRaises(PparError):
             Performance(duplicate)
 
     def test_weights_that_do_not_net_to_one_raise_error_108(self) -> None:
@@ -202,7 +198,7 @@ class TestPerformanceNormalization(unittest.TestCase):
             .alias(cols.WEIGHT)
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[108]):
+        with self.assertRaises(PparError):
             Performance(invalid_weights)
 
     def test_null_returns_raise_error_104(self) -> None:
@@ -214,7 +210,7 @@ class TestPerformanceNormalization(unittest.TestCase):
             .alias(cols.RETURN)
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[104]):
+        with self.assertRaises(PparError):
             Performance(null_returns)
 
     def test_infinite_returns_and_weights_raise_error_104(self) -> None:
@@ -228,7 +224,7 @@ class TestPerformanceNormalization(unittest.TestCase):
                     .alias(column_name)
                 )
 
-                with self.assertRaisesRegex(PpaError, errs.ERRORS[104]):
+                with self.assertRaises(PparError):
                     Performance(invalid)
 
     def test_from_date_after_thru_date_raises_error_105(self) -> None:
@@ -237,7 +233,7 @@ class TestPerformanceNormalization(unittest.TestCase):
             pl.lit(dt.date(2024, 2, 1)).alias(cols.FROM_DATE)
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[105]):
+        with self.assertRaises(PparError):
             Performance(invalid_period)
 
     def test_overlapping_dates_raise_error_106(self) -> None:
@@ -249,7 +245,7 @@ class TestPerformanceNormalization(unittest.TestCase):
             )
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[106]):
+        with self.assertRaises(PparError):
             Performance(overlapping)
 
     def test_missing_return_and_weight_columns_raise_error_109(self) -> None:
@@ -263,7 +259,7 @@ class TestPerformanceNormalization(unittest.TestCase):
             }
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[109]):
+        with self.assertRaises(PparError):
             Performance(invalid_columns)
 
     def test_invalid_numeric_return_raises_error_110(self) -> None:
@@ -278,12 +274,12 @@ class TestPerformanceNormalization(unittest.TestCase):
             }
         )
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[110]):
+        with self.assertRaises(PparError):
             Performance(invalid_return)
 
     def test_requested_from_date_after_thru_date_raises_error_111(self) -> None:
         """A reversed requested date window is rejected before calculation."""
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[111]):
+        with self.assertRaises(PparError):
             Performance(
                 _narrow_performance_df(),
                 from_date=dt.date(2024, 2, 1),
@@ -292,12 +288,12 @@ class TestPerformanceNormalization(unittest.TestCase):
 
     def test_invalid_date_text_raises_error_803(self) -> None:
         """A malformed requested date string is rejected during normalization."""
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[803]):
+        with self.assertRaises(PparError):
             Performance(_narrow_performance_df(), from_date="2020-aa-bb")
 
     def test_missing_input_file_raises_error_802(self) -> None:
         """A missing file data source reports the requested input path."""
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[802]):
+        with self.assertRaises(PparError):
             Performance("_does_not_exist_")
 
 

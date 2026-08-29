@@ -1,0 +1,51 @@
+source: axys_apx
+
+portfolio: MEGA_ALPHA
+benchmark: MEGA_BENCH
+frequency: quarterly
+holidays: input/holidays.csv
+from_date: 2021-06-01
+thru_date: 2026-05-29
+classification: Economic Sector
+annual_risk_free_rate: 0.03
+
+files:
+  portfolio_performance:
+    path: input/portperf.csv
+    columns:
+      from_date: From Date
+      thru_date: Thru Date
+      portfolio_code: Portfolio Code
+      portfolio_name: Portfolio Name
+      portfolio_return: Portfolio Return
+  security_performance:
+    path: input/secperf.csv
+    columns:
+      from_date: From Date
+      thru_date: Thru Date
+      portfolio_code: Portfolio Code
+      security_symbol: Security Symbol
+      security_type: Security Type
+      weight: Beginning Weight
+      security_return: Security Return
+      contribution: Contribution
+  security_master:
+    path: input/secmast.csv
+    columns:
+      security_symbol: Security Symbol
+      security_type: Security Type
+      security_name: Security Name
+
+mappings:
+  Economic Sector:
+    classification_column: Sector Code
+    display_name_column: Sector Name
+  Asset Class:
+    classification_column: Asset Class Code
+    display_name_column: Asset Class Name
+  Country:
+    classification_column: Country Code
+    display_name_column: Country Name
+  Currency:
+    classification_column: Currency Code
+    display_name_column: Currency Name

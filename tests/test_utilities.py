@@ -2,25 +2,20 @@
 
 # Python imports
 from collections.abc import Mapping, Sequence
-import copy
 import datetime as dt
-import json
 from pathlib import Path
 import tempfile
-from typing import Any, Iterable
+from typing import Iterable
 import unittest
-import zipfile
 
 # Third-party imports
 import polars as pl
-import yaml
 
 # Project imports
-from ppar.analytics import Analytics
-from ppar.analytics.attribution import Attribution
-import ppar.analytics.schema as cols
-import ppar.errors as errs
-from ppar.errors import PpaError
+from ppar import Analytics
+from ppar.attribution import Attribution
+import ppar.schema as cols
+from ppar.errors import PparError
 import ppar.utilities as util
 
 Period = tuple[dt.date, dt.date]
@@ -31,115 +26,12 @@ _DATA_DIRECTORIES = (
     Path("tests/data"),
     Path("../tests/data"),
     Path("data"),
-    Path("ppar/setup_templates"),
 )
 _AXYS_DIRECTORIES = [directory / "axys" for directory in _DATA_DIRECTORIES]
 _DEFAULT_AXYS_SNAPSHOT_DIRECTORY = "snapshots/axys_a"
 _CLASSIFICATION_DIRECTORIES = [directory / "classifications" for directory in _DATA_DIRECTORIES]
 _MAPPING_DIRECTORIES = [directory / "mappings" for directory in _DATA_DIRECTORIES]
 _PERFORMANCE_DIRECTORIES = [directory / "performance" for directory in _DATA_DIRECTORIES]
-
-_AUDIT_TEST_SOURCE_COLUMNS: dict[str, dict[str, tuple[str, ...]]] = {
-    "portfolio_performance": {
-        "portfolio_id": ("PORTFOLIO_ID", "PORTFOLIO_CODE", "PORT"),
-        "from_date": ("FROM_DATE",),
-        "thru_date": ("THRU_DATE",),
-        "portfolio_return": ("PORT_RETURN", "RETURN", "RET"),
-        "base_currency": ("BASE_CURRENCY",),
-    },
-    "security_performance": {
-        "portfolio_id": ("PORTFOLIO_ID", "PORTFOLIO_CODE", "PORT"),
-        "security_id": ("SECURITY_ID", "SEC"),
-        "from_date": ("FROM_DATE",),
-        "thru_date": ("THRU_DATE",),
-        "security_return": ("SEC_RETURN", "RETURN", "RET"),
-    },
-    "holdings": {
-        "portfolio_id": ("PORTFOLIO_ID", "PORTFOLIO_CODE", "PORT"),
-        "security_id": ("SECURITY_ID", "SEC"),
-        "holding_date": ("HOLDING_DATE", "POSITION_DATE"),
-        "quantity": ("QUANTITY", "QTY"),
-        "price": ("PRICE",),
-        "market_value": ("MKT_VAL", "MV"),
-        "base_market_value": ("BASE_MKT_VAL", "BASE_MV"),
-        "cost": ("COST",),
-        "accrued": ("ACCRUED",),
-        "base_accrued": ("BASE_ACCRUED_INCOME", "BASE_ACCRUED"),
-        "currency": ("CURRENCY",),
-        "base_currency": ("BASE_CURRENCY",),
-    },
-    "transactions": {
-        "portfolio_id": ("PORTFOLIO_ID", "PORTFOLIO_CODE", "PORT"),
-        "security_id": ("SECURITY_ID", "SEC"),
-        "transaction_id": ("TRANSACTION_ID",),
-        "transaction_date": ("TRANSACTION_DATE", "TRADE_DATE"),
-        "settlement_date": ("SETTLEMENT_DATE", "SETTLE_DATE"),
-        "transaction_code": ("TRANSACTION_CODE", "TRAN"),
-        "original_cost_date": ("ORIGINAL_COST_DATE", "ORIG_COST_DATE"),
-        "transaction_security_type": ("SECURITY_TYPE", "SEC_TYPE"),
-        "source_destination_type": ("SOURCE_DESTINATION_TYPE", "SRC_DEST_TYPE"),
-        "source_destination_symbol": (
-            "SOURCE_DESTINATION_SYMBOL",
-            "SRC_DEST_SYMBOL",
-        ),
-        "special_security_type": ("SPECIAL_SECURITY_TYPE", "SPECIAL_SEC_TYPE"),
-        "special_security_symbol": (
-            "SPECIAL_SECURITY_SYMBOL",
-            "SPECIAL_SEC_SYMBOL",
-        ),
-        "transaction_category": (
-            "TRANSACTION_CATEGORY",
-            "TXN_CATEGORY",
-            "ACTIVITY_CATEGORY",
-        ),
-        "cash_flow_sign": ("CASH_FLOW_SIGN",),
-        "performance_flow_sign": ("PERFORMANCE_FLOW_SIGN",),
-        "quantity": ("QUANTITY", "QTY"),
-        "price": ("PRICE",),
-        "amount": ("AMOUNT",),
-        "base_amount": ("BASE_AMOUNT",),
-        "commission": ("COMMISSION",),
-        "currency": ("CURRENCY",),
-        "base_currency": ("BASE_CURRENCY",),
-        "broker": ("BROKER",),
-        "original_cost": ("ORIGINAL_COST", "ORIG_COST"),
-    },
-    "splits": {
-        "security_id": ("SECURITY_ID", "SEC"),
-        "security_name": ("SECURITY_NAME",),
-        "ticker": ("TICKER",),
-        "split_date": ("SPLIT_DATE",),
-        "split_factor": ("SPLIT_FACTOR",),
-    },
-    "security_master": {
-        "security_id": ("SECURITY_ID", "SEC"),
-        "security_name": ("SECURITY_NAME",),
-        "ticker": ("TICKER",),
-        "security_type": ("SECURITY_TYPE", "SEC_TYPE"),
-        "asset_class_code": ("ASSET_CLASS_CODE",),
-        "sector_code": ("SECTOR_CODE",),
-        "sector": ("SECTOR", "SECTOR_NAME"),
-        "country_code": ("COUNTRY_CODE",),
-        "country": ("COUNTRY", "COUNTRY_NAME"),
-        "currency": ("CURRENCY", "CURRENCY_CODE"),
-    },
-}
-
-
-def extract_audit_support(
-    paths: dict[str, Path],
-    output_directory: Path,
-) -> dict[str, Path]:
-    """Extract compact Audit support and expose its artifact paths to tests."""
-    with zipfile.ZipFile(paths["audit_support"]) as archive:
-        archive.extractall(output_directory)
-        manifest: dict[str, Any] = json.loads(
-            archive.read("supporting_files/manifest.json").decode("utf-8")
-        )
-    for name, relative_path in manifest["artifacts"].items():
-        paths.setdefault(name, output_directory / relative_path)
-    return paths
-
 
 def make_performance_df(
     periods: Sequence[Period],
@@ -183,7 +75,7 @@ def axys_data_path(file_name: str, suffix: str = ".csv") -> Path:
         Resolved path to the fixture file.
 
     Raises:
-        PpaError: If the named fixture is not found.
+        PparError: If the named fixture is not found.
     """
     candidate_file_names = [file_name]
     if not Path(file_name).parent.parts:
@@ -191,78 +83,9 @@ def axys_data_path(file_name: str, suffix: str = ".csv") -> Path:
     for candidate_file_name in candidate_file_names:
         try:
             return resolve_file_path(_AXYS_DIRECTORIES, candidate_file_name, suffix).resolve()
-        except PpaError:
+        except PparError:
             continue
     return resolve_file_path(_AXYS_DIRECTORIES, file_name, suffix).resolve()
-
-
-def write_audit_test_yaml(path: Path, contents: object) -> None:
-    """Write a synthetic Audit YAML with explicit mappings for its CSV headers.
-
-    This helper migrates compact test fixtures from the retired production alias
-    inference. It inspects only files created by the test and writes the selected
-    source headings into a real schema YAML referenced by both snapshots.
-
-    Args:
-        path: Audit YAML path to write.
-        contents: YAML-compatible configuration object.
-    """
-    if not isinstance(contents, dict):
-        path.write_text(yaml.safe_dump(contents), encoding="utf-8")
-        return
-    configuration = copy.deepcopy(contents)
-    snapshots = configuration.get("snapshots")
-    files = configuration.get("files")
-    if not isinstance(snapshots, dict) or not isinstance(files, dict):
-        path.write_text(yaml.safe_dump(configuration), encoding="utf-8")
-        return
-
-    schema_files: dict[str, dict[str, dict[str, str]]] = {}
-    for dataset_name, file_definition in files.items():
-        candidates_by_field = _AUDIT_TEST_SOURCE_COLUMNS.get(str(dataset_name))
-        if candidates_by_field is None:
-            continue
-        if isinstance(file_definition, str):
-            relative_file_path = Path(file_definition)
-        elif isinstance(file_definition, dict) and isinstance(
-            file_definition.get("path"), str
-        ):
-            relative_file_path = Path(file_definition["path"])
-        else:
-            continue
-        available_columns: set[str] = set()
-        for snapshot in snapshots.values():
-            if not isinstance(snapshot, dict) or not isinstance(snapshot.get("path"), str):
-                continue
-            source_path = path.parent / snapshot["path"] / relative_file_path
-            if source_path.exists():
-                available_columns.update(pl.read_csv(source_path, n_rows=0).columns)
-        mappings: dict[str, str] = {}
-        for normalized_field, candidates in candidates_by_field.items():
-            exact_name = normalized_field
-            if exact_name in available_columns:
-                mappings[normalized_field] = exact_name
-                continue
-            source_name = next(
-                (candidate for candidate in candidates if candidate in available_columns),
-                None,
-            )
-            if source_name is not None:
-                mappings[normalized_field] = source_name
-        if mappings:
-            schema_files[str(dataset_name)] = {"columns": mappings}
-
-    if schema_files:
-        schema = {"files": schema_files}
-        schema_name = "source_column_mappings.yaml"
-        (path.parent / schema_name).write_text(
-            yaml.safe_dump(schema, sort_keys=False),
-            encoding="utf-8",
-        )
-        for snapshot in snapshots.values():
-            if isinstance(snapshot, dict):
-                snapshot.setdefault("schema", schema_name)
-    path.write_text(yaml.safe_dump(configuration), encoding="utf-8")
 
 
 def classification_data_path(classification_name: str | None) -> util.PathLike | None:
@@ -276,14 +99,14 @@ def classification_data_path(classification_name: str | None) -> util.PathLike |
         requested.
 
     Raises:
-        PpaError: If a requested fixture is not found.
+        PparError: If a requested fixture is not found.
     """
     if classification_name is None:
         return None
     return resolve_file_path(_CLASSIFICATION_DIRECTORIES, classification_name, ".csv")
 
 
-def get_attribution(
+def attribution(
     analytics: Analytics,
     classification_name: str | None = None,
     classification_data_source: util.ClassificationDataSource | None = None,
@@ -304,7 +127,7 @@ def get_attribution(
         Calculated attribution object.
 
     Raises:
-        PpaError: If a required fixture cannot be found or attribution
+        PparError: If a required fixture cannot be found or attribution
             construction fails.
     """
     classification_name = util.normalize_optional_string(classification_name)
@@ -321,7 +144,7 @@ def get_attribution(
     else:
         mapping_data_sources = (mapping_data_source, mapping_data_source)
 
-    return analytics.get_attribution(
+    return analytics.attribution(
         classification_name,
         classification_data_source,
         mapping_data_sources,
@@ -362,7 +185,7 @@ def mapping_data_paths(
         Two-item tuple of portfolio and benchmark mapping sources.
 
     Raises:
-        PpaError: If a required mapping fixture cannot be found.
+        PparError: If a required mapping fixture cannot be found.
     """
     if to_classification_name is None:
         return (None, None)
@@ -393,7 +216,7 @@ def performance_data_path(performance_name: str) -> Path:
         Resolved performance fixture path.
 
     Raises:
-        PpaError: If the fixture is not found.
+        PparError: If the fixture is not found.
     """
     return resolve_file_path(_PERFORMANCE_DIRECTORIES, performance_name, ".csv")
 
@@ -412,7 +235,7 @@ def resolve_file_path(
         First matching file path.
 
     Raises:
-        PpaError: If the file does not exist in any candidate directory.
+        PparError: If the file does not exist in any candidate directory.
     """
     # Append ".csv".
     if suffix is not None and not file_name.endswith(suffix):
@@ -425,7 +248,7 @@ def resolve_file_path(
             return file_path
 
     # Throw exception if file_path was not found.
-    raise PpaError(util.file_path_error(file_name), None)
+    raise PparError(util.file_path_error(file_name))
 
 
 class TestUtilities(unittest.TestCase):
@@ -438,10 +261,10 @@ class TestUtilities(unittest.TestCase):
 
     def test_carino_linking_coefficient_rejects_undefined_returns(self) -> None:
         """Carino linking reports error 203 for returns at or below negative one."""
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[203]):
+        with self.assertRaises(PparError):
             util.carino_linking_coefficient(-1.0, 0.03)
 
-        with self.assertRaisesRegex(PpaError, errs.ERRORS[203]):
+        with self.assertRaises(PparError):
             util.carino_linking_coefficient(0.05, -1.0)
 
     def test_carino_linking_coefficient_valid(self) -> None:
@@ -471,18 +294,18 @@ class TestUtilities(unittest.TestCase):
         self.assertFalse(util.file_path_exists("not_a_real_file.xyz"))
         self.assertFalse(util.file_path_exists(Path("not_a_real_file.xyz")))
 
-    def test_empty_file_path_error_is_error_804(self) -> None:
-        """An empty requested file path reports error 804."""
-        self.assertEqual(util.file_path_error(""), errs.ERRORS[804])
+    def test_empty_file_path_error_is_actionable(self) -> None:
+        """An empty requested file path explains the missing input."""
+        self.assertEqual(util.file_path_error(""), "Missing data source.")
 
     def test_demo_data_sources_return_paths(self) -> None:
         """Packaged demo data helpers resolve existing Path instances."""
         performance_path = (
-            Path("ppar/setup_templates/generic_analytics/performance")
+            Path("src/ppar/templates/generic/input/performance")
             / "Mega-Cap Benchmark.csv"
         )
         classification_path = (
-            Path("ppar/setup_templates/generic_analytics/classifications")
+            Path("src/ppar/templates/generic/input/classifications")
             / "Security.csv"
         )
 

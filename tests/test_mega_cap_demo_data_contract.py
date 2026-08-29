@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import datetime as dt
 from pathlib import Path
+import shlex
 import tempfile
+import subprocess
+import sys
 import unittest
 
 import polars as pl
 
-from ppar import Analytics, run
+from ppar import Analytics
 from ppar.attribution import View
 from ppar.cli.setup import setup
-from ppar.config import settings
 from ppar.frequency import Frequency
 import ppar.schema as cols
 
@@ -76,16 +78,35 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
         self.assertEqual(summary[cols.THRU_DATE].item(-1), dt.date(2026, 3, 31))
 
     def test_setup_variants_are_valid_and_run_complete_workflows(self) -> None:
-        """Both data-only templates work without a generated Python runner."""
+        """Both generated tutorial scripts run complete workflows without YAML."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for source, generic in (("axys_apx", False), ("generic", True)):
-                workspace = setup(root / source, generic=generic)
-                resolved = settings(workspace)
-                result = run(workspace)
-                self.assertEqual(resolved.source, source)
-                self.assertEqual({path.name for path in result.artifacts}, _EXPECTED_ARTIFACTS)
-                self.assertFalse(any(workspace.rglob("*.py")))
+                directory = setup(root / source, generic=generic)
+                readme = (directory / "README.md").read_text(encoding="utf-8")
+                self.assertIn(
+                    f"python {shlex.quote(str(directory / 'ppar_demo.py'))}",
+                    readme,
+                )
+                self.assertNotIn("__PPAR_DEMO_PATH__", readme)
+                completed = subprocess.run(
+                    [sys.executable, directory / "ppar_demo.py"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                output_lines = completed.stdout.splitlines()
+                self.assertEqual(output_lines[0], "Output files:")
+                self.assertNotIn("Output directory:", completed.stdout)
+                artifacts = {
+                    path.name for path in (directory / "output").iterdir() if path.is_file()
+                }
+                self.assertEqual(artifacts, _EXPECTED_ARTIFACTS)
+                self.assertFalse((directory / "ppar.yaml").exists())
+                self.assertEqual(
+                    [path.name for path in directory.rglob("*.py")],
+                    ["ppar_demo.py"],
+                )
 
 
 if __name__ == "__main__":

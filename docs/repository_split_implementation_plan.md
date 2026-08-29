@@ -1,8 +1,18 @@
-# ppar and perfaud Repository Split Implementation Plan
+# Historical ppar and perfaud Repository Split Implementation Plan
+
+> **Current ppar workflow (August 29, 2026):** The split described below is complete,
+> but its YAML-based ppar execution contract has since been superseded. ppar now keeps
+> only `ppar setup DIRECTORY` (plus `--generic`). Setup creates one tutorial-style
+> `ppar_demo.py` that contains all paths, settings, and report choices as Python values;
+> users execute that script directly. ppar no longer has a `run` CLI, root `run()` API,
+> `RunResult`, generated `ppar.yaml`, or workspace service. Both demonstrations publish
+> atomically through `ppar.publication.atomic_output_directory`. The perfaud workflow
+> described by this plan is unchanged. Current ppar behavior is authoritative in the
+> root README, `docs/configuration.md`, and `docs/python_api.md`.
 
 ## Authority
 
-This is the implementation authority for separating the current repository
+This records the implementation authority used to separate the former repository
 into two independent products. It defines the final product contract, code ownership,
 execution sequence, acceptance gates, and hosted cutover.
 
@@ -111,9 +121,9 @@ Expected product errors are concise, actionable, and traceback-free. Unexpected
 programming errors are not caught and retain normal tracebacks. There is no
 `--verbose` mode.
 
-Successful setup prints only the workspace, selected source, configuration path, and
-exact next command. Successful run prints only the workspace, fixed output directory,
-written artifacts, and one validation-success statement.
+Successful setup prints only the destination directory, selected source, configuration
+path, and exact next command. Successful run prints only the source directory, fixed
+output directory, written output files, and one validation-success statement.
 
 ### Workspace and Output
 

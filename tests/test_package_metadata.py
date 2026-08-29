@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import fields
 from importlib import metadata, resources
 from pathlib import Path
 import tomllib
@@ -11,7 +10,6 @@ from typing import Any
 import unittest
 
 import ppar
-from ppar.workspace import RunResult
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -46,21 +44,12 @@ class TestPackageMetadata(unittest.TestCase):
             self.assertNotIn(removed, " ".join(dependencies).lower())
 
     def test_root_exports_are_exact(self) -> None:
-        """The root exposes only the primary facade, runner, and version."""
-        self.assertEqual(ppar.__all__, ["Analytics", "run", "__version__"])
+        """The root exposes only the primary facade and version."""
+        self.assertEqual(ppar.__all__, ["Analytics", "__version__"])
         self.assertTrue(callable(ppar.Analytics))
-        self.assertTrue(callable(ppar.run))
 
-    def test_run_result_contract_is_exact(self) -> None:
-        """The workspace result is frozen and has exactly three fields."""
-        self.assertEqual(
-            [field.name for field in fields(RunResult)],
-            ["workspace", "output_directory", "artifacts"],
-        )
-        self.assertTrue(getattr(RunResult, "__dataclass_params__").frozen)
-
-    def test_templates_are_data_only_resources(self) -> None:
-        """Both installed templates are complete and contain no Python runner."""
+    def test_templates_contain_one_tutorial_runner(self) -> None:
+        """Both installed templates contain one root-level Python demo."""
         templates = resources.files("ppar").joinpath("templates")
         self.assertEqual(
             sorted(item.name for item in templates.iterdir()),
@@ -69,8 +58,11 @@ class TestPackageMetadata(unittest.TestCase):
         for source in ("axys_apx", "generic"):
             template = templates.joinpath(source)
             names = sorted(item.name for item in template.iterdir())
-            self.assertEqual(names, ["README.md", "input", "ppar.yaml"])
-        self.assertFalse(any((_ROOT / "src/ppar/templates").rglob("*.py")))
+            self.assertEqual(names, ["README.md", "input", "ppar_demo.py"])
+            self.assertEqual(
+                [path.name for path in (_ROOT / "src/ppar/templates" / source).rglob("*.py")],
+                ["ppar_demo.py"],
+            )
 
     def test_source_never_imports_perfaud(self) -> None:
         """No runtime module depends on the neighboring Audit product."""

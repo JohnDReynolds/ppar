@@ -69,6 +69,7 @@ class AxysSpecification:
 
     Attributes:
         path: Filesystem path to the YAML specification.
+        base_directory: Directory against which relative source paths resolve.
         values: Parsed YAML settings dictionary.
     """
 
@@ -92,6 +93,7 @@ class AxysSpecification:
                 dictionary.
         """
         self.path = Path(path)
+        self.base_directory = self.path.parent
         self._error_message = error_message
         if values is None:
             with open(self.path, "r", encoding=util.ENCODING) as file:
@@ -107,6 +109,39 @@ class AxysSpecification:
         self._validate_root_keys()
         self._validate_files()
 
+    @classmethod
+    def from_values(
+        cls,
+        base_directory: util.PathLike,
+        error_message: ErrorMessage,
+        values: Mapping[str, object],
+    ) -> AxysSpecification:
+        """Create a specification directly from Python values.
+
+        Args:
+            base_directory: Directory against which relative source paths are
+                resolved.
+            error_message: Callback that adds facade-level source context to
+                validation messages.
+            values: Source paths, column mappings, classifications, and other
+                Axys/APX loading settings.
+
+        Returns:
+            Validated specification that does not read a YAML file.
+
+        Raises:
+            PparError: If the values have an invalid structure or unsupported
+                keys.
+        """
+        instance = cls.__new__(cls)
+        instance.path = Path(base_directory).expanduser().resolve()
+        instance.base_directory = instance.path
+        instance._error_message = error_message
+        instance.values = dict(values)
+        instance._validate_root_keys()
+        instance._validate_files()
+        return instance
+
     def resolve_path(self, file_path: util.PathLike) -> Path:
         """Return an absolute or specifications-relative source path.
 
@@ -118,7 +153,7 @@ class AxysSpecification:
             specification file.
         """
         path = Path(file_path)
-        return path if path.is_absolute() else self.path.parent / path
+        return path if path.is_absolute() else self.base_directory / path
 
     def performance_path(
         self,

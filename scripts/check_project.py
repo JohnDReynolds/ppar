@@ -35,7 +35,7 @@ def _venv_command(environment: Path, name: str) -> Path:
 
 
 def _check_documentation() -> None:
-    """Check the small documentation spine and canonical configuration references."""
+    """Check the small documentation spine and executable demonstration references."""
     required = (
         "README.md",
         "docs/configuration.md",
@@ -47,28 +47,14 @@ def _check_documentation() -> None:
         if not (_ROOT / relative).is_file():
             raise RuntimeError(f"Missing active documentation: {relative}")
     configuration = (_ROOT / "docs/configuration.md").read_text(encoding="utf-8")
-    for key in (
-        "source",
-        "portfolio",
-        "benchmark",
-        "frequency",
-        "holidays",
-        "from_date",
-        "thru_date",
-        "classification",
-        "annual_minimum_acceptable_return",
-        "annual_risk_free_rate",
-        "confidence_level",
-        "portfolio_value",
-        "currency_symbol",
-    ):
-        if f"`{key}`" not in configuration:
-            raise RuntimeError(f"Configuration documentation omits {key}.")
+    for value in ("ppar_demo.py", "AxysData.from_values()", "CLASSIFICATION_VIEWS"):
+        if value not in configuration:
+            raise RuntimeError(f"Demonstration documentation omits {value}.")
     readme = (_ROOT / "README.md").read_text(encoding="utf-8")
     for command in (
         "ppar setup ./my_ppar",
         "ppar setup ./my_generic_ppar --generic",
-        "ppar run ./my_ppar",
+        "python ./my_ppar/ppar_demo.py",
     ):
         if command not in readme:
             raise RuntimeError(f"README omits executable command: {command}")
@@ -111,10 +97,10 @@ def _build_and_check_wheel(directory: Path) -> Path:
         raise RuntimeError(f"Wheel contains forbidden files: {forbidden}")
     required_resources = {
         "ppar/py.typed",
-        "ppar/templates/axys_apx/ppar.yaml",
+        "ppar/templates/axys_apx/ppar_demo.py",
         "ppar/templates/axys_apx/README.md",
         "ppar/templates/axys_apx/input/portperf.csv",
-        "ppar/templates/generic/ppar.yaml",
+        "ppar/templates/generic/ppar_demo.py",
         "ppar/templates/generic/README.md",
         "ppar/templates/generic/input/performance/Mega-Cap Alpha Portfolio.csv",
     }
@@ -149,7 +135,7 @@ def _installed_wheel_smoke(wheel: Path, directory: Path) -> None:
         "origin=Path(ppar.__file__).resolve(); "
         "assert 'site-packages' in str(origin), origin; "
         "assert importlib.util.find_spec('perfaud') is None; "
-        "assert ppar.__all__ == ['Analytics', 'run', '__version__']; "
+        "assert ppar.__all__ == ['Analytics', '__version__']; "
         "print(origin)"
     )
     _run([python, "-c", code], cwd=smoke, env=smoke_env)
@@ -167,11 +153,7 @@ def _installed_wheel_smoke(wheel: Path, directory: Path) -> None:
         if generic:
             setup_command.append("--generic")
         _run(setup_command, cwd=smoke, env=smoke_env)
-        _run(
-            [python, "-m", "ppar.cli", "run", workspace],
-            cwd=smoke,
-            env=smoke_env,
-        )
+        _run([python, workspace / "ppar_demo.py"], cwd=smoke, env=smoke_env)
         artifacts = [path for path in (workspace / "output").iterdir() if path.is_file()]
         if len(artifacts) != 11:
             raise RuntimeError(

@@ -1,13 +1,15 @@
-# ppar Generic workspace
+# ppar Generic demonstration
 
-This vendor-neutral workspace is ready to run:
+Run the tutorial-style demonstration script from any working directory:
 
 ```bash
-ppar run .
+python __PPAR_DEMO_PATH__
 ```
 
-Replace the demonstration CSV files in `input/`, then edit `ppar.yaml` to match their
-paths and reporting settings. Performance files use the narrow columns `from_date`,
-`thru_date`, `identifier`, `weight`, and `return`. Classification and mapping files
-are headerless two-column CSV files. Output is always replaced atomically in
-`output/`.
+To run with your own data, replace the demonstration CSV files in `input/`, then edit
+`ppar_demo.py` to match their paths, dates, calculation assumptions, classification,
+and selected reports. Performance files use the columns `from_date`, `thru_date`,
+`identifier`, `weight`, and `return`.
+Classification and mapping files are headerless two-column CSV files. Each successful
+run atomically replaces the contents of `output/`; a failed run leaves the previous
+output intact.

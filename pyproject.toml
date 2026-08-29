@@ -56,10 +56,10 @@ where = ["src"]
 ppar = [
     "py.typed",
     "templates/axys_apx/*.md",
-    "templates/axys_apx/*.yaml",
+    "templates/axys_apx/*.py",
     "templates/axys_apx/input/*.csv",
     "templates/generic/*.md",
-    "templates/generic/*.yaml",
+    "templates/generic/*.py",
     "templates/generic/input/*.csv",
     "templates/generic/input/classifications/*.csv",
     "templates/generic/input/mappings/*.csv",

@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 from pathlib import Path
+import runpy
 import shutil
 import statistics
 import subprocess
 import sys
 import tempfile
 import time
+from typing import cast
 
 import polars as pl
 from polars.testing import assert_frame_equal
@@ -22,6 +24,10 @@ from ppar.frequency import Frequency
 
 _ROOT = Path(__file__).resolve().parents[1]
 _TEMPLATE = _ROOT / "src" / "ppar" / "templates" / "axys_apx"
+_AXYS_SOURCE_VALUES = cast(
+    dict[str, object],
+    runpy.run_path(str(_TEMPLATE / "ppar_demo.py"))["AXYS_SOURCE_VALUES"],
+)
 _ALLOWED_SCALES = (*range(10, 101, 10), 500)
 _SELECTED_SCALE = 10
 _HISTORY_SCALE = 5
@@ -220,10 +226,11 @@ def _prepare_selected(destination: Path, scale: int) -> tuple[Path, int]:
 def _prepare_history(destination: Path) -> tuple[Path, int, int]:
     """Create the established fivefold, five-year-block history workload."""
     site = _copy_template(destination)
-    config_path = site / "ppar.yaml"
-    config_path.write_text(
-        config_path.read_text(encoding="utf-8").replace(
-            "thru_date: 2026-05-29", "thru_date: 2046-05-29"
+    demo_path = site / "ppar_demo.py"
+    demo_path.write_text(
+        demo_path.read_text(encoding="utf-8").replace(
+            "THRU_DATE: dt.date | None = dt.date(2026, 5, 29)",
+            "THRU_DATE: dt.date | None = dt.date(2046, 5, 29)",
         ),
         encoding="utf-8",
     )
@@ -246,7 +253,7 @@ def _prepare_history(destination: Path) -> tuple[Path, int, int]:
 
 def _selected_tables(site: Path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Calculate security, sector, and risk tables for a scale workspace."""
-    source = AxysData(site / "ppar.yaml")
+    source = AxysData.from_values(site, _AXYS_SOURCE_VALUES)
     security_portfolio = source.get_portfolio(
         "MEGA_ALPHA", classification_name="Security"
     )
@@ -310,20 +317,8 @@ def _check_large_site(workspace: Path, scale: int) -> None:
     """Run the unchanged large-site gate and require identical visible tables."""
     baseline, baseline_rows = _prepare_large_site(workspace / "baseline", 1)
     scaled, scaled_rows = _prepare_large_site(workspace / "scaled", scale)
-    baseline_command: list[str | Path] = [
-        sys.executable,
-        "-m",
-        "ppar.cli",
-        "run",
-        baseline,
-    ]
-    scaled_command: list[str | Path] = [
-        sys.executable,
-        "-m",
-        "ppar.cli",
-        "run",
-        scaled,
-    ]
+    baseline_command: list[str | Path] = [sys.executable, baseline / "ppar_demo.py"]
+    scaled_command: list[str | Path] = [sys.executable, scaled / "ppar_demo.py"]
     baseline_elapsed = _run_median_elapsed(baseline_command)
     scaled_elapsed = _run_median_elapsed(
         scaled_command,
@@ -404,21 +399,19 @@ def _check_selected(workspace: Path) -> None:
 
 
 def _check_history(workspace: Path) -> None:
-    """Run the unchanged fivefold history gate through the public command."""
+    """Run the unchanged fivefold history gate through the public demo script."""
     baseline, baseline_security_rows = _prepare_large_site(
         workspace / "history_baseline", 1
     )
     scaled, scaled_rows, periods = _prepare_history(workspace / "history_scaled")
     if periods != 60 * _HISTORY_SCALE:
         raise RuntimeError(f"Expected 300 history periods, found {periods}.")
-    baseline_elapsed = _run(
-        [sys.executable, "-m", "ppar.cli", "run", baseline]
-    )
+    baseline_elapsed = _run([sys.executable, baseline / "ppar_demo.py"])
     _, _, warning, failure = _sublinear_scaling_result(
         "Analytics long-history", _HISTORY_SCALE, 1.0, 1.0
     )
     scaled_elapsed = _run(
-        [sys.executable, "-m", "ppar.cli", "run", scaled],
+        [sys.executable, scaled / "ppar_demo.py"],
         timeout_seconds=_scaled_timeout(baseline_elapsed, failure),
     )
     artifacts = list((scaled / "output").iterdir())

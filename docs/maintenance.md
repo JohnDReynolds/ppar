@@ -1,11 +1,15 @@
 # Maintenance
 
-Create the repository environment and install the complete development surface:
+Create the repository environment with Python 3.12.1 and install the complete
+development surface:
 
 ```bash
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 ./.venv/bin/python -m pip install -c constraints/ci.txt -e ".[dev]"
 ```
+
+Python 3.11.9 remains the minimum supported version and is tested separately in the
+compatibility workflow.
 
 Run the routine product gate:
 
@@ -13,9 +17,9 @@ Run the routine product gate:
 ./.venv/bin/python scripts/check_project.py
 ```
 
-It runs tests, mypy, Pyright, pylint error checks, documentation/configuration drift,
+It runs tests, mypy, Pyright, pylint error checks, documentation/demonstration drift,
 README-image drift, a direct universal-wheel inspection, and installed-wheel Axys/APX
-and Generic workflows outside the checkout.
+and Generic demonstration scripts outside the checkout.
 
 After major cross-cutting, reporting, safety, or performance work, run the unchanged
 500x gate:

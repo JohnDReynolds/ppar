@@ -73,13 +73,82 @@ class AxysData:  # pylint: disable=too-few-public-methods,too-many-instance-attr
             PparError: If a source path override references an unknown source.
         """
         self.specifications_path = Path(specifications_path)
-
-        self._specification = AxysSpecification(
-            self.specifications_path,
+        specification = AxysSpecification(
+            specifications_path,
             self._error_message,
             specification_values,
         )
-        self.specifications: dict[str, Any] = self._specification.values
+        self._initialize(
+            Path(specifications_path),
+            specification,
+            portfolio_performance_path,
+            security_performance_path,
+            source_path_overrides,
+        )
+
+    @classmethod
+    def from_values(
+        cls,
+        base_directory: util.PathLike,
+        values: Mapping[str, object],
+        *,
+        portfolio_performance_path: util.PathLike | None = None,
+        security_performance_path: util.PathLike | None = None,
+        source_path_overrides: Mapping[str, util.PathLike] | None = None,
+    ) -> AxysData:
+        """Create an Axys/APX loader from Python values without YAML.
+
+        Args:
+            base_directory: Directory against which relative source paths are
+                resolved.
+            values: Source paths, source-column mappings, classifications, and
+                mappings expressed as ordinary Python values.
+            portfolio_performance_path: Optional portfolio-performance CSV
+                path overriding ``values``.
+            security_performance_path: Optional security-performance CSV path
+                overriding ``values``.
+            source_path_overrides: Optional classification source paths keyed
+                by source name.
+
+        Returns:
+            Configured Axys/APX source loader.
+
+        Raises:
+            PparError: If the values or source overrides are invalid.
+
+        Examples:
+            ``AxysData.from_values(Path(__file__).parent, {"files": {...}})``
+            resolves relative file paths beside the calling script.
+        """
+        instance = cls.__new__(cls)
+        resolved_base = Path(base_directory).expanduser().resolve()
+        instance.specifications_path = resolved_base
+        specification = AxysSpecification.from_values(
+            resolved_base,
+            instance._error_message,
+            values,
+        )
+        instance._initialize(
+            resolved_base,
+            specification,
+            portfolio_performance_path,
+            security_performance_path,
+            source_path_overrides,
+        )
+        return instance
+
+    def _initialize(
+        self,
+        specifications_path: Path,
+        specification: AxysSpecification,
+        portfolio_performance_path: util.PathLike | None,
+        security_performance_path: util.PathLike | None,
+        source_path_overrides: Mapping[str, util.PathLike] | None,
+    ) -> None:
+        """Initialize shared state for file-based and Python-value construction."""
+        self.specifications_path = specifications_path
+        self._specification = specification
+        self.specifications = self._specification.values
         self.portfolio_performance_path = self._specification.performance_path(
             portfolio_performance_path, "portfolio_performance"
         )
@@ -91,7 +160,6 @@ class AxysData:  # pylint: disable=too-few-public-methods,too-many-instance-attr
             self._error_message,
             source_path_overrides,
         )
-
         self._supporting_source_loader = AxysSupportingSourceLoader(
             self._specification,
             self._classification_loader,

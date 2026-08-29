@@ -1,11 +1,13 @@
-# ppar Axys/APX workspace
+# ppar Axys/APX demonstration
 
-This workspace is ready to run:
+Run the tutorial-style demonstration script from any working directory:
 
 ```bash
-ppar run .
+python __PPAR_DEMO_PATH__
 ```
 
-Replace the demonstration CSV files in `input/` with reviewed Axys/APX exports, then
-edit `ppar.yaml` to match their paths, columns, portfolio, benchmark, dates, and
-classification. Output is always replaced atomically in `output/`.
+To run with your own data, replace the demonstration CSV files in `input/` with your
+Axys/APX exports, then edit `ppar_demo.py` to match their paths, columns, portfolio,
+benchmark, dates, classification, calculation assumptions, and selected reports. Each
+successful run atomically replaces the contents of `output/`; a failed run leaves the
+previous output intact.

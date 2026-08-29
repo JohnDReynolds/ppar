@@ -13,32 +13,34 @@ ppar requires Python 3.11.9 or newer.
 ```bash
 python -m pip install ppar
 
-# Axys/APX demonstration workspace (the default)
+# Axys/APX demonstration (the default)
 ppar setup ./my_ppar
-ppar run ./my_ppar
+python ./my_ppar/ppar_demo.py
 
-# Vendor-neutral demonstration workspace
+# Vendor-neutral demonstration
 ppar setup ./my_generic_ppar --generic
-ppar run ./my_generic_ppar
+python ./my_generic_ppar/ppar_demo.py
 ```
 
-Both setup commands create a complete runnable workspace:
+Both setup commands create a self-contained demonstration directory:
 
 ```text
 my_ppar/
   README.md
-  ppar.yaml
+  ppar_demo.py
   input/
   output/
 ```
 
-Edit `ppar.yaml` and replace the demonstration files under `input/` with your data.
-Every run writes the complete result atomically to `output/`; a failed run leaves the
+The extensively commented `ppar_demo.py` is both a tutorial and the executable
+workflow. Edit its ordinary Python values to choose input paths, calculation
+assumptions, and reports, then replace the demonstration files under `input/` with your
+data. Each successful script run atomically replaces `output/`; a failed run leaves the
 previous successful output intact.
 
 ## What it produces
 
-The standard quarterly workspace writes security and classification attribution
+The standard quarterly demonstration writes security and classification attribution
 tables, attribution and contribution charts, cumulative return charts, heatmaps, and
 an ex-post risk-statistics table.
 

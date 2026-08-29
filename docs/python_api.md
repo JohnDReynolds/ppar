@@ -3,11 +3,11 @@
 The root API is deliberately small:
 
 ```python
-from ppar import Analytics, run, __version__
+from ppar import Analytics, __version__
 ```
 
-`run(workspace=".")` executes the same complete workflow as `ppar run` and returns a
-frozen `RunResult` with `workspace`, `output_directory`, and `artifacts`.
+ppar has no complete-workspace `run()` API. The setup-generated `ppar_demo.py` shows
+the full executable workflow with ordinary Python values.
 
 ## Analytics
 
@@ -38,5 +38,27 @@ Performance, classification, and mapping table inputs accept only a CSV path or 
 Polars DataFrame. Focused types and lower-level APIs live in `ppar.attribution`,
 `ppar.frequency`, `ppar.risk`, and `ppar.axys_apx`.
 
-Expected validation and calculation failures use `ppar.errors.PparError`. Its message
-is intended for people; optional `context` contains independent diagnostic values.
+## Axys/APX values
+
+`AxysData.from_values(base_directory, values)` configures Axys/APX loading from an
+ordinary Python mapping. Relative source paths are resolved against `base_directory`.
+The default setup demonstration contains a complete, commented example.
+
+## Atomic publication
+
+Applications that create multiple reports can use the same publication primitive as
+the generated demonstrations:
+
+```python
+from pathlib import Path
+
+from ppar.publication import atomic_output_directory
+
+output = Path("output")
+with atomic_output_directory(output) as staging:
+    (staging / "report.html").write_text("<p>complete</p>", encoding="utf-8")
+```
+
+The context replaces the destination only after its body succeeds. Expected validation
+and calculation failures use `ppar.errors.PparError`; its message is intended for
+people, and optional `context` contains independent diagnostic values.

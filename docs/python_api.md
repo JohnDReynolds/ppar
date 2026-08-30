@@ -44,6 +44,11 @@ Polars DataFrame. Focused types and lower-level APIs live in `ppar.attribution`,
 ordinary Python mapping. Relative source paths are resolved against `base_directory`.
 The default setup demonstration contains a complete, commented example.
 
+`AxysData.get_classification_sources_for_pair()` combines classification names and
+portfolio/benchmark mappings for two reconciled Axys portfolios. Its result can be
+passed directly to `Analytics.attribution_for()`; the Axys/APX demonstration uses
+this method for its security-level report.
+
 ## Atomic publication
 
 Applications that create multiple reports can use the same publication primitive as

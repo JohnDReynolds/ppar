@@ -1,8 +1,9 @@
 # Demonstration configuration
 
-`ppar setup DIRECTORY` creates a self-contained demonstration whose root contains one
-executable, extensively commented `ppar_demo.py`. The generated workflow does not use
-a YAML workspace configuration or provide a `ppar run` command. Run the script directly:
+`ppar setup DIRECTORY` creates the Generic CSV demonstration. Add `--axys-apx` to
+create the Axys/APX demonstration instead. Each directory contains one executable,
+extensively commented `ppar_demo.py`. The generated workflow does not use a YAML
+workspace configuration or provide a `ppar run` command. Run the script directly:
 
 ```bash
 python DIRECTORY/ppar_demo.py

@@ -4,6 +4,10 @@ The initial settings use the included demonstration data. To analyze your own
 portfolio, replace the input files and update the settings below.
 
 Use the command in README.md to run this script. Reports are written to ``output/``.
+
+Additional capabilities:
+    This script can be adapted to process multiple portfolio codes, benchmarks,
+    classifications, date ranges, and frequencies.
 """
 
 from __future__ import annotations
@@ -14,8 +18,7 @@ from pathlib import Path
 from ppar import Analytics
 from ppar.attribution import Attribution, Chart, View
 from ppar.frequency import Frequency
-from ppar.publication import atomic_output_directory
-import ppar.utilities as util
+from ppar.publication import atomic_output_directory, write_report_bundle
 
 
 # Input and output paths are based on this script's location. You can therefore
@@ -23,30 +26,19 @@ import ppar.utilities as util
 DIRECTORY = Path(__file__).resolve().parent
 OUTPUT_DIRECTORY = DIRECTORY / "output"
 
-# Each performance CSV contains one row per security and source period. It must
-# have these headings:
-#
-#   from_date, thru_date, identifier, weight, return
-#
-# Dates use YYYY-MM-DD. Weights and returns are decimals: 0.25 means 25%, not
-# 0.25%. Beginning weights should total approximately 1.0 within each period.
-# An optional ``name`` column supplies a portfolio or benchmark display name.
-PORTFOLIO_PERFORMANCE = DIRECTORY / "input/performance/Mega-Cap Alpha Portfolio.csv"
-BENCHMARK_PERFORMANCE = DIRECTORY / "input/performance/Mega-Cap Benchmark.csv"
-
 # The date bounds are inclusive. Change them to focus every table and chart on
-# one reporting window. Use dt.date.min or dt.date.max to keep all available
-# history at the corresponding end.
+# one reporting window. Use dt.date.min for no lower date bound and dt.date.max
+# for no upper date bound.
 FROM_DATE = dt.date(2021, 6, 1)
 THRU_DATE = dt.date(2026, 5, 29)
 
-# This name appears in report titles and determines which classification and
-# mapping files are used below.
+# This grouping appears in the classification tables and charts and determines
+# which classification data and mapping are selected in the source settings below.
 CLASSIFICATION = "Economic Sector"
 
 # Choose MONTHLY, QUARTERLY, or YEARLY to consolidate source periods into
-# completed calendar periods. AS_OFTEN_AS_POSSIBLE preserves the source periods;
-# that choice omits risk statistics because the report requires a fixed frequency.
+# completed calendar periods. AS_OFTEN_AS_POSSIBLE preserves the source periods,
+# but omits the risk statistics report because that report requires a fixed frequency.
 FREQUENCY = Frequency.QUARTERLY
 
 # holidays.csv is headerless and contains one YYYY-MM-DD date per line. Holidays
@@ -62,6 +54,30 @@ ANNUAL_RISK_FREE_RATE = 0.03
 CONFIDENCE_LEVEL = 0.95
 PORTFOLIO_VALUE = (100_000.0, "$")
 
+# Each performance CSV contains one row per security and source period. It must
+# have these headings:
+#
+#   from_date, thru_date, identifier, weight, return
+#
+# Dates use YYYY-MM-DD. Weights and returns are decimals: 0.25 means 25%, not
+# 0.25%. For each period, weights must sum to 1.0. ppar calculates each
+# security's contribution as weight * return and derives the total portfolio
+# return by summing those contributions.
+#
+# An optional ``name`` column can supply a display name for each identifier. This
+# demo instead gets security names from Security.csv below. If neither source
+# supplies a display name, reports use the identifier itself.
+#
+# Portfolio and benchmark titles use the corresponding CSV filename without its
+# extension unless ``portfolio_name`` and ``benchmark_name`` are passed to Analytics.
+PORTFOLIO_PERFORMANCE = DIRECTORY / "input/performance/Mega-Cap Alpha Portfolio.csv"
+BENCHMARK_PERFORMANCE = DIRECTORY / "input/performance/Mega-Cap Benchmark.csv"
+
+# Master CSVs can contain multiple portfolios identified by a ``portfolio_code``
+# column. To produce reports for several portfolios, load the files with Polars,
+# loop over their portfolio codes, and pass each filtered portfolio and benchmark
+# pair to Analytics.
+
 # Classification and mapping CSVs are headerless and have exactly two columns:
 #
 #   Security.csv: security identifier, security display name
@@ -76,11 +92,10 @@ CLASSIFICATION_MAPPING = (
     DIRECTORY / f"input/mappings/Security--to--{CLASSIFICATION}.csv"
 )
 
-# These tuples are the report menu. Views become HTML tables; charts become PNG
-# images. Remove an item to omit its report, add another enum member to produce
-# it, or reorder items to change the printed file order. The script also writes
-# one overall security-attribution table and, for fixed frequencies, one
-# risk-statistics table.
+# These settings specify every report the script produces. Views become HTML
+# tables; charts become PNG images. Remove an item to omit its report, add another
+# item to produce it, or reorder items to change the printed file order. The Risk
+# Statistics report can be selected independently but requires a fixed frequency.
 #
 # Additional View choices:
 #   View.SUBPERIOD_ATTRIBUTION, View.SUBPERIOD_SUMMARY
@@ -89,6 +104,7 @@ CLASSIFICATION_MAPPING = (
 #   Chart.CUMULATIVE_CONTRIBUTION, Chart.HEATMAP_ACTIVE_RETURN,
 #   Chart.HEATMAP_PORTFOLIO_CONTRIBUTION, Chart.HEATMAP_PORTFOLIO_RETURN,
 #   Chart.SUBPERIOD_RETURN
+SECURITY_VIEWS = (View.OVERALL_ATTRIBUTION,)
 CLASSIFICATION_VIEWS = (
     View.CUMULATIVE_ATTRIBUTION,
     View.OVERALL_ATTRIBUTION,
@@ -102,6 +118,7 @@ CLASSIFICATION_CHARTS = (
     Chart.CUMULATIVE_ATTRIBUTION,
     Chart.CUMULATIVE_RETURN,
 )
+INCLUDE_RISK_STATISTICS = True
 
 
 def main() -> int:
@@ -116,14 +133,26 @@ def main() -> int:
     """
     analytics, security_attribution, classification_attribution = _build_analytics()
 
-    # Build the entire bundle away from output/. Only a successful bundle replaces
-    # the prior reports, so an input or calculation error cannot leave partial output.
+    # atomic_output_directory() lets the script build the complete report bundle in
+    # a staging directory and replace the entire OUTPUT_DIRECTORY only after every
+    # report succeeds. Using atomic_output_directory() is optional.
     with atomic_output_directory(OUTPUT_DIRECTORY) as staging_directory:
-        output_names = _write_reports(
-            analytics,
-            security_attribution,
-            classification_attribution,
-            staging_directory,
+        # Native source periods do not establish a fixed annualization frequency, so
+        # risk statistics are limited to monthly, quarterly, or yearly runs.
+        risk_statistics = (
+            analytics.risk_statistics()
+            if INCLUDE_RISK_STATISTICS
+            and FREQUENCY is not Frequency.AS_OFTEN_AS_POSSIBLE
+            else None
+        )
+        output_names = write_report_bundle(
+            output_directory=staging_directory,
+            security_attribution=security_attribution,
+            security_views=SECURITY_VIEWS,
+            classification_attribution=classification_attribution,
+            classification_views=CLASSIFICATION_VIEWS,
+            classification_charts=CLASSIFICATION_CHARTS,
+            risk_statistics=risk_statistics,
         )
 
     print("Output files:")
@@ -139,9 +168,9 @@ def _build_analytics() -> tuple[Analytics, Attribution, Attribution]:
         Analytics calculation, security attribution, and selected-classification
         attribution.
     """
-    # Analytics matches portfolio and benchmark periods, applies the requested
-    # date window and frequency, and prepares the common return history used by
-    # both attribution and risk statistics.
+    # 1. Load the source data and create Analytics. Analytics matches portfolio
+    # and benchmark periods, applies the requested date window and frequency, and
+    # prepares the common return history used by attribution and risk statistics.
     analytics = Analytics(
         PORTFOLIO_PERFORMANCE,
         BENCHMARK_PERFORMANCE,
@@ -157,76 +186,22 @@ def _build_analytics() -> tuple[Analytics, Attribution, Attribution]:
         portfolio_value=PORTFOLIO_VALUE,
     )
 
-    # Security attribution answers which individual holdings drove relative
-    # performance. The broader classification attribution rolls those holdings
-    # into groups such as economic sectors. Both sides use the same mapping here;
-    # pass different portfolio and benchmark mappings when their taxonomies differ.
+    # 2. Create security attribution. This answers which individual holdings drove
+    # relative performance.
     security_attribution = analytics.attribution(
         "Security",
         SECURITY_CLASSIFICATION,
     )
+
+    # 3. Create classification attribution. This rolls holdings into groups such
+    # as economic sectors. Both sides use the same mapping here; pass different
+    # portfolio and benchmark mappings when their taxonomies differ.
     classification_attribution = analytics.attribution(
         CLASSIFICATION,
         CLASSIFICATION_DATA,
         (CLASSIFICATION_MAPPING, CLASSIFICATION_MAPPING),
     )
     return analytics, security_attribution, classification_attribution
-
-
-def _write_reports(
-    analytics: Analytics,
-    security_attribution: Attribution,
-    classification_attribution: Attribution,
-    output_directory: Path,
-) -> tuple[str, ...]:
-    """Write the selected report bundle to one staging directory.
-
-    Args:
-        analytics: Completed portfolio-versus-benchmark calculation.
-        security_attribution: Attribution grouped by individual security.
-        classification_attribution: Attribution grouped by ``CLASSIFICATION``.
-        output_directory: Temporary directory receiving the complete bundle.
-
-    Returns:
-        Output filenames in deterministic display order.
-    """
-    names: list[str] = []
-
-    # Always include one holding-level table. It is useful for tracing a sector's
-    # result back to the securities that produced it.
-    security_name = "security_overall_attribution.html"
-    _write_text(
-        output_directory / security_name,
-        security_attribution.to_html(View.OVERALL_ATTRIBUTION),
-    )
-    names.append(security_name)
-
-    # Enum names become predictable filenames such as
-    # classification_overall_attribution.html.
-    for view in CLASSIFICATION_VIEWS:
-        name = f"classification_{view.name.lower()}.html"
-        _write_text(output_directory / name, classification_attribution.to_html(view))
-        names.append(name)
-
-    # Charts use the same naming rule and are written as standalone PNG files.
-    for chart in CLASSIFICATION_CHARTS:
-        name = f"classification_{chart.name.lower()}.png"
-        (output_directory / name).write_bytes(classification_attribution.to_chart(chart))
-        names.append(name)
-
-    # Native source periods do not establish a fixed annualization frequency, so
-    # risk statistics are deliberately limited to monthly, quarterly, or yearly runs.
-    if FREQUENCY is not Frequency.AS_OFTEN_AS_POSSIBLE:
-        risk_name = "risk_statistics.html"
-        _write_text(output_directory / risk_name, analytics.risk_statistics().to_html())
-        names.append(risk_name)
-
-    return tuple(names)
-
-
-def _write_text(path: Path, value: str) -> None:
-    """Write one UTF-8 HTML report."""
-    path.write_text(value, encoding=util.ENCODING)
 
 
 if __name__ == "__main__":

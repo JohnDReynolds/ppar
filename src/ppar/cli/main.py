@@ -31,10 +31,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command != "setup":
         parser.error(f"unknown command: {args.command}")
     try:
-        directory = setup(args.directory, generic=args.generic)
-        source = "generic" if args.generic else "axys_apx"
+        directory = setup(args.directory, axys_apx=args.axys_apx)
         print(f"Directory: {directory}")
-        print(f"Data source: {source}")
+        if args.axys_apx:
+            print("Data source: axys_apx")
         print()
         print(f"The next step is to read {directory / 'README.md'}.")
         print(
@@ -61,7 +61,7 @@ def _parser() -> argparse.ArgumentParser:
             "demonstration inputs and an editable ppar_demo.py script.\n\n"
             "examples:\n"
             "  ppar setup ./my_ppar\n"
-            "  ppar setup ./my_generic_ppar --generic"
+            "  ppar setup ./my_ppar_axys_apx --axys-apx"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
@@ -76,7 +76,7 @@ def _parser() -> argparse.ArgumentParser:
         epilog=(
             "examples:\n"
             "  ppar setup ./my_ppar\n"
-            "  ppar setup ./my_generic_ppar --generic"
+            "  ppar setup ./my_ppar_axys_apx --axys-apx"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         help="Create and populate a directory for running portfolio analytics.",
@@ -93,9 +93,10 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     setup_parser.add_argument(
-        "--generic",
+        "--axys-apx",
+        dest="axys_apx",
         action="store_true",
-        help="Use vendor-neutral files instead of Axys/APX files.",
+        help="Use Axys/APX export files instead of Generic CSV files.",
     )
     return parser
 

@@ -22,6 +22,7 @@ from ppar.axys_apx.specification import AxysSpecification
 from ppar.axys_apx.supporting_sources import (
     AxysClassificationSources,
     AxysSupportingSourceLoader,
+    combine_classification_sources,
 )
 from ppar.errors import PparError
 import ppar.utilities as util
@@ -283,6 +284,34 @@ class AxysData:  # pylint: disable=too-few-public-methods,too-many-instance-attr
         return self._supporting_source_loader.load_classification_sources(
             classification_name,
             portfolio,
+        )
+
+    def get_classification_sources_for_pair(
+        self,
+        classification_name: str,
+        portfolio: AxysPortfolio,
+        benchmark: AxysPortfolio,
+    ) -> AxysClassificationSources:
+        """Return combined classification sources for a portfolio and benchmark.
+
+        Args:
+            classification_name: Requested classification source name.
+            portfolio: Reconciled portfolio whose identifiers limit the first
+                classification and mapping sources.
+            benchmark: Reconciled benchmark whose identifiers limit the second
+                classification and mapping sources.
+
+        Returns:
+            Classification items covering both accounts, with mapping sources kept
+            in portfolio/benchmark order for an attribution call.
+
+        Raises:
+            PparError: If the classification source is unknown or invalid, or the
+                resulting portfolio and benchmark sources are incompatible.
+        """
+        return combine_classification_sources(
+            self.get_classification_sources(classification_name, portfolio),
+            self.get_classification_sources(classification_name, benchmark),
         )
 
     def _portfolio_loader(

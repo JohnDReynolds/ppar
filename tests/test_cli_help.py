@@ -30,7 +30,7 @@ class CliHelpTests(unittest.TestCase):
         self.assertIn("DIRECTORY is the local directory that setup creates", help_text)
         self.assertIn("editable ppar_demo.py script", normalized_help)
         self.assertIn("ppar setup ./my_ppar", help_text)
-        self.assertIn("ppar setup ./my_generic_ppar --generic", help_text)
+        self.assertIn("ppar setup ./my_ppar_axys_apx --axys-apx", help_text)
         self.assertIn("Show this help message.", help_text)
         self.assertIn("Show the ppar version.", help_text)
         self.assertNotIn("and exit", help_text)
@@ -43,7 +43,7 @@ class CliHelpTests(unittest.TestCase):
             main(["setup", "--help"])
 
         help_text = output.getvalue()
-        self.assertIn("ppar setup [-h] [--generic] DIRECTORY", help_text)
+        self.assertIn("ppar setup [-h] [--axys-apx] DIRECTORY", help_text)
         self.assertIn("Local directory to create and populate", help_text)
         self.assertIn("ppar setup ./my_ppar", help_text)
         self.assertNotIn("workspace", help_text.lower())
@@ -57,7 +57,7 @@ class CliHelpTests(unittest.TestCase):
             main(["setup"])
 
         error_text = output.getvalue()
-        self.assertIn("ppar setup [-h] [--generic] DIRECTORY", error_text)
+        self.assertIn("ppar setup [-h] [--axys-apx] DIRECTORY", error_text)
         self.assertIn("the following arguments are required: DIRECTORY", error_text)
 
     def test_setup_success_identifies_created_directory(self) -> None:
@@ -75,7 +75,6 @@ class CliHelpTests(unittest.TestCase):
             output.getvalue().splitlines(),
             [
                 f"Directory: {directory}",
-                "Data source: axys_apx",
                 "",
                 f"The next step is to read {directory / 'README.md'}.",
                 (
@@ -86,22 +85,22 @@ class CliHelpTests(unittest.TestCase):
             ],
         )
 
-    def test_generic_setup_success_uses_same_readme_handoff(self) -> None:
-        """Generic setup directs the user to its generated README too."""
+    def test_axys_setup_success_identifies_data_source(self) -> None:
+        """Axys/APX setup identifies its nondefault data source."""
         output = StringIO()
-        directory = Path("/example/my_generic_ppar")
+        directory = Path("/example/my_ppar_axys_apx")
 
         with (
             mock.patch("ppar.cli.main.setup", return_value=directory),
             redirect_stdout(output),
         ):
-            self.assertEqual(main(["setup", str(directory), "--generic"]), 0)
+            self.assertEqual(main(["setup", str(directory), "--axys-apx"]), 0)
 
         self.assertEqual(
             output.getvalue().splitlines(),
             [
                 f"Directory: {directory}",
-                "Data source: generic",
+                "Data source: axys_apx",
                 "",
                 f"The next step is to read {directory / 'README.md'}.",
                 (

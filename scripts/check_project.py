@@ -53,7 +53,7 @@ def _check_documentation() -> None:
     readme = (_ROOT / "README.md").read_text(encoding="utf-8")
     for command in (
         "ppar setup ./my_ppar",
-        "ppar setup ./my_generic_ppar --generic",
+        "ppar setup ./my_ppar_axys_apx --axys-apx",
         "python ./my_ppar/ppar_demo.py",
     ):
         if command not in readme:
@@ -141,7 +141,7 @@ def _installed_wheel_smoke(wheel: Path, directory: Path) -> None:
     _run([python, "-c", code], cwd=smoke, env=smoke_env)
     _run([python, "-m", "pip", "check"], cwd=smoke, env=smoke_env)
     _run([python, "-m", "ppar.cli", "--version"], cwd=smoke, env=smoke_env)
-    for name, generic in (("axys", False), ("generic", True)):
+    for name, axys_apx in (("generic", False), ("axys", True)):
         workspace = smoke / name
         setup_command: list[str | Path] = [
             python,
@@ -150,8 +150,8 @@ def _installed_wheel_smoke(wheel: Path, directory: Path) -> None:
             "setup",
             workspace,
         ]
-        if generic:
-            setup_command.append("--generic")
+        if axys_apx:
+            setup_command.append("--axys-apx")
         _run(setup_command, cwd=smoke, env=smoke_env)
         _run([python, workspace / "ppar_demo.py"], cwd=smoke, env=smoke_env)
         artifacts = [path for path in (workspace / "output").iterdir() if path.is_file()]

@@ -13,13 +13,13 @@ ppar requires Python 3.11.9 or newer.
 ```bash
 python -m pip install ppar
 
-# Axys/APX demonstration (the default)
+# Generic CSV demonstration (the default)
 ppar setup ./my_ppar
 python ./my_ppar/ppar_demo.py
 
-# Vendor-neutral demonstration
-ppar setup ./my_generic_ppar --generic
-python ./my_generic_ppar/ppar_demo.py
+# Axys/APX demonstration
+ppar setup ./my_ppar_axys_apx --axys-apx
+python ./my_ppar_axys_apx/ppar_demo.py
 ```
 
 Both setup commands create a self-contained demonstration directory:

@@ -174,60 +174,14 @@ class AxysPortfolio:
                 "Both AxysPortfolio objects must be loaded with the same "
                 "classification_name to use default attribution sources.",
             )
-        if portfolio_sources.classification_name != benchmark_sources.classification_name:
-            raise PparError(
-                f"portfolio={portfolio_sources.classification_name!r}, "
-                f"benchmark={benchmark_sources.classification_name!r}",
-            )
-
-        classification_data_source = (
-            pl.concat(
-                [
-                    portfolio_sources.classification_data_source,
-                    benchmark_sources.classification_data_source,
-                ],
-                how="vertical",
-            )
-            .unique(subset=[cols.IDENTIFIER], keep="any")
-            .sort(cols.IDENTIFIER)
-        )
-        mapping_data_sources = self._combined_mapping_sources(
-            portfolio_sources,
-            benchmark_sources,
-        )
         # Import lazily to avoid a module import cycle.
         from ppar.axys_apx.supporting_sources import (  # pylint: disable=import-outside-toplevel
-            AxysClassificationSources,
+            combine_classification_sources,
         )
 
-        return AxysClassificationSources(
-            portfolio_sources.classification_name,
-            classification_data_source,
-            mapping_data_sources,
-        )
-
-    @staticmethod
-    def _combined_mapping_sources(
-        portfolio_sources: AxysClassificationSources,
-        benchmark_sources: AxysClassificationSources,
-    ) -> tuple[pl.DataFrame, pl.DataFrame] | None:
-        """Return mapping sources aligned to portfolio and benchmark performance."""
-        if (
-            portfolio_sources.mapping_data_sources is None
-            and benchmark_sources.mapping_data_sources is None
-        ):
-            return None
-        if (
-            portfolio_sources.mapping_data_sources is None
-            or benchmark_sources.mapping_data_sources is None
-        ):
-            raise PparError(
-                "Portfolio and benchmark mapping sources must both be present or "
-                "both be omitted.",
-            )
-        return (
-            portfolio_sources.mapping_data_sources[0],
-            benchmark_sources.mapping_data_sources[0],
+        return combine_classification_sources(
+            portfolio_sources,
+            benchmark_sources,
         )
 
     @property

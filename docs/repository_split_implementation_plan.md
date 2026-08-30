@@ -2,7 +2,8 @@
 
 > **Current ppar workflow (August 29, 2026):** The split described below is complete,
 > but its YAML-based ppar execution contract has since been superseded. ppar now keeps
-> only `ppar setup DIRECTORY` (plus `--generic`). Setup creates one tutorial-style
+> only `ppar setup DIRECTORY` (plus `--axys-apx`). Generic is the setup default; the
+> option selects Axys/APX. Setup creates one tutorial-style
 > `ppar_demo.py` that contains all paths, settings, and report choices as Python values;
 > users execute that script directly. ppar no longer has a `run` CLI, root `run()` API,
 > `RunResult`, generated `ppar.yaml`, or workspace service. Both demonstrations publish

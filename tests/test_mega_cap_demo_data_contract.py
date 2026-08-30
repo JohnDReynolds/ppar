@@ -81,8 +81,8 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
         """Both generated tutorial scripts run complete workflows without YAML."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for source, generic in (("axys_apx", False), ("generic", True)):
-                directory = setup(root / source, generic=generic)
+            for source, axys_apx in (("generic", False), ("axys_apx", True)):
+                directory = setup(root / source, axys_apx=axys_apx)
                 readme = (directory / "README.md").read_text(encoding="utf-8")
                 self.assertIn(
                     f"python {shlex.quote(str(directory / 'ppar_demo.py'))}",

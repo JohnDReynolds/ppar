@@ -215,6 +215,58 @@ class TestAxysPipeline(unittest.TestCase):
         self.assertEqual(portfolios["P2"].portfolio_name, "P2 - Income")
         self.assertEqual(scan_csv.call_count, 2)
 
+    def test_classification_pair_combines_security_display_names(self) -> None:
+        """Paired security sources cover holdings from both accounts."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            portfolios = data.get_portfolios(("P1", "P2"))
+            portfolio = portfolios["P1"]
+            benchmark = portfolios["P2"]
+
+            sources = data.get_classification_sources_for_pair(
+                "Security",
+                portfolio,
+                benchmark,
+            )
+            analytics = portfolio.to_analytics(benchmark)
+            detail = analytics.attribution_for(sources).to_polars(
+                View.SUBPERIOD_ATTRIBUTION
+            )
+
+            self.assertIsNone(sources.mapping_data_sources)
+            self.assertEqual(
+                sources.classification_data_source[cols.IDENTIFIER].to_list(),
+                ["A", "B", "C"],
+            )
+            self.assertEqual(
+                set(detail[cols.CLASSIFICATION_NAME].to_list()),
+                {"Alpha", "Beta", "Cash"},
+            )
+
+    def test_classification_pair_preserves_mapping_side_order(self) -> None:
+        """Paired mappings remain aligned to portfolio and benchmark inputs."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            portfolios = data.get_portfolios(("P1", "P2"))
+
+            sources = data.get_classification_sources_for_pair(
+                "Sector",
+                portfolios["P1"],
+                portfolios["P2"],
+            )
+
+            self.assertIsNotNone(sources.mapping_data_sources)
+            assert sources.mapping_data_sources is not None
+            portfolio_mapping, benchmark_mapping = sources.mapping_data_sources
+            self.assertEqual(
+                portfolio_mapping[cols.IDENTIFIER].sort().to_list(),
+                ["A", "B"],
+            )
+            self.assertEqual(
+                benchmark_mapping[cols.IDENTIFIER].sort().to_list(),
+                ["C"],
+            )
+
     def test_performance_columns_default_only_to_exact_normalized_names(self) -> None:
         """Performance mappings may be omitted for exact normalized headers."""
         with tempfile.TemporaryDirectory() as temp_dir:

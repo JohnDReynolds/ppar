@@ -14,6 +14,7 @@ from ppar.axys_apx.classification_sources import AxysClassificationSourceLoader
 from ppar.axys_apx.portfolios import AxysPortfolio
 from ppar.axys_apx.specification import AxysSpecification
 import ppar.schema as cols
+from ppar.errors import PparError
 
 
 @dataclass(frozen=True)
@@ -24,14 +25,87 @@ class AxysClassificationSources:
         classification_name: Display name for the requested Axys
             classification.
         classification_data_source: Normalized classification source.
-        mapping_data_sources: Pair of identical mapping sources for analytics
-            attribution calls, or ``None`` when the requested classification is
-            already at security grain.
+        mapping_data_sources: Mapping sources aligned to portfolio and benchmark
+            performance for analytics attribution calls, or ``None`` when the
+            requested classification is already at security grain. A source loaded
+            for one portfolio repeats its mapping on both sides.
     """
 
     classification_name: str
     classification_data_source: pl.DataFrame
     mapping_data_sources: tuple[pl.DataFrame, pl.DataFrame] | None
+
+
+def combine_classification_sources(
+    portfolio_sources: AxysClassificationSources,
+    benchmark_sources: AxysClassificationSources,
+) -> AxysClassificationSources:
+    """Combine portfolio and benchmark sources for one attribution calculation.
+
+    Args:
+        portfolio_sources: Classification and mapping sources restricted to the
+            portfolio's security identifiers.
+        benchmark_sources: Classification and mapping sources restricted to the
+            benchmark's security identifiers.
+
+    Returns:
+        One classification source containing the union of portfolio and benchmark
+        classification items and mappings kept in portfolio/benchmark order.
+
+    Raises:
+        PparError: If the sources represent different classifications or only one
+            source contains mappings.
+    """
+    if portfolio_sources.classification_name != benchmark_sources.classification_name:
+        raise PparError(
+            f"portfolio={portfolio_sources.classification_name!r}, "
+            f"benchmark={benchmark_sources.classification_name!r}",
+        )
+
+    classification_data_source = (
+        pl.concat(
+            [
+                portfolio_sources.classification_data_source,
+                benchmark_sources.classification_data_source,
+            ],
+            how="vertical",
+        )
+        .unique(subset=[cols.IDENTIFIER], keep="any")
+        .sort(cols.IDENTIFIER)
+    )
+    mapping_data_sources = _combine_mapping_sources(
+        portfolio_sources,
+        benchmark_sources,
+    )
+    return AxysClassificationSources(
+        portfolio_sources.classification_name,
+        classification_data_source,
+        mapping_data_sources,
+    )
+
+
+def _combine_mapping_sources(
+    portfolio_sources: AxysClassificationSources,
+    benchmark_sources: AxysClassificationSources,
+) -> tuple[pl.DataFrame, pl.DataFrame] | None:
+    """Return mapping sources aligned to portfolio and benchmark performance."""
+    if (
+        portfolio_sources.mapping_data_sources is None
+        and benchmark_sources.mapping_data_sources is None
+    ):
+        return None
+    if (
+        portfolio_sources.mapping_data_sources is None
+        or benchmark_sources.mapping_data_sources is None
+    ):
+        raise PparError(
+            "Portfolio and benchmark mapping sources must both be present or "
+            "both be omitted.",
+        )
+    return (
+        portfolio_sources.mapping_data_sources[0],
+        benchmark_sources.mapping_data_sources[0],
+    )
 
 
 class AxysSupportingSourceLoader:

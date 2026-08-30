@@ -11,16 +11,16 @@ from typing import Final
 from ppar.errors import PparError
 import ppar.utilities as util
 
-_TEMPLATE_NAMES: Final = {False: "axys_apx", True: "generic"}
+_TEMPLATE_NAMES: Final = {False: "generic", True: "axys_apx"}
 _DEMO_PATH_PLACEHOLDER: Final = "__PPAR_DEMO_PATH__"
 
 
-def setup(directory: util.PathLike, *, generic: bool = False) -> Path:
+def setup(directory: util.PathLike, *, axys_apx: bool = False) -> Path:
     """Create one starter demonstration directory.
 
     Args:
         directory: Explicit destination directory.
-        generic: Select the vendor-neutral template instead of Axys/APX.
+        axys_apx: Select the Axys/APX template instead of the Generic default.
 
     Returns:
         Absolute created directory path.
@@ -33,7 +33,7 @@ def setup(directory: util.PathLike, *, generic: bool = False) -> Path:
     if destination.exists() and any(destination.iterdir()):
         raise PparError(f"Directory is not empty: {destination}")
     destination.mkdir(parents=True, exist_ok=True)
-    template_name = _TEMPLATE_NAMES[generic]
+    template_name = _TEMPLATE_NAMES[axys_apx]
     template = files("ppar").joinpath("templates", template_name)
     with as_file(template) as template_path:
         shutil.copytree(template_path, destination, dirs_exist_ok=True)

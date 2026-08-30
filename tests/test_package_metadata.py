@@ -64,6 +64,35 @@ class TestPackageMetadata(unittest.TestCase):
                 ["ppar_demo.py"],
             )
 
+    def test_templates_keep_shared_workflow_in_sync(self) -> None:
+        """Common demo settings and report publication remain equivalent."""
+        generic = _template_named_nodes("generic")
+        axys_apx = _template_named_nodes("axys_apx")
+        shared_names = (
+            "FROM_DATE",
+            "THRU_DATE",
+            "CLASSIFICATION",
+            "FREQUENCY",
+            "HOLIDAYS",
+            "ANNUAL_MINIMUM_ACCEPTABLE_RETURN",
+            "ANNUAL_RISK_FREE_RATE",
+            "CONFIDENCE_LEVEL",
+            "PORTFOLIO_VALUE",
+            "SECURITY_VIEWS",
+            "CLASSIFICATION_VIEWS",
+            "CLASSIFICATION_CHARTS",
+            "INCLUDE_RISK_STATISTICS",
+            "main",
+        )
+        for name in shared_names:
+            self.assertIn(name, generic)
+            self.assertIn(name, axys_apx)
+            self.assertEqual(
+                ast.dump(generic[name], include_attributes=False),
+                ast.dump(axys_apx[name], include_attributes=False),
+                name,
+            )
+
     def test_source_never_imports_perfaud(self) -> None:
         """No runtime module depends on the neighboring Audit product."""
         offenders: list[str] = []
@@ -116,6 +145,30 @@ class TestPackageMetadata(unittest.TestCase):
 def _pyproject() -> dict[str, Any]:
     """Return parsed project metadata."""
     return tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+
+def _template_named_nodes(source: str) -> dict[str, ast.AST]:
+    """Return named top-level assignments and functions from one demo template.
+
+    Args:
+        source: Template directory name beneath ``src/ppar/templates``.
+
+    Returns:
+        Top-level assignment and function nodes keyed by their declared names.
+    """
+    path = _ROOT / "src" / "ppar" / "templates" / source / "ppar_demo.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    nodes: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            nodes[node.name] = node
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            nodes[node.targets[0].id] = node
+    return nodes
 
 
 if __name__ == "__main__":

@@ -13,6 +13,16 @@ import ppar
 
 
 _ROOT = Path(__file__).resolve().parents[1]
+_PRODUCT_DESCRIPTION = (
+    "Portfolio performance attribution, contribution, and ex-post risk analytics."
+)
+_ACTIVE_DOCUMENTATION = (
+    "README.md",
+    "docs/configuration.md",
+    "docs/methodology.md",
+    "docs/python_api.md",
+    "docs/maintenance.md",
+)
 
 
 class TestPackageMetadata(unittest.TestCase):
@@ -29,6 +39,13 @@ class TestPackageMetadata(unittest.TestCase):
             "https://github.com/JohnDReynolds/ppar",
         )
         self.assertEqual(ppar.__version__, metadata.version("ppar"))
+
+    def test_product_description_is_consistent(self) -> None:
+        """Packaging, README, and the package docstring use one description."""
+        self.assertEqual(_pyproject()["project"]["description"], _PRODUCT_DESCRIPTION)
+        self.assertEqual(ppar.__doc__, _PRODUCT_DESCRIPTION)
+        readme_lines = (_ROOT / "README.md").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(readme_lines[2], _PRODUCT_DESCRIPTION)
 
     def test_runtime_dependencies_are_complete_and_independent(self) -> None:
         """The base install contains both workflows without product extras."""
@@ -63,6 +80,25 @@ class TestPackageMetadata(unittest.TestCase):
                 [path.name for path in (_ROOT / "src/ppar/templates" / source).rglob("*.py")],
                 ["ppar_demo.py"],
             )
+        generic_readme = templates.joinpath("generic", "README.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertTrue(
+            generic_readme.startswith("# ppar vendor-neutral demonstration\n")
+        )
+        self.assertNotIn("Generic", generic_readme)
+        axys_readme = templates.joinpath("axys_apx", "README.md").read_text(
+            encoding="utf-8"
+        )
+        for expected in (
+            "## Use your own Axys/APX exports",
+            "`portperf.csv`",
+            "`secperf.csv`",
+            "`secmast.csv`",
+            "`AXYS_SOURCE_VALUES`",
+            "ppar reconciles the security-level performance",
+        ):
+            self.assertIn(expected, axys_readme)
 
     def test_templates_keep_shared_workflow_in_sync(self) -> None:
         """Common demo settings and report publication remain equivalent."""
@@ -120,6 +156,17 @@ class TestPackageMetadata(unittest.TestCase):
         ):
             self.assertFalse((_ROOT / relative).exists(), relative)
 
+    def test_obsolete_split_records_and_unused_fixture_are_absent(self) -> None:
+        """The current checkout does not retain superseded pre-split evidence."""
+        for relative in (
+            "docs/repository_split_implementation_plan.md",
+            "docs/repository_split_phase1_baseline.md",
+            "docs/repository_split_phase1_baseline.json",
+            "tests/data/performance/mag7_daily.csv",
+            "ppar.egg-info",
+        ):
+            self.assertFalse((_ROOT / relative).exists(), relative)
+
     def test_exception_registry_is_absent(self) -> None:
         """Exceptions carry actionable messages rather than numeric codes."""
         text = (_ROOT / "src/ppar/errors.py").read_text(encoding="utf-8")
@@ -128,18 +175,26 @@ class TestPackageMetadata(unittest.TestCase):
 
     def test_documentation_has_small_spine_and_marketing_images(self) -> None:
         """The active user path stays short while retaining README images."""
-        for relative in (
-            "README.md",
-            "docs/configuration.md",
-            "docs/methodology.md",
-            "docs/python_api.md",
-            "docs/maintenance.md",
-        ):
+        for relative in _ACTIVE_DOCUMENTATION:
             self.assertTrue((_ROOT / relative).is_file(), relative)
         self.assertTrue(any((_ROOT / "docs/images").glob("*.*")))
         self.assertFalse((_ROOT / "PPAR.pdf").exists())
         self.assertFalse((_ROOT / "docs/archive").exists())
         self.assertFalse((_ROOT / "docs/audit").exists())
+
+    def test_active_documentation_uses_current_terms(self) -> None:
+        """Active guidance excludes retired product names."""
+        active_text = "\n".join(
+            (_ROOT / relative).read_text(encoding="utf-8")
+            for relative in _ACTIVE_DOCUMENTATION
+        )
+        self.assertNotIn("Generic", active_text)
+        self.assertNotIn("my_ppar_axys_apx", active_text)
+        self.assertIn("vendor-neutral", active_text)
+
+    def test_parallel_reference_directory_is_absent(self) -> None:
+        """Generated demonstrations remain the source for input-file guidance."""
+        self.assertFalse((_ROOT / "docs/reference").exists())
 
 
 def _pyproject() -> dict[str, Any]:

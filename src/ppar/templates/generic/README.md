@@ -1,4 +1,4 @@
-# ppar Generic demonstration
+# ppar vendor-neutral demonstration
 
 Run the tutorial-style demonstration script from any working directory:
 

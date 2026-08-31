@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ppar"
 version = "0.2.0"
-description = "Local-first portfolio performance attribution and risk analytics."
+description = "Portfolio performance attribution, contribution, and ex-post risk analytics."
 authors = [{ name = "John Reynolds", email = "jjjkreynolds@gmail.com" }]
 readme = "README.md"
 license = "LicenseRef-Proprietary"

@@ -1,4 +1,4 @@
-"""Portfolio performance Analytics for generic and Axys/APX data."""
+"""Portfolio performance attribution, contribution, and ex-post risk analytics."""
 
 from importlib.metadata import PackageNotFoundError, version
 

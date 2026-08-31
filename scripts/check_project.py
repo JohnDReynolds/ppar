@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,13 @@ import zipfile
 
 
 _ROOT = Path(__file__).resolve().parents[1]
+_ACTIVE_DOCUMENTATION = (
+    "README.md",
+    "docs/configuration.md",
+    "docs/methodology.md",
+    "docs/python_api.md",
+    "docs/maintenance.md",
+)
 
 
 def _run(
@@ -36,28 +44,51 @@ def _venv_command(environment: Path, name: str) -> Path:
 
 def _check_documentation() -> None:
     """Check the small documentation spine and executable demonstration references."""
-    required = (
-        "README.md",
-        "docs/configuration.md",
-        "docs/methodology.md",
-        "docs/python_api.md",
-        "docs/maintenance.md",
-    )
-    for relative in required:
+    for relative in _ACTIVE_DOCUMENTATION:
         if not (_ROOT / relative).is_file():
             raise RuntimeError(f"Missing active documentation: {relative}")
     configuration = (_ROOT / "docs/configuration.md").read_text(encoding="utf-8")
-    for value in ("ppar_demo.py", "AxysData.from_values()", "CLASSIFICATION_VIEWS"):
+    for value in (
+        "ppar_demo.py",
+        "AxysData.from_values()",
+        "CLASSIFICATION_VIEWS",
+        "portperf.csv",
+        "secperf.csv",
+        "secmast.csv",
+    ):
         if value not in configuration:
             raise RuntimeError(f"Demonstration documentation omits {value}.")
     readme = (_ROOT / "README.md").read_text(encoding="utf-8")
     for command in (
         "ppar setup ./my_ppar",
-        "ppar setup ./my_ppar_axys_apx --axys-apx",
+        "ppar setup ./my_ppar --axys-apx",
         "python ./my_ppar/ppar_demo.py",
     ):
         if command not in readme:
             raise RuntimeError(f"README omits executable command: {command}")
+
+    active_text = "\n".join(
+        (_ROOT / relative).read_text(encoding="utf-8")
+        for relative in _ACTIVE_DOCUMENTATION
+    )
+    for retired_term in ("Generic", "my_ppar_axys_apx"):
+        if retired_term in active_text:
+            raise RuntimeError(
+                f"Active documentation contains retired terminology: {retired_term}"
+            )
+
+    if (_ROOT / "docs/reference").exists():
+        raise RuntimeError("The removed parallel reference directory is still present.")
+
+    markdown_link = re.compile(r"]\(([^)]+)\)")
+    for relative in _ACTIVE_DOCUMENTATION:
+        source = _ROOT / relative
+        for match in markdown_link.finditer(source.read_text(encoding="utf-8")):
+            target = match.group(1).split("#", maxsplit=1)[0]
+            if not target or "://" in target:
+                continue
+            if not (source.parent / target).is_file():
+                raise RuntimeError(f"Broken local link in {relative}: {target}")
 
 
 def _build_and_check_wheel(directory: Path) -> Path:

@@ -7,7 +7,13 @@ permissions:
   contents: read
 
 jobs:
+  release-candidate:
+    uses: ./.github/workflows/release-candidate.yml
+    permissions:
+      contents: read
+
   publish:
+    needs: release-candidate
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -24,14 +30,19 @@ jobs:
           python-version: "3.12.1"
 
       - name: Build and validate the universal wheel
+        shell: bash
         run: |
           python -m pip install \
             --constraint constraints/ci.txt \
             build setuptools twine
           python -m build --wheel --no-isolation
-          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 1
-          test -f dist/ppar-0.2.0-py3-none-any.whl
-          python -m twine check dist/ppar-0.2.0-py3-none-any.whl
+          mapfile -t wheels < <(find dist -maxdepth 1 -name '*.whl' -print)
+          test "${#wheels[@]}" -eq 1
+          case "${wheels[0]}" in
+            *-py3-none-any.whl) ;;
+            *) exit 1 ;;
+          esac
+          python -m twine check "${wheels[0]}"
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

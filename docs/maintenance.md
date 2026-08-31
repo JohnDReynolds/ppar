@@ -19,7 +19,7 @@ Run the routine product gate:
 
 It runs tests, mypy, Pyright, pylint error checks, documentation/demonstration drift,
 README-image drift, a direct universal-wheel inspection, and installed-wheel Axys/APX
-and Generic demonstration scripts outside the checkout.
+and vendor-neutral demonstration scripts outside the checkout.
 
 After major cross-cutting, reporting, safety, or performance work, run the unchanged
 500x gate:
@@ -33,6 +33,11 @@ The release-candidate command composes both gates:
 ```bash
 ./.venv/bin/python scripts/check_release_candidate.py
 ```
+
+GitHub runs the routine product gate on Python 3.11.9 and 3.12.1 for compatibility.
+The release-candidate workflow runs the complete command above on Python 3.12.1. It
+can be started manually and is also a required prerequisite before the publishing
+workflow can build and upload a wheel.
 
 To intentionally refresh README images, run:
 

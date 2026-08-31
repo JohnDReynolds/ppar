@@ -3,8 +3,8 @@
 Portfolio performance attribution, contribution, and ex-post risk analytics.
 
 ppar compares a portfolio with a benchmark, explains active return by classification,
-and produces reviewable HTML tables and PNG charts. It runs locally and supports both
-Axys/APX exports and a small vendor-neutral CSV format.
+and produces reviewable HTML tables and PNG charts. It runs locally and accepts
+vendor-neutral CSV files or Axys/APX exports.
 
 ## Start here
 
@@ -12,17 +12,25 @@ ppar requires Python 3.11.9 or newer.
 
 ```bash
 python -m pip install ppar
-
-# Generic CSV demonstration (the default)
-ppar setup ./my_ppar
-python ./my_ppar/ppar_demo.py
-
-# Axys/APX demonstration
-ppar setup ./my_ppar_axys_apx --axys-apx
-python ./my_ppar_axys_apx/ppar_demo.py
 ```
 
-Both setup commands create a self-contained demonstration directory:
+Then choose one demonstration.
+
+Vendor-neutral (the default):
+
+```bash
+ppar setup ./my_ppar
+python ./my_ppar/ppar_demo.py
+```
+
+Axys/APX:
+
+```bash
+ppar setup ./my_ppar --axys-apx
+python ./my_ppar/ppar_demo.py
+```
+
+Either setup command creates a self-contained demonstration directory:
 
 ```text
 my_ppar/
@@ -35,14 +43,16 @@ my_ppar/
 The extensively commented `ppar_demo.py` is both a tutorial and the executable
 workflow. Edit its ordinary Python values to choose input paths, calculation
 assumptions, and reports, then replace the demonstration files under `input/` with your
-data. Each successful script run atomically replaces `output/`; a failed run leaves the
-previous successful output intact.
+data.
 
 ## What it produces
 
-The standard quarterly demonstration writes security and classification attribution
-tables, attribution and contribution charts, cumulative return charts, heatmaps, and
-an ex-post risk-statistics table.
+The standard demonstration writes security and classification attribution tables,
+attribution and contribution charts, cumulative return charts, heatmaps, and an
+ex-post risk-statistics table.
+
+The gallery below shows examples of available output, including reports that can be
+selected by editing `ppar_demo.py`.
 
 <img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/OverallAttributionByEconomicSector.png" alt="Overall attribution by economic sector chart" width="100%" />
 
@@ -71,16 +81,24 @@ an ex-post risk-statistics table.
 ## Python
 
 ```python
+from pathlib import Path
+
 from ppar import Analytics
 from ppar.attribution import View
 
-analytics = Analytics("portfolio.csv", "benchmark.csv")
-overall = analytics.attribution().to_polars(View.OVERALL_ATTRIBUTION)
-print(overall)
+performance_input_directory = Path("./my_ppar") / "input" / "performance"
+
+analytics = Analytics(
+    performance_input_directory / "Mega-Cap Alpha Portfolio.csv",
+    performance_input_directory / "Mega-Cap Benchmark.csv",
+)
+
+overall_attribution = analytics.attribution().to_polars(View.OVERALL_ATTRIBUTION)
+print(overall_attribution)
 ```
 
-Public tabular results are Polars DataFrames. HTML, PNG, and CSV output is available
-from the owning attribution or risk object.
+Tabular results are available as Polars DataFrames, HTML, or CSV. Charts are available
+as PNG files.
 
 ## Documentation
 

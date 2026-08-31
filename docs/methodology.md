@@ -1,15 +1,15 @@
 # Methodology
 
-ppar calculates benchmark-relative portfolio performance from narrow security-period
-rows. It preserves the source period boundaries and first checks that weights,
-returns, contributions, dates, classifications, and portfolio totals reconcile.
+ppar calculates benchmark-relative portfolio performance from security-period rows.
+It validates dates, weights, returns, and classifications, then checks that calculated
+contributions and portfolio totals reconcile.
 
 ## Contribution and attribution
 
-Simple contribution is beginning weight multiplied by security return. Active return
-is portfolio return minus benchmark return. For each classification group, ppar
-calculates allocation, selection, and interaction effects and reports their total as
-the attribution effect.
+Simple contribution is weight multiplied by security return. Active return is
+portfolio return minus benchmark return. For each classification group, ppar calculates
+allocation, selection, and interaction effects and reports their total as the
+attribution effect.
 
 Multi-period effects use logarithmic (Carino) smoothing so the detailed effects foot
 to linked active return. Cumulative returns compound geometrically. Fixed reporting

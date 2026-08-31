@@ -162,7 +162,7 @@ def main() -> int:
 
 
 def _build_analytics() -> tuple[Analytics, Attribution, Attribution]:
-    """Load generic CSV files and build security and classification attribution.
+    """Load vendor-neutral CSV files and build security and classification attribution.
 
     Returns:
         Analytics calculation, security attribution, and selected-classification

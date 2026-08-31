@@ -20,7 +20,7 @@ def setup(directory: util.PathLike, *, axys_apx: bool = False) -> Path:
 
     Args:
         directory: Explicit destination directory.
-        axys_apx: Select the Axys/APX template instead of the Generic default.
+        axys_apx: Select the Axys/APX template instead of the vendor-neutral default.
 
     Returns:
         Absolute created directory path.

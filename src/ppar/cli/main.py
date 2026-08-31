@@ -52,16 +52,19 @@ def _parser() -> argparse.ArgumentParser:
     """Return the complete command parser."""
     parser = argparse.ArgumentParser(
         prog="ppar",
-        description="Create a local directory for running portfolio analytics.",
+        description=(
+            "Portfolio performance attribution, contribution, and ex-post risk "
+            "analytics."
+        ),
         epilog=(
             "command form:\n"
             "  ppar setup DIRECTORY\n"
             "\n"
             "DIRECTORY is the local directory that setup creates and populates with\n"
             "demonstration inputs and an editable ppar_demo.py script.\n\n"
-            "examples:\n"
+            "examples (choose one):\n"
             "  ppar setup ./my_ppar\n"
-            "  ppar setup ./my_ppar_axys_apx --axys-apx"
+            "  ppar setup ./my_ppar --axys-apx"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
@@ -74,9 +77,9 @@ def _parser() -> argparse.ArgumentParser:
         "setup",
         description="Create and populate a directory for running portfolio analytics.",
         epilog=(
-            "examples:\n"
+            "examples (choose one):\n"
             "  ppar setup ./my_ppar\n"
-            "  ppar setup ./my_ppar_axys_apx --axys-apx"
+            "  ppar setup ./my_ppar --axys-apx"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         help="Create and populate a directory for running portfolio analytics.",
@@ -96,7 +99,7 @@ def _parser() -> argparse.ArgumentParser:
         "--axys-apx",
         dest="axys_apx",
         action="store_true",
-        help="Use Axys/APX export files instead of Generic CSV files.",
+        help="Use Axys/APX export files instead of vendor-neutral CSV files.",
     )
     return parser
 

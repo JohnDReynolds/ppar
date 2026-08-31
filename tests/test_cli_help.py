@@ -21,7 +21,11 @@ class CliHelpTests(unittest.TestCase):
 
         help_text = output.getvalue()
         normalized_help = " ".join(help_text.split())
-        self.assertIn("Create a local directory for running portfolio analytics.", help_text)
+        self.assertIn(
+            "Portfolio performance attribution, contribution, and ex-post risk "
+            "analytics.",
+            normalized_help,
+        )
         self.assertIn(
             "Create and populate a directory for running portfolio analytics.",
             normalized_help,
@@ -30,7 +34,9 @@ class CliHelpTests(unittest.TestCase):
         self.assertIn("DIRECTORY is the local directory that setup creates", help_text)
         self.assertIn("editable ppar_demo.py script", normalized_help)
         self.assertIn("ppar setup ./my_ppar", help_text)
-        self.assertIn("ppar setup ./my_ppar_axys_apx --axys-apx", help_text)
+        self.assertIn("ppar setup ./my_ppar --axys-apx", help_text)
+        self.assertIn("examples (choose one):", help_text)
+        self.assertNotIn("my_ppar_axys_apx", help_text)
         self.assertIn("Show this help message.", help_text)
         self.assertIn("Show the ppar version.", help_text)
         self.assertNotIn("and exit", help_text)
@@ -46,6 +52,11 @@ class CliHelpTests(unittest.TestCase):
         self.assertIn("ppar setup [-h] [--axys-apx] DIRECTORY", help_text)
         self.assertIn("Local directory to create and populate", help_text)
         self.assertIn("ppar setup ./my_ppar", help_text)
+        self.assertIn("ppar setup ./my_ppar --axys-apx", help_text)
+        self.assertIn("examples (choose one):", help_text)
+        self.assertIn("vendor-neutral CSV files", help_text)
+        self.assertNotIn("Generic", help_text)
+        self.assertNotIn("my_ppar_axys_apx", help_text)
         self.assertNotIn("workspace", help_text.lower())
         self.assertNotIn("PPAR", help_text)
 
@@ -88,7 +99,7 @@ class CliHelpTests(unittest.TestCase):
     def test_axys_setup_success_identifies_data_source(self) -> None:
         """Axys/APX setup identifies its nondefault data source."""
         output = StringIO()
-        directory = Path("/example/my_ppar_axys_apx")
+        directory = Path("/example/my_ppar")
 
         with (
             mock.patch("ppar.cli.main.setup", return_value=directory),

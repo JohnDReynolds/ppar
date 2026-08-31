@@ -64,10 +64,10 @@ BENCHMARK = "MEGA_BENCH"
 # portfolios, loop over their account codes and select each portfolio and benchmark
 # pair with AxysData.
 
-# portperf.csv has one row per account and source period. secperf.csv has one row
-# per security, account, and source period. Returns, beginning weights, and
-# contributions are decimals: 0.05 means 5%. secmast.csv supplies security names
-# and the classification columns used by the mappings below.
+# The "Use your own Axys/APX exports" section in README.md describes the three input
+# files, their mapped fields, and their relationship. portperf.csv has one row per
+# account and source period. secperf.csv has one row per security, account, and source
+# period. secmast.csv supplies security names and classification columns.
 #
 # Axys/APX headings vary by site. Each ``columns`` entry maps a ppar field on the
 # left to the exact export heading on the right. Update both the file paths and

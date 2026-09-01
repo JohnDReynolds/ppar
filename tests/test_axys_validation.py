@@ -1,7 +1,7 @@
 """Focused tests for AxysData source and specification validation failures."""
 
 # Python Imports
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import datetime as dt
 from pathlib import Path
@@ -18,6 +18,7 @@ from tests import test_utilities as test_util
 
 # Project Imports
 from ppar.axys_apx import AxysData
+import ppar.schema as cols
 from ppar.errors import PparError
 
 
@@ -78,7 +79,11 @@ def _write_text_csv(directory: Path, file_name: str, contents: str) -> Path:
     return path
 
 
-def _write_frame_csv(directory: Path, file_name: str, data: dict[str, list[object]]) -> Path:
+def _write_frame_csv(
+    directory: Path,
+    file_name: str,
+    data: Mapping[str, Sequence[object]],
+) -> Path:
     """Write compact valid-schema input rows for a validation failure."""
     path = directory / file_name
     pl.DataFrame(data).write_csv(path)
@@ -132,8 +137,330 @@ def _mapping_definitions(specification: dict[str, object]) -> dict[str, object]:
     return cast(dict[str, object], specification.setdefault("mappings", {}))
 
 
+def _minimal_source_values(
+    portfolio_performance_path: Path,
+    security_performance_path: Path,
+    security_master_path: Path | None = None,
+) -> dict[str, object]:
+    """Return compact Python-value source mappings for boundary tests."""
+    files: dict[str, object] = {
+        "portfolio_performance": {
+            "path": str(portfolio_performance_path),
+            "columns": {
+                "from_date": "FROM_DATE",
+                "thru_date": "THRU_DATE",
+                "portfolio_code": "PORTFOLIO_CODE",
+                "portfolio_name": "PORTFOLIO_NAME",
+                "portfolio_return": "PORT_RETURN",
+            },
+        },
+        "security_performance": {
+            "path": str(security_performance_path),
+            "columns": {
+                "from_date": "FROM_DATE",
+                "thru_date": "THRU_DATE",
+                "portfolio_code": "PORTFOLIO_CODE",
+                "identifier": "SECURITY_ID",
+                "weight": "BEGIN_WEIGHT",
+                "security_return": "SEC_RETURN",
+                "contribution": "CONTRIBUTION",
+            },
+        },
+    }
+    values: dict[str, object] = {"files": files}
+    if security_master_path is not None:
+        files["security_master"] = {
+            "path": str(security_master_path),
+            "columns": {
+                "identifier_column": "SECURITY_ID",
+                "security_name": "SECURITY_NAME",
+            },
+        }
+        values["mappings"] = {
+            "Sector": {
+                "classification_column": "SECTOR_CODE",
+                "display_name_column": "SECTOR_NAME",
+            }
+        }
+    return values
+
+
+def _valid_portfolio_rows(
+    portfolio_codes: Sequence[object] | None = None,
+    portfolio_returns: Sequence[object] | None = None,
+) -> dict[str, list[object]]:
+    """Return compact portfolio-performance rows for boundary tests."""
+    codes: list[object] = list(portfolio_codes) if portfolio_codes else ["PORT"]
+    returns: list[object] = (
+        list(portfolio_returns) if portfolio_returns else [0.04]
+    )
+    return {
+        "PORTFOLIO_CODE": codes,
+        "PORTFOLIO_NAME": [f"Portfolio {code}" for code in codes],
+        "FROM_DATE": ["2024-01-01"] * len(codes),
+        "THRU_DATE": ["2024-01-31"] * len(codes),
+        "PORT_RETURN": returns,
+    }
+
+
+def _valid_security_rows(
+    portfolio_codes: Sequence[object] | None = None,
+    security_ids: Sequence[object] | None = None,
+    weights: Sequence[object] | None = None,
+    security_returns: Sequence[object] | None = None,
+    contributions: Sequence[object] | None = None,
+) -> dict[str, list[object]]:
+    """Return compact security-performance rows for boundary tests."""
+    identifiers: list[object] = list(security_ids) if security_ids else ["S1"]
+    row_count = len(identifiers)
+    codes: list[object] = (
+        list(portfolio_codes) if portfolio_codes else ["PORT"] * row_count
+    )
+    return {
+        "PORTFOLIO_CODE": codes,
+        "FROM_DATE": ["2024-01-01"] * row_count,
+        "THRU_DATE": ["2024-01-31"] * row_count,
+        "SECURITY_ID": identifiers,
+        "BEGIN_WEIGHT": list(weights) if weights else [1.0] * row_count,
+        "SEC_RETURN": (
+            list(security_returns) if security_returns else [0.04] * row_count
+        ),
+        "CONTRIBUTION": (
+            list(contributions) if contributions else [0.04] * row_count
+        ),
+    }
+
+
 class TestAxysValidation(unittest.TestCase):
     """Verify Axys input validation and numbered error behavior."""
+
+    def test_nonfinite_portfolio_returns_raise_contextual_error(self) -> None:
+        """Account returns must be finite before reconciliation begins."""
+        for invalid_value in (float("nan"), float("inf"), float("-inf"), "bad"):
+            with self.subTest(invalid_value=invalid_value), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                portfolio_path = _write_frame_csv(
+                    directory,
+                    "portperf.csv",
+                    _valid_portfolio_rows(portfolio_returns=[invalid_value]),
+                )
+                security_path = _write_frame_csv(
+                    directory,
+                    "secperf.csv",
+                    _valid_security_rows(),
+                )
+                data = AxysData.from_values(
+                    directory,
+                    _minimal_source_values(portfolio_path, security_path),
+                )
+
+                with self.assertRaises(PparError) as context:
+                    data.get_portfolio("PORT")
+
+                message = str(context.exception)
+                self.assertIn(cols.PORTFOLIO_RETURN, message)
+                self.assertIn("2024-01-31", message)
+
+    def test_invalid_security_financial_values_raise_contextual_error(self) -> None:
+        """Security returns and non-null weight evidence must be finite."""
+        cases: tuple[tuple[str, dict[str, Sequence[object]]], ...] = (
+            (cols.RETURN, {"security_returns": [float("nan")]}),
+            (cols.RETURN, {"security_returns": [None]}),
+            (cols.WEIGHT, {"weights": [float("inf")]}),
+            (cols.CONTRIBUTION, {"contributions": [float("-inf")]}),
+            (cols.CONTRIBUTION, {"contributions": ["bad"]}),
+        )
+        for column_name, overrides in cases:
+            with self.subTest(column_name=column_name), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                portfolio_path = _write_frame_csv(
+                    directory,
+                    "portperf.csv",
+                    _valid_portfolio_rows(),
+                )
+                security_path = _write_frame_csv(
+                    directory,
+                    "secperf.csv",
+                    _valid_security_rows(**overrides),
+                )
+                data = AxysData.from_values(
+                    directory,
+                    _minimal_source_values(portfolio_path, security_path),
+                )
+
+                with self.assertRaises(PparError) as context:
+                    data.get_portfolio("PORT")
+
+                message = str(context.exception)
+                self.assertIn(column_name, message)
+                self.assertIn("2024-01-31", message)
+
+    def test_numeric_looking_portfolio_codes_remain_distinct_strings(self) -> None:
+        """Portfolio selection preserves leading zeroes in account codes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            portfolio_codes = ["001", "1", "99999999999999999999", "A01"]
+            portfolio_path = _write_frame_csv(
+                directory,
+                "portperf.csv",
+                _valid_portfolio_rows(
+                    portfolio_codes=portfolio_codes,
+                    portfolio_returns=[0.02, 0.03, 0.04, 0.05],
+                ),
+            )
+            security_path = _write_frame_csv(
+                directory,
+                "secperf.csv",
+                _valid_security_rows(
+                    portfolio_codes=portfolio_codes,
+                    security_ids=["S001", "S1", "S-LARGE", "S-A01"],
+                    security_returns=[0.02, 0.03, 0.04, 0.05],
+                    contributions=[0.02, 0.03, 0.04, 0.05],
+                ),
+            )
+            data = AxysData.from_values(
+                directory,
+                _minimal_source_values(portfolio_path, security_path),
+            )
+
+            portfolios = data.get_portfolios(tuple(portfolio_codes))
+
+            self.assertEqual(tuple(portfolios), tuple(portfolio_codes))
+            self.assertEqual(portfolios["001"].portfolio_code, "001")
+            self.assertEqual(portfolios["1"].portfolio_code, "1")
+            self.assertEqual(
+                portfolios["99999999999999999999"].portfolio_code,
+                "99999999999999999999",
+            )
+            self.assertEqual(portfolios["A01"].portfolio_code, "A01")
+
+    def test_numeric_looking_security_and_classification_codes_remain_distinct(self) -> None:
+        """Security and classification identities survive CSV inference unchanged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            identifiers = ["001", "1", "99999999999999999999", "A01"]
+            portfolio_path = _write_frame_csv(
+                directory,
+                "portperf.csv",
+                _valid_portfolio_rows(),
+            )
+            security_path = _write_frame_csv(
+                directory,
+                "secperf.csv",
+                _valid_security_rows(
+                    security_ids=identifiers,
+                    weights=[0.25] * 4,
+                    security_returns=[0.04] * 4,
+                    contributions=[0.01] * 4,
+                ),
+            )
+            security_master_path = _write_frame_csv(
+                directory,
+                "secmast.csv",
+                {
+                    "SECURITY_ID": identifiers,
+                    "SECURITY_NAME": [f"Security {value}" for value in identifiers],
+                    "SECTOR_CODE": identifiers,
+                    "SECTOR_NAME": [f"Sector {value}" for value in identifiers],
+                },
+            )
+            data = AxysData.from_values(
+                directory,
+                _minimal_source_values(
+                    portfolio_path,
+                    security_path,
+                    security_master_path,
+                ),
+            )
+
+            portfolio = data.get_portfolio("PORT", classification_name="Sector")
+            sources = portfolio.required_classification_sources
+            assert sources.mapping_data_sources is not None
+            mapping = sources.mapping_data_sources[0]
+
+            self.assertEqual(
+                sorted(portfolio.security_performance[cols.IDENTIFIER].unique().to_list()),
+                sorted(identifiers),
+            )
+            self.assertEqual(
+                sorted(sources.classification_data_source[cols.IDENTIFIER].to_list()),
+                sorted(identifiers),
+            )
+            self.assertEqual(
+                sorted(mapping.iter_rows()),
+                sorted((value, value) for value in identifiers),
+            )
+
+    def test_blank_or_padded_security_identifiers_are_rejected(self) -> None:
+        """Direct security identifiers must be complete, exact text values."""
+        for invalid_identifier in (None, "", " S1 "):
+            with (
+                self.subTest(invalid_identifier=invalid_identifier),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                directory = Path(tmp)
+                portfolio_path = _write_frame_csv(
+                    directory,
+                    "portperf.csv",
+                    _valid_portfolio_rows(),
+                )
+                security_path = _write_frame_csv(
+                    directory,
+                    "secperf.csv",
+                    _valid_security_rows(security_ids=[invalid_identifier]),
+                )
+                data = AxysData.from_values(
+                    directory,
+                    _minimal_source_values(portfolio_path, security_path),
+                )
+
+                with self.assertRaises(PparError) as context:
+                    data.get_portfolio("PORT")
+
+                message = str(context.exception)
+                self.assertIn(cols.IDENTIFIER, message)
+                self.assertIn("secperf.csv", message)
+                self.assertIn("2024-01-31", message)
+
+    def test_blank_classification_codes_are_rejected(self) -> None:
+        """Classification codes cannot become null identities during CSV parsing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            portfolio_path = _write_frame_csv(
+                directory,
+                "portperf.csv",
+                _valid_portfolio_rows(),
+            )
+            security_path = _write_frame_csv(
+                directory,
+                "secperf.csv",
+                _valid_security_rows(),
+            )
+            security_master_path = _write_frame_csv(
+                directory,
+                "secmast.csv",
+                {
+                    "SECURITY_ID": ["S1"],
+                    "SECURITY_NAME": ["Security One"],
+                    "SECTOR_CODE": [None],
+                    "SECTOR_NAME": ["Unknown"],
+                },
+            )
+            data = AxysData.from_values(
+                directory,
+                _minimal_source_values(
+                    portfolio_path,
+                    security_path,
+                    security_master_path,
+                ),
+            )
+
+            with self.assertRaises(PparError) as context:
+                data.get_portfolio("PORT", classification_name="Sector")
+
+            message = str(context.exception)
+            self.assertIn("SECTOR_CODE", message)
+            self.assertIn("secmast.csv", message)
 
     def test_missing_portfolio_performance_columns_raise_error_502(self) -> None:
         """Required portfolio performance columns are validated before processing."""

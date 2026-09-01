@@ -49,18 +49,18 @@ _TABLE_SIZES = {
     "RiskStatistics": (1800, 2600),
 }
 _IMAGE_SIZES = {
-    "ActiveContributionsByEconomicSector.png": (1400, 480),
-    "CumulativeAttributionByEconomicSector.jpg": (3262, 1863),
+    "ActiveContributionsByEconomicSector.png": (1330, 480),
+    "CumulativeAttributionByEconomicSector.jpg": (3262, 1791),
     "CumulativeAttributionEffectsByEconomicSector.png": (1400, 600),
     "CumulativeReturns.png": (1400, 600),
-    "OverallAttributionByEconomicSector.jpg": (2138, 1287),
+    "OverallAttributionByEconomicSector.jpg": (2194, 1287),
     "OverallAttributionByEconomicSector.png": (1400, 480),
     "OverallAttributionBySecurity.jpg": (2504, 8199),
     "OverallContributionByEconomicSector.png": (1400, 480),
     "RiskStatistics.jpg": (1094, 2592),
-    "SubPeriodAttributionEffectsByEconomicSector.png": (1200, 600),
-    "SubPeriodReturns.png": (1200, 600),
-    "TotalAttributionEffectsByEconomicSector.png": (1400, 480),
+    "SubPeriodAttributionEffectsByEconomicSector.png": (1140, 600),
+    "SubPeriodReturns.png": (1140, 600),
+    "TotalAttributionEffectsByEconomicSector.png": (1330, 480),
 }
 
 
@@ -78,6 +78,7 @@ def _analytics_outputs() -> tuple[Analytics, Attribution]:
         _INPUT / "performance" / "Mega-Cap Benchmark.csv",
         portfolio_classification_name="Security",
         benchmark_classification_name="Security",
+        from_date="2021-07-01",
         frequency=Frequency.QUARTERLY,
         holidays=_INPUT / "holidays.csv",
     )

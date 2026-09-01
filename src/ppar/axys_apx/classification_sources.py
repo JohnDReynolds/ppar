@@ -148,12 +148,16 @@ class AxysClassificationSourceLoader:
             SecurityIdConstruction | None,
             effective_source.get(_SECURITY_ID_CONSTRUCTION),
         )
+        schema_overrides = self._schema_overrides(effective_source, construction)
         if construction is None:
-            lazy_frame = pl.scan_csv(file_path)
+            lazy_frame = pl.scan_csv(
+                file_path,
+                schema_overrides=schema_overrides,
+            )
         else:
             source_frame = pl.read_csv(
                 file_path,
-                schema_overrides=construction.schema_overrides,
+                schema_overrides=schema_overrides,
             )
             source_frame = with_constructed_security_id(
                 source_frame,
@@ -180,12 +184,93 @@ class AxysClassificationSourceLoader:
             effective_source["identifier_column"]: cols.IDENTIFIER,
             effective_source["name_column"]: cols.NAME,
         }
+        source_frame = lazy_frame.collect()
+        self._validate_identity_columns(
+            source_frame,
+            source_type,
+            source_name,
+            effective_source,
+            file_path,
+        )
         return (
-            lazy_frame.collect()
+            source_frame
             .rename(rename_mappings)
             .select(_NORMALIZED_SOURCE_COLUMNS)
             .unique(subset=[cols.IDENTIFIER], keep="any")
         )
+
+    @staticmethod
+    def _schema_overrides(
+        data_source: dict[str, Any],
+        construction: SecurityIdConstruction | None,
+    ) -> dict[str, type[pl.DataType]]:
+        """Return CSV types that preserve identifiers and names as text.
+
+        Args:
+            data_source: Effective classification or mapping source.
+            construction: Optional composite security-identifier definition.
+
+        Returns:
+            Partial Polars CSV schema keyed by source column.
+        """
+        overrides = dict(construction.schema_overrides) if construction else {}
+        for field_name in ("identifier_column", "name_column"):
+            source_column = data_source.get(field_name)
+            if (
+                isinstance(source_column, str)
+                and source_column != _CONSTRUCTED_SECURITY_ID_COLUMN
+            ):
+                overrides[source_column] = pl.String
+        filter_column = data_source.get("filter_column")
+        if isinstance(filter_column, str) and isinstance(
+            data_source.get("filter_value"), str
+        ):
+            overrides[filter_column] = pl.String
+        return overrides
+
+    def _validate_identity_columns(
+        self,
+        frame: pl.DataFrame,
+        source_type: SourceType,
+        source_name: str,
+        data_source: dict[str, Any],
+        file_path: util.PathLike,
+    ) -> None:
+        """Reject null, blank, or padded identifiers in supporting sources.
+
+        Args:
+            frame: Loaded and filtered source rows.
+            source_type: Kind of supporting source being loaded.
+            source_name: Configured source name used in error details.
+            data_source: Effective source definition.
+            file_path: Source CSV path used in error details.
+
+        Raises:
+            PparError: If an identity field is null, blank, or padded.
+        """
+        identity_fields = ["identifier_column"]
+        if source_type == "mapping":
+            identity_fields.append("name_column")
+        for field_name in identity_fields:
+            column_name = cast(str, data_source[field_name])
+            value = pl.col(column_name)
+            stripped_value = value.str.strip_chars()
+            invalid_rows = frame.filter(
+                value.is_null()
+                | stripped_value.eq("")
+                | value.ne(stripped_value)
+            )
+            if invalid_rows.is_empty():
+                continue
+            sample_rows = invalid_rows.select(column_name).head(10).to_dicts()
+            raise PparError(
+                self._error_message(
+                    f"Identity field {column_name!r} in {str(file_path)!r} for "
+                    f"{source_type} {source_name!r} must be non-null, nonblank, "
+                    "and free of surrounding whitespace. "
+                    f"Affected rows: {sample_rows}"
+                )
+            )
 
     def _source_definition(
         self,

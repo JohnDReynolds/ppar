@@ -18,6 +18,7 @@ from ppar.attribution import View
 from ppar.axys_apx import AxysData
 import ppar.schema as cols
 from ppar.errors import PparError
+from ppar.frequency import Frequency
 
 
 def _write_axys_inputs(directory: Path) -> Path:
@@ -181,6 +182,63 @@ class TestAxysPipeline(unittest.TestCase):
             )[cols.WEIGHT].to_list()
             self.assertTrue(math.isclose(first_period_weights[0], 0.60, abs_tol=1e-12))
             self.assertTrue(math.isclose(first_period_weights[1], 0.40, abs_tol=1e-12))
+
+    def test_missing_axys_month_cannot_be_hidden_by_quarterly_consolidation(self) -> None:
+        """Axys source periods must match before Analytics can label a quarter."""
+        for missing_file in ("portperf.csv", "secperf.csv"):
+            with self.subTest(missing_file=missing_file), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                specification_path = _write_axys_inputs(directory)
+                portfolio_path = directory / "portperf.csv"
+                security_path = directory / "secperf.csv"
+                pl.concat(
+                    (
+                        pl.read_csv(portfolio_path),
+                        pl.DataFrame(
+                            {
+                                "FROM_DATE": ["2024-03-01"],
+                                "THRU_DATE": ["2024-03-31"],
+                                "PORTFOLIO_CODE": ["P1"],
+                                "PORTFOLIO_NAME": ["Growth"],
+                                "PORT_RETURN": [0.02],
+                            }
+                        ),
+                    ),
+                    how="vertical",
+                ).write_csv(portfolio_path)
+                pl.concat(
+                    (
+                        pl.read_csv(security_path),
+                        pl.DataFrame(
+                            {
+                                "FROM_DATE": ["2024-03-01", "2024-03-01"],
+                                "THRU_DATE": ["2024-03-31", "2024-03-31"],
+                                "PORTFOLIO_CODE": ["P1", "P1"],
+                                "SECURITY_ID": ["A", "B"],
+                                "SEC_RETURN": [0.03, 0.01],
+                                "BEGIN_WEIGHT": [0.50, 0.50],
+                                "CONTRIBUTION": [0.015, 0.005],
+                            }
+                        ),
+                    ),
+                    how="vertical",
+                ).write_csv(security_path)
+                missing_path = directory / missing_file
+                pl.read_csv(missing_path).filter(
+                    ~(
+                        (pl.col("PORTFOLIO_CODE") == "P1")
+                        & (pl.col("THRU_DATE") == "2024-02-29")
+                    )
+                ).write_csv(missing_path)
+
+                with self.assertRaises(PparError) as context:
+                    portfolio = AxysData(specification_path).get_portfolio("P1")
+                    portfolio.to_analytics(frequency=Frequency.QUARTERLY)
+
+                message = str(context.exception)
+                self.assertIn("P1", message)
+                self.assertIn("2024-02-01", message)
+                self.assertIn("2024-02-29", message)
 
     def test_constructor_does_not_load_portfolios(self) -> None:
         """Constructing AxysData leaves portfolio loading to get_portfolio."""

@@ -40,10 +40,35 @@ class TestRegressionResults(unittest.TestCase):
     """Verify fixture-based calculation values and stored CSV baselines."""
 
     def test_abcde_different_subperiod_contributions(self) -> None:
-        """Five-asset calculations remain stable when source subperiods differ."""
-        analytics = Analytics(
+        """Fixed-frequency results remain stable across different partitions."""
+        def with_neutral_january(source: pl.DataFrame) -> pl.DataFrame:
+            """Prepend a zero-return month to complete the calendar quarter."""
+            first_period = source.filter(
+                pl.col(cols.FROM_DATE) == source[cols.FROM_DATE].min()
+            ).with_columns(
+                pl.lit(dt.date(2006, 1, 1)).alias(cols.FROM_DATE),
+                pl.lit(dt.date(2006, 1, 31)).alias(cols.THRU_DATE),
+                pl.lit(0.0).alias(cols.RETURN),
+            )
+            return pl.concat((first_period, source))
+
+        portfolio = pl.read_csv(
             test_util.performance_data_path("abcde_portfolio1"),
+            try_parse_dates=True,
+        )
+        benchmark = pl.read_csv(
             test_util.performance_data_path("abcde_portfolio2"),
+            try_parse_dates=True,
+        )
+        # Add a neutral January observation so both differently partitioned
+        # sources cover one complete calendar quarter.
+        portfolio = with_neutral_january(portfolio)
+        benchmark = with_neutral_january(benchmark)
+
+        analytics = Analytics(
+            portfolio,
+            benchmark,
+            frequency=Frequency.QUARTERLY,
         )
         attribution = test_util.attribution(analytics)
         contribution = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
@@ -123,6 +148,8 @@ class TestRegressionResults(unittest.TestCase):
             portfolio_classification_name="Security",
             benchmark_classification_name="Security",
             from_date="2024-02-01",
+            frequency=Frequency.MONTHLY,
+            holidays=_HOLIDAYS_PATH,
         )
 
         for classification_name in ("Security", "Economic Sector"):
@@ -253,6 +280,8 @@ class TestRegressionResults(unittest.TestCase):
         analytics = Analytics(
             test_util.performance_data_path("case_short"),
             test_util.performance_data_path("Big 2"),
+            thru_date=dt.date(1986, 9, 30),
+            frequency=Frequency.MONTHLY,
         )
 
         self.assertEqual(

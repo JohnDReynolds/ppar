@@ -155,6 +155,7 @@ class Attribution:
                 attribution calculation fails validation.
         """
         classification_label = util.normalize_optional_string(classification_label)
+        classification_name = util.normalize_optional_string(classification_name)
 
         performance_pair = util.two_item_tuple(performances, "Attribution performances")
 
@@ -162,12 +163,25 @@ class Attribution:
         # equalization must never alter caller- or Analytics-owned inputs.
         self._performances = tuple(performance.copy() for performance in performance_pair)
 
+        if classification_name is not None and any(
+            performance.classification_name != classification_name
+            for performance in self._performances
+        ):
+            raise PparError(
+                "Requested attribution classification does not match both "
+                "performance sources. "
+                f"Requested={classification_name!r}, "
+                f"portfolio={self._performances[0].classification_name!r}, "
+                f"benchmark={self._performances[1].classification_name!r}."
+            )
+
         # Set internal instance variables from the constructor parameters.
         self._classification = Classification(
             classification_name,
             classification_data_source,
             self._performances,
         )
+        self._requested_classification_name = classification_name
         self._frequency = frequency
         self._classification_label = (
             self._classification.name
@@ -257,7 +271,11 @@ class Attribution:
             self._performances,
             self._from_date(),
             self._thru_date(),
-            self._classification.name,
+            (
+                self._requested_classification_name
+                if self._requested_classification_name is not None
+                else self._classification.name
+            ),
         )
 
         # Assert that df and df_overall have the same columns.
@@ -566,16 +584,24 @@ class Attribution:
             .join(period_factors, on=cols.DATE_COLUMNS, suffix="_period")
             .with_columns(
                 (
-                    (pl.col(cols.PORTFOLIO_WEIGHT) - pl.col(cols.BENCHMARK_WEIGHT))
-                    * (
-                        pl.col(cols.BENCHMARK_RETURN)
-                        - pl.col(f"{cols.BENCHMARK_RETURN}_period")
+                    pl.when(pl.col(cols.BENCHMARK_RETURN).is_not_null())
+                    .then(
+                        (pl.col(cols.PORTFOLIO_WEIGHT) - pl.col(cols.BENCHMARK_WEIGHT))
+                        * (
+                            pl.col(cols.BENCHMARK_RETURN)
+                            - pl.col(f"{cols.BENCHMARK_RETURN}_period")
+                        )
                     )
+                    .otherwise(0.0)
                 ).alias(cols.ALLOCATION_EFFECT_SIMPLE),
                 (
-                    pl.col(cols.PORTFOLIO_WEIGHT)
-                    * (pl.col(cols.PORTFOLIO_RETURN) - pl.col(cols.BENCHMARK_RETURN))
-                ).alias(cols.SELECTION_EFFECT_SIMPLE),
+                    pl.col(cols.PORTFOLIO_CONTRIB_SIMPLE)
+                    - pl.col(cols.BENCHMARK_CONTRIB_SIMPLE)
+                    - (
+                        (pl.col(cols.PORTFOLIO_WEIGHT) - pl.col(cols.BENCHMARK_WEIGHT))
+                        * pl.col(f"{cols.BENCHMARK_RETURN}_period")
+                    )
+                ).alias(cols.TOTAL_EFFECT_SIMPLE),
                 (
                     pl.col(cols.PORTFOLIO_CONTRIB_SIMPLE)
                     * pl.col("_portfolio_linking_coefficient")
@@ -587,12 +613,22 @@ class Attribution:
             )
             .with_columns(
                 (
+                    pl.col(cols.TOTAL_EFFECT_SIMPLE)
+                    - pl.col(cols.ALLOCATION_EFFECT_SIMPLE)
+                ).alias(cols.SELECTION_EFFECT_SIMPLE),
+                (
                     pl.col(cols.ALLOCATION_EFFECT_SIMPLE)
                     * pl.col("_active_linking_coefficient")
                 ).alias(cols.ALLOCATION_EFFECT_SMOOTHED),
                 (
-                    pl.col(cols.SELECTION_EFFECT_SIMPLE)
+                    pl.col(cols.TOTAL_EFFECT_SIMPLE)
                     * pl.col("_active_linking_coefficient")
+                ).alias(cols.TOTAL_EFFECT_SMOOTHED),
+            )
+            .with_columns(
+                (
+                    pl.col(cols.TOTAL_EFFECT_SMOOTHED)
+                    - pl.col(cols.ALLOCATION_EFFECT_SMOOTHED)
                 ).alias(cols.SELECTION_EFFECT_SMOOTHED),
             )
             .with_columns(self._detail_derived_expressions())
@@ -740,24 +776,14 @@ class Attribution:
         Returns:
             One overall-period row per identifier.
         """
-        from_date = cast(dt.date, performance.narrow_df[cols.FROM_DATE].min())
-        thru_date = cast(dt.date, performance.narrow_df[cols.THRU_DATE].max())
-        total_days = (thru_date - from_date).days + 1
-        weight_coefficient = (
-            pl.lit(1.0)
-            if total_days == 0
-            else pl.col(cols.QUANTITY_OF_DAYS) / total_days
-        )
         return (
-            performance.narrow_df.group_by(cols.IDENTIFIER)
-            .agg(
-                pl.col(cols.RETURN).add(1).product().sub(1).alias(return_column),
-                (pl.col(cols.WEIGHT) * weight_coefficient).sum().alias(weight_column),
-            )
-            .rename({cols.IDENTIFIER: cols.CLASSIFICATION_IDENTIFIER})
-            .with_columns(
-                pl.lit(from_date).alias(cols.FROM_DATE),
-                pl.lit(thru_date).alias(cols.THRU_DATE),
+            performance.df_overall()
+            .rename(
+                {
+                    cols.IDENTIFIER: cols.CLASSIFICATION_IDENTIFIER,
+                    cols.RETURN: return_column,
+                    cols.WEIGHT: weight_column,
+                }
             )
             .select(
                 *cols.DATE_COLUMNS,

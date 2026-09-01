@@ -159,16 +159,12 @@ class TestFrequencyIntegration(unittest.TestCase):
                 )
 
     def test_crazy_frequency(self) -> None:
-        """Irregular portfolio and benchmark frequency inputs align correctly."""
-        analytics = Analytics(
-            test_util.performance_data_path("case_mixed_frequency"),
-            test_util.performance_data_path("case_crazy_frequency"),
-        )
-
-        self.assertEqual(
-            len(test_util.attribution(analytics).to_polars(View.SUBPERIOD_SUMMARY)),
-            3,
-        )
+        """Incompatible irregular intervals require an explicit fixed frequency."""
+        with self.assertRaises(PparError):
+            Analytics(
+                test_util.performance_data_path("case_mixed_frequency"),
+                test_util.performance_data_path("case_crazy_frequency"),
+            )
 
     def test_daily_to_monthly(self) -> None:
         """Daily performance consolidates to expected monthly attribution values."""
@@ -231,6 +227,8 @@ class TestFrequencyIntegration(unittest.TestCase):
             test_util.performance_data_path("economic_sector_daily"),
             portfolio_classification_name="Security",
             benchmark_classification_name="Economic Sector",
+            frequency=Frequency.MONTHLY,
+            holidays=_HOLIDAYS_PATH,
         )
         attribution = test_util.attribution(analytics, "Economic Sector")
         classifications = attribution.to_polars(View.OVERALL_ATTRIBUTION)[
@@ -245,6 +243,7 @@ class TestFrequencyIntegration(unittest.TestCase):
         analytics = Analytics(
             test_util.performance_data_path("case_mixed_frequency"),
             test_util.performance_data_path("case_monthly_frequency"),
+            frequency=Frequency.MONTHLY,
         )
 
         self.assertEqual(
@@ -324,6 +323,100 @@ class TestFrequencyIntegration(unittest.TestCase):
                 frequency=Frequency.MONTHLY,
             )
 
+    def test_fixed_frequency_rejects_different_actual_source_start_dates(self) -> None:
+        """A shared monthly label cannot hide unequal January return coverage."""
+        portfolio = test_util.make_performance_df(
+            ((dt.date(2024, 1, 1), dt.date(2024, 1, 31)),),
+            {"A": ([0.01], [1.0])},
+        )
+        benchmark = test_util.make_performance_df(
+            ((dt.date(2024, 1, 15), dt.date(2024, 1, 31)),),
+            {"A": ([0.02], [1.0])},
+        )
+
+        with self.assertRaises(PparError) as context:
+            Analytics(portfolio, benchmark, frequency=Frequency.MONTHLY)
+
+        self.assertIn("2024-01-01", str(context.exception))
+        self.assertIn("2024-01-15", str(context.exception))
+
+    def test_fixed_frequency_rejects_a_source_period_wider_than_its_bucket(self) -> None:
+        """A two-month return cannot be relabeled as a February monthly return."""
+        performance = test_util.make_performance_df(
+            ((dt.date(2024, 1, 1), dt.date(2024, 2, 29)),),
+            {"A": ([0.02], [1.0])},
+        )
+
+        with self.assertRaises(PparError) as context:
+            Analytics(
+                performance,
+                performance.clone(),
+                frequency=Frequency.MONTHLY,
+            )
+
+        self.assertIn("2024-01-01", str(context.exception))
+        self.assertIn("2024-02", str(context.exception))
+
+    def test_fixed_frequency_rejects_a_gap_inside_a_reporting_bucket(self) -> None:
+        """Endpoint completeness cannot hide an unobserved day within a month."""
+        performance = test_util.make_performance_df(
+            (
+                (dt.date(2024, 1, 1), dt.date(2024, 1, 10)),
+                (dt.date(2024, 1, 12), dt.date(2024, 1, 31)),
+            ),
+            {"A": ([0.01, 0.02], [1.0, 1.0])},
+        )
+
+        with self.assertRaises(PparError) as context:
+            Analytics(
+                performance,
+                performance.clone(),
+                frequency=Frequency.MONTHLY,
+            )
+
+        self.assertIn("2024-01-11", str(context.exception))
+
+    def test_fixed_frequency_accepts_different_partitions_of_equal_coverage(self) -> None:
+        """Daily and monthly partitions may differ when their covered dates agree."""
+        portfolio = test_util.make_performance_df(
+            ((dt.date(2024, 2, 1), dt.date(2024, 2, 29)),),
+            {"A": ([0.02], [1.0])},
+        )
+        benchmark = test_util.make_performance_df(
+            (
+                (dt.date(2024, 2, 1), dt.date(2024, 2, 14)),
+                (dt.date(2024, 2, 15), dt.date(2024, 2, 29)),
+            ),
+            {"A": ([0.01, 0.01], [1.0, 1.0])},
+        )
+
+        summary = Analytics(
+            portfolio,
+            benchmark,
+            frequency=Frequency.MONTHLY,
+        ).attribution().to_polars(View.SUBPERIOD_SUMMARY)
+
+        self.assertEqual(
+            summary.select(cols.DATE_COLUMNS).row(0),
+            (dt.date(2024, 2, 1), dt.date(2024, 2, 29)),
+        )
+
+    def test_fixed_frequency_rejects_a_partial_first_bucket(self) -> None:
+        """Matching midmonth histories do not constitute a complete monthly return."""
+        performance = test_util.make_performance_df(
+            ((dt.date(2024, 1, 15), dt.date(2024, 1, 31)),),
+            {"A": ([0.02], [1.0])},
+        )
+
+        with self.assertRaises(PparError) as context:
+            Analytics(
+                performance,
+                performance.clone(),
+                frequency=Frequency.MONTHLY,
+            )
+
+        self.assertIn("2024-01-15", str(context.exception))
+
     def test_fixed_frequency_prefers_one_bucket_when_two_endpoints_qualify(
         self,
     ) -> None:
@@ -379,6 +472,32 @@ class TestFrequencyIntegration(unittest.TestCase):
         )
 
         with self.assertRaises(PparError):
+            Analytics(
+                portfolio,
+                benchmark,
+                frequency=Frequency.MONTHLY,
+            )
+
+    def test_fixed_frequency_rejects_asymmetric_terminal_bucket_after_history(
+        self,
+    ) -> None:
+        """A shared prior month cannot hide unequal terminal completeness."""
+        portfolio = test_util.make_performance_df(
+            (
+                (dt.date(2023, 11, 1), dt.date(2023, 11, 30)),
+                (dt.date(2023, 12, 1), dt.date(2023, 12, 28)),
+            ),
+            {"A": ([0.01, 0.02], [1.0, 1.0])},
+        )
+        benchmark = test_util.make_performance_df(
+            (
+                (dt.date(2023, 11, 1), dt.date(2023, 11, 30)),
+                (dt.date(2023, 12, 1), dt.date(2023, 12, 31)),
+            ),
+            {"A": ([0.01, 0.02], [1.0, 1.0])},
+        )
+
+        with self.assertRaisesRegex(PparError, "terminal-bucket completeness"):
             Analytics(
                 portfolio,
                 benchmark,

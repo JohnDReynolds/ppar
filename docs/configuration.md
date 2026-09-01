@@ -41,6 +41,14 @@ The default Axys/APX demonstration reads `portperf.csv`, `secperf.csv`, and
 `secmast.csv`. Its generated README explains the three input contracts, while
 `AXYS_SOURCE_VALUES` shows the exact paths and source headings to customize.
 
+For each `secperf.csv` row, ppar prefers the weight implied by contribution divided
+by a nonzero security return and otherwise uses the reported weight. Exact signed
+weights, including short positions, are preserved. Missing weights are inferred only
+when the weight-sum and portfolio-return equations determine them uniquely;
+underdetermined, contradictory, or infeasible evidence stops the run. Each security
+identifier must occur at most once per account and source period because the adapter
+cannot safely infer whether duplicate rows are accidental or represent lots.
+
 The vendor-neutral script instead names the portfolio, benchmark, classification, and
 mapping CSV paths directly. Its performance files have a header and the columns
 `from_date`, `thru_date`, `identifier`, `weight`, and `return`; an optional `name`

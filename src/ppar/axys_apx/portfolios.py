@@ -322,17 +322,22 @@ class AxysPortfolioLoader:  # pylint: disable=too-few-public-methods
         )
         (
             security_performance,
-            unreconciled_periods,
+            reconciliation_periods,
         ) = reconciliation.derive_security_performance_for_all_periods(
             portfolio_performance,
             security_performance,
             portfolio_error_message,
         )
-        difference = reconciliation.unreconciled_difference(unreconciled_periods)
+        difference = reconciliation.unreconciled_difference(reconciliation_periods)
         if reconciliation.exceeds_fatal_tolerance(difference):
+            material_periods = reconciliation.material_reconciliation_periods(
+                reconciliation_periods
+            )
             raise PparError(
                 self._error_message(
-                    f"Returns difference across unreconciled periods is {difference}",
+                    "Geometrically linked target and achieved returns differ "
+                    f"by {difference}. Material period residuals: "
+                    f"{material_periods[:10]}",
                     portfolio_code,
                 ),
             )

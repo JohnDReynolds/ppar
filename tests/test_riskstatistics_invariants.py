@@ -90,6 +90,65 @@ class TestRiskStatisticsInvariants(unittest.TestCase):
 
         self.assertTrue(math.isclose(beta, 1.0, abs_tol=1e-12))
 
+    def test_low_volatility_beta_matches_independent_regression(self) -> None:
+        """Representable low-volatility observations retain a finite beta."""
+        benchmark = np.array([1.0e-10, 2.0e-10, 4.0e-10, 8.0e-10])
+        portfolio = 3.0e-10 + (2.0 * benchmark)
+        risk_statistics = RiskStatistics(
+            (portfolio, benchmark),
+            Frequency.MONTHLY,
+        )
+        expected_beta = float(
+            np.cov(portfolio, benchmark, ddof=1)[0, 1]
+            / np.var(benchmark, ddof=1)
+        )
+
+        beta = _portfolio_value(risk_statistics, "Monthly Beta")
+        correlation = _portfolio_value(risk_statistics, "Monthly Correlation")
+
+        self.assertTrue(math.isclose(expected_beta, 2.0, abs_tol=1e-12))
+        self.assertTrue(math.isclose(beta, expected_beta, abs_tol=1e-12))
+        self.assertTrue(math.isclose(correlation, 1.0, abs_tol=1e-12))
+
+    def test_beta_is_invariant_to_common_return_scale(self) -> None:
+        """Scaling both return series does not change their regression slope."""
+        benchmark = np.array([0.01, 0.02, 0.03, 0.04])
+        portfolio = 0.005 + (2.0 * benchmark)
+
+        for scale in (1.0e-8, 1.0, 1.0e8):
+            with self.subTest(scale=scale):
+                risk_statistics = RiskStatistics(
+                    (portfolio * scale, benchmark * scale),
+                    Frequency.MONTHLY,
+                )
+                beta = _portfolio_value(risk_statistics, "Monthly Beta")
+
+                self.assertTrue(math.isclose(beta, 2.0, abs_tol=1e-12))
+
+    def test_constant_benchmark_has_undefined_beta(self) -> None:
+        """A genuinely constant benchmark cannot define a regression slope."""
+        risk_statistics = _monthly_risk_statistics(
+            [0.01, 0.02, 0.03, 0.04],
+            [0.02, 0.02, 0.02, 0.02],
+        )
+
+        beta = _portfolio_value(risk_statistics, "Monthly Beta")
+
+        self.assertTrue(math.isnan(beta))
+
+    def test_two_low_volatility_observations_define_beta(self) -> None:
+        """The minimum supported nonconstant sample retains a finite beta."""
+        benchmark = np.array([1.0e-12, 2.0e-12])
+        portfolio = 5.0e-12 + (2.0 * benchmark)
+        risk_statistics = RiskStatistics(
+            (portfolio, benchmark),
+            Frequency.MONTHLY,
+        )
+
+        beta = _portfolio_value(risk_statistics, "Monthly Beta")
+
+        self.assertTrue(math.isclose(beta, 2.0, abs_tol=1e-12))
+
     def test_identical_returns_have_zero_alpha_when_risk_free_rate_is_zero(self) -> None:
         """A series regressed against itself has no intercept at a zero cash rate."""
         returns = [0.01, -0.02, 0.04, 0.03]
@@ -250,6 +309,31 @@ class TestRiskStatisticsInvariants(unittest.TestCase):
                 abs_tol=1e-12,
             )
         )
+
+    def test_numeric_numpy_dtypes_use_float64_arithmetic(self) -> None:
+        """Accepted integer and floating arrays share floating-point semantics."""
+        portfolio_values = [0, 2, 0, 2]
+        benchmark_values = [1, 1, 1, 1]
+
+        for dtype in (np.int64, np.uint8, np.float32, np.float64):
+            with self.subTest(dtype=dtype):
+                risk_statistics = RiskStatistics(
+                    (
+                        np.array(portfolio_values, dtype=dtype),
+                        np.array(benchmark_values, dtype=dtype),
+                    ),
+                    Frequency.MONTHLY,
+                )
+                information_ratio = _portfolio_value(
+                    risk_statistics,
+                    "Monthly Information Ratio",
+                )
+
+                self.assertTrue(math.isclose(information_ratio, 0.0, abs_tol=1e-12))
+                # pylint: disable=protected-access
+                self.assertEqual(risk_statistics._portfolio_returns.dtype, np.float64)
+                self.assertEqual(risk_statistics._benchmark_returns.dtype, np.float64)
+                # pylint: enable=protected-access
 
     def test_equivalent_monthly_and_quarterly_means_annualize_equally(self) -> None:
         """Periodic means derived from one annual return annualize equally."""

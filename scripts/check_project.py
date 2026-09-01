@@ -67,6 +67,19 @@ def _check_documentation() -> None:
         if command not in readme:
             raise RuntimeError(f"README omits executable command: {command}")
 
+    methodology = (_ROOT / "docs/methodology.md").read_text(encoding="utf-8")
+    for statement in (
+        "portfolio-weighted selection effect",
+        "selection and interaction",
+        "does not report a separate interaction column",
+    ):
+        if statement not in methodology:
+            raise RuntimeError(
+                f"Methodology omits the two-effect attribution contract: {statement}"
+            )
+    if "allocation, selection, and interaction effects" in methodology:
+        raise RuntimeError("Methodology still describes a separate interaction effect.")
+
     active_text = "\n".join(
         (_ROOT / relative).read_text(encoding="utf-8")
         for relative in _ACTIVE_DOCUMENTATION

@@ -10,6 +10,7 @@ Each public formatter returns PNG image bytes.
 # pyright: reportUnknownMemberType=none
 
 # Python Imports
+from collections import Counter
 import io
 import logging
 import math
@@ -17,7 +18,7 @@ import os
 from pathlib import Path
 import tempfile
 import textwrap
-from typing import cast, Iterable, Sequence
+from typing import cast, Iterable, Protocol, Sequence
 
 # Third-Party Imports
 _cache_root = Path(tempfile.gettempdir()) / "ppar_chart_cache"
@@ -28,10 +29,14 @@ logging.getLogger("matplotlib").setLevel(logging.ERROR)
 logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 from matplotlib import ticker  # noqa: E402  # pylint: disable=wrong-import-position
+from matplotlib.axes import Axes
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from matplotlib.font_manager import FontProperties, findfont
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 import polars as pl
 import seaborn as sns
 
@@ -47,11 +52,27 @@ _MAXIMUM_LABEL_LENGTH = 45  # characters
 _MINIMUM_FIGURE_HEIGHT = 0.8 * _DEFAULT_FIGSIZE[1]  # in inches
 _MINIMUM_FIGURE_WIDTH = 0.8 * _DEFAULT_FIGSIZE[0]  # in inches
 _XTICK_ROTATION = 45  # Rotate the x-axis labels(dates) by 45 degrees for better readability
+_LARGE_HEATMAP_CELL_THRESHOLD = 500
 
 # Chart colors
 # 0 = portfolio, 1 = benchmark, 2 = active
 # 0 = allocation effect, 1 = selection effect, 2 = total effect
 _COLORS = ("green", "blue", "orange")
+
+
+class _HeatmapMesh(Protocol):
+    """Describe the Matplotlib mesh methods used by raster annotations."""
+
+    def update_scalarmappable(self) -> None:
+        """Update mapped cell colors."""
+
+    def get_array(self) -> np.ndarray:
+        """Return the flattened-mask source values."""
+        ...
+
+    def get_facecolors(self) -> np.ndarray:
+        """Return one RGBA color per heatmap cell."""
+        ...
 
 
 def cumulative_lines(
@@ -163,16 +184,9 @@ def heatmap(
     if column_name in (cols.PORTFOLIO_CONTRIB_SIMPLE, cols.PORTFOLIO_RETURN):
         df = df.filter(pl.col(cols.PORTFOLIO_WEIGHT) != 0)
 
-    # Convert the date column to a string label with the format "yyyy-mm-dd"
-    df = df.with_columns(
-        pl.col(cols.THRU_DATE).dt.strftime(util.DATE_FORMAT_STRING).alias("date_label")
-    )
-
-    # Word-wrap the classification labels
-    df = df.with_columns(pl.Series("classification_label", _word_wrap(df)))
-
-    # Select just the needed columns.
-    df = df[["date_label", "classification_label", column_name]]
+    # Keep each classification on one stable row even if its display name changes or
+    # becomes a duplicate later in the reporting period.
+    df = _prepare_heatmap_rows(df, column_name)
 
     # Sorting can only be done on one column name, so if they have passed sequences, then just use
     # the first one.
@@ -209,7 +223,6 @@ def heatmap(
         on="date_label",
         index="classification_label",
         values=column_name,
-        aggregate_function="first",
         sort_columns=True,
     ).fill_null(0.0)
     date_columns = [
@@ -227,18 +240,31 @@ def heatmap(
     # Create the cmap: 0 = green, 120 = red, 100=saturation, 50=lightness
     cmap = sns.diverging_palette(0, 120, s=100, l=50, as_cmap=True)
 
+    # Thousands of independent Matplotlib text artists dominate long-history
+    # rendering. Large heatmaps use the same complete annotations through a
+    # batched raster path after the axes have been drawn.
+    heatmap_values = heatmap_data.select(date_columns).to_numpy()
+    use_large_heatmap_path = heatmap_values.size > _LARGE_HEATMAP_CELL_THRESHOLD
+
     # Create the heatmap.
     ax = sns.heatmap(
-        heatmap_data.select(date_columns).to_numpy(),
+        heatmap_values,
         cmap=cmap,
         center=0,
-        annot=True,
+        annot=not use_large_heatmap_path,
         fmt=".4f",
         linewidths=0.5,
         cbar=False,
         xticklabels=date_columns,
         yticklabels=heatmap_data["classification_label"].to_list(),
     )
+
+    # Cell annotations are entirely inside the axes and do not affect its required
+    # margins. Excluding them from tight-layout measurement preserves every rendered
+    # value while avoiding thousands of redundant text-bound calculations on long
+    # histories.
+    for annotation in ax.texts:
+        annotation.set_in_layout(False)
 
     # Remove the axes labels.
     ax.set_xlabel("")
@@ -258,8 +284,177 @@ def heatmap(
     top_margin = 1 - (0.0005 * fig_height)
     fig.tight_layout(rect=(0, bottom_margin, 1, top_margin))
 
-    # Return the png.
+    # Return the png. Ordinary heatmaps retain Matplotlib's standard text
+    # artists; only unusually large matrices use the equivalent raster path.
+    if use_large_heatmap_path:
+        mesh = cast(_HeatmapMesh, ax.collections[0])
+        return _large_heatmap_to_png(fig, ax, mesh, heatmap_values, ".4f")
     return _to_png(fig)
+
+
+def _large_heatmap_to_png(
+    fig: Figure,
+    ax: Axes,
+    mesh: _HeatmapMesh,
+    values: np.ndarray,
+    fmt: str,
+) -> bytes:
+    """Serialize a large heatmap with complete batched cell annotations.
+
+    Args:
+        fig: Completed Matplotlib heatmap figure.
+        ax: Heatmap axes used to transform cell centers into pixels.
+        mesh: Colored heatmap cells whose luminance controls text color.
+        values: Two-dimensional values to format into the cells.
+        fmt: Python numeric format specification for each value.
+
+    Returns:
+        PNG image bytes containing every heatmap cell and annotation.
+    """
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()  # type: ignore[no-untyped-call]
+    image = Image.fromarray(
+        np.asarray(canvas.buffer_rgba()).copy()  # type: ignore[no-untyped-call]
+    )
+    drawing = ImageDraw.Draw(image)
+    font_properties = FontProperties()
+    font = ImageFont.truetype(
+        findfont(font_properties),
+        round(font_properties.get_size_in_points() * fig.dpi / 72),
+    )
+
+    mesh.update_scalarmappable()
+    mesh_values = mesh.get_array().flat
+    face_colors = mesh.get_facecolors()
+    for flat_index, (row, column) in enumerate(np.ndindex(values.shape)):
+        if np.ma.is_masked(mesh_values[flat_index]):
+            continue
+        display_x, display_y = ax.transData.transform((column + 0.5, row + 0.5))
+        text_color = (
+            (38, 38, 38)
+            if _relative_luminance(face_colors[flat_index]) > 0.408
+            else "white"
+        )
+        drawing.text(
+            (display_x, image.height - display_y),
+            format(float(values[row, column]), fmt),
+            font=font,
+            fill=text_color,
+            anchor="mm",
+        )
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", dpi=(fig.dpi, fig.dpi))
+    png = buffer.getvalue()
+    plt.close(fig)
+    return png
+
+
+def _relative_luminance(color: np.ndarray) -> float:
+    """Return the relative luminance of one RGBA heatmap color."""
+    rgb = np.where(
+        color[:3] <= 0.03928,
+        color[:3] / 12.92,
+        ((color[:3] + 0.055) / 1.055) ** 2.4,
+    )
+    return float(rgb @ np.array([0.2126, 0.7152, 0.0722]))
+
+
+def _prepare_heatmap_rows(df: pl.DataFrame, column_name: str) -> pl.DataFrame:
+    """Return uniquely keyed heatmap rows with stable display labels.
+
+    Args:
+        df: Subperiod attribution rows containing dates, classification
+            identifiers, and classification names.
+        column_name: Metric column to retain for the heatmap cells.
+
+    Returns:
+        Date labels, stable classification labels, and metric values ready for
+        an aggregation-free pivot.
+
+    Raises:
+        ValueError: If a date contains more than one value for a classification
+            identifier or stable display labels cannot be made unique.
+    """
+    source_keys = df.select(cols.THRU_DATE, cols.CLASSIFICATION_IDENTIFIER)
+    if source_keys.is_duplicated().any():
+        raise ValueError(
+            "Heatmap data must contain one value per date and classification identifier."
+        )
+
+    labels_by_identifier = _stable_heatmap_labels(df)
+    if len(labels_by_identifier) != len(set(labels_by_identifier.values())):
+        raise ValueError("Heatmap classification labels could not be made unique.")
+
+    return (
+        df.with_columns(
+            pl.col(cols.THRU_DATE)
+            .dt.strftime(util.DATE_FORMAT_STRING)
+            .alias("date_label"),
+            pl.Series(
+                "classification_label",
+                [
+                    labels_by_identifier[str(identifier)]
+                    for identifier in df[cols.CLASSIFICATION_IDENTIFIER]
+                ],
+            ),
+        )
+        .select("date_label", "classification_label", column_name)
+    )
+
+
+def _stable_heatmap_labels(df: pl.DataFrame) -> dict[str, str]:
+    """Return one word-wrapped display label per classification identifier.
+
+    The latest chronological name represents an identifier for the complete
+    chart. Any identifier whose name collides with another identifier anywhere
+    in the chart is prefixed so an early or late collision cannot merge rows.
+
+    Args:
+        df: Heatmap source data containing dates, classification identifiers,
+            and classification names.
+
+    Returns:
+        Word-wrapped labels keyed by classification identifier.
+    """
+    latest_names: dict[str, str] = {}
+    identifiers_by_name: dict[str, set[str]] = {}
+    ordered = df.sort(cols.THRU_DATE)
+    for identifier_value, name_value in ordered.select(
+        cols.CLASSIFICATION_IDENTIFIER, cols.CLASSIFICATION_NAME
+    ).iter_rows():
+        identifier = str(identifier_value)
+        name = str(name_value)
+        latest_names[identifier] = name
+        identifiers_by_name.setdefault(name, set()).add(identifier)
+
+    duplicate_name_identifiers = {
+        identifier
+        for identifiers in identifiers_by_name.values()
+        if len(identifiers) > 1
+        for identifier in identifiers
+    }
+    labels = {
+        identifier: (
+            f"{identifier}: {name}"
+            if identifier in duplicate_name_identifiers
+            else name
+        )
+        for identifier, name in latest_names.items()
+    }
+
+    # A generated "identifier: name" label could itself equal another display
+    # name. Prefix every member of such a collision before the caller proves
+    # that all final labels are unique.
+    label_counts = Counter(labels.values())
+    duplicate_labels = {label for label, count in label_counts.items() if count > 1}
+    return {
+        identifier: textwrap.fill(
+            f"{identifier}: {label}" if label in duplicate_labels else label,
+            width=_MAXIMUM_LABEL_LENGTH,
+        )
+        for identifier, label in labels.items()
+    }
 
 
 def overall_attribution(

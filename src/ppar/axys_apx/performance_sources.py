@@ -14,6 +14,7 @@ from ppar.axys_apx.specification import AxysSpecification, ErrorMessage
 from ppar.axys_apx.column_aliases import resolve_column
 from ppar.axys_apx.date_ranges import AxysDateRange
 from ppar.axys_apx.security_identity import (
+    SecurityIdConstruction,
     security_id_construction,
     with_constructed_security_id,
 )
@@ -101,6 +102,41 @@ _SECURITY_PERFORMANCE_REQUIRED_COLUMNS: Final[set[str]] = {
     cols.RETURN,
     cols.WEIGHT,
 }
+_IDENTITY_COLUMNS: Final[set[str]] = {
+    cols.IDENTIFIER,
+    cols.PORTFOLIO_CODE,
+    cols.PORTFOLIO_NAME,
+}
+_FINANCIAL_COLUMNS: Final[
+    dict[PerformanceSourceType, tuple[tuple[str, bool], ...]]
+] = {
+    "portfolio_performance_columns": ((cols.PORTFOLIO_RETURN, True),),
+    "security_performance_columns": (
+        (cols.RETURN, True),
+        (cols.WEIGHT, False),
+        (cols.CONTRIBUTION, False),
+    ),
+}
+_NORMALIZED_VALUE_COLUMN: Final[str] = "__ppar_normalized_financial_value"
+
+
+def _sample_rows(
+    frame: pl.DataFrame,
+    column_names: list[str],
+) -> list[dict[str, object]]:
+    """Return compact error rows with dates formatted for readability."""
+    sample = frame.select(column_names).head(10)
+    date_columns = [
+        column_name
+        for column_name in cols.DATE_COLUMNS
+        if column_name in sample.columns and sample.schema[column_name] == pl.Date
+    ]
+    if date_columns:
+        sample = sample.with_columns(
+            pl.col(column_name).dt.to_string("%Y-%m-%d")
+            for column_name in date_columns
+        )
+    return sample.to_dicts()
 
 
 class AxysPerformanceSourceLoader:
@@ -180,6 +216,10 @@ class AxysPerformanceSourceLoader:
             column_name_mappings_name,
             mapped_required_columns,
         )
+        schema_overrides = self._schema_overrides(
+            csv_to_internal_mappings,
+            construction,
+        )
 
         selected_columns = set(mapped_required_columns)
         if construction is not None:
@@ -187,11 +227,7 @@ class AxysPerformanceSourceLoader:
         lazy_frame = (
             pl.scan_csv(
                 path,
-                schema_overrides=(
-                    construction.schema_overrides
-                    if construction is not None
-                    else None
-                ),
+                schema_overrides=schema_overrides,
             )
             .rename(csv_to_internal_mappings)
             .select(selected_columns)
@@ -216,7 +252,163 @@ class AxysPerformanceSourceLoader:
                 source_path=path,
                 error_message=self._error_message,
             )
+        frame = self._validate_identity_columns(frame, dataset_name, path)
+        frame = self._normalize_financial_columns(
+            frame,
+            column_name_mappings_name,
+            dataset_name,
+            path,
+        )
         return frame.select(required_columns)
+
+    @staticmethod
+    def _schema_overrides(
+        csv_to_internal_mappings: dict[str, str],
+        construction: SecurityIdConstruction | None,
+    ) -> dict[str, type[pl.DataType]]:
+        """Return source-column types that preserve textual identities.
+
+        Args:
+            csv_to_internal_mappings: Source columns mapped to normalized
+                performance columns.
+            construction: Optional composite security-identifier definition.
+
+        Returns:
+            Partial Polars CSV schema keyed by source column.
+        """
+        overrides = dict(construction.schema_overrides) if construction else {}
+        overrides.update(
+            {
+                source_column: pl.String
+                for source_column, internal_column in csv_to_internal_mappings.items()
+                if internal_column in _IDENTITY_COLUMNS
+            }
+        )
+        return overrides
+
+    def _validate_identity_columns(
+        self,
+        frame: pl.DataFrame,
+        dataset_name: str,
+        path: util.PathLike,
+    ) -> pl.DataFrame:
+        """Reject null, blank, or whitespace-padded normalized identities.
+
+        Args:
+            frame: Selected and normalized source rows.
+            dataset_name: Source kind used in error details.
+            path: Source CSV path used in error details.
+
+        Returns:
+            The unchanged validated frame.
+
+        Raises:
+            PparError: If a normalized identity is null, blank, or padded.
+        """
+        identity_columns = [cols.PORTFOLIO_CODE]
+        if dataset_name == "security_performance":
+            identity_columns.append(cols.IDENTIFIER)
+        for column_name in identity_columns:
+            value = pl.col(column_name)
+            stripped_value = value.str.strip_chars()
+            invalid_rows = frame.filter(
+                value.is_null()
+                | stripped_value.eq("")
+                | value.ne(stripped_value)
+            )
+            if invalid_rows.is_empty():
+                continue
+            sample_columns = [
+                name
+                for name in (
+                    cols.PORTFOLIO_CODE,
+                    cols.FROM_DATE,
+                    cols.THRU_DATE,
+                    column_name,
+                )
+                if name in invalid_rows.columns
+            ]
+            sample_rows = _sample_rows(invalid_rows, sample_columns)
+            raise PparError(
+                self._error_message(
+                    f"Identity field {column_name!r} in {str(path)!r} for "
+                    f"{dataset_name} must be non-null, nonblank, and free of "
+                    f"surrounding whitespace. Affected rows: {sample_rows}"
+                )
+            )
+        return frame
+
+    def _normalize_financial_columns(
+        self,
+        frame: pl.DataFrame,
+        source_type: PerformanceSourceType,
+        dataset_name: str,
+        path: util.PathLike,
+    ) -> pl.DataFrame:
+        """Cast financial fields and reject invalid nonfinite evidence.
+
+        Args:
+            frame: Selected and normalized source rows.
+            source_type: Performance source configuration section.
+            dataset_name: Source kind used in error details.
+            path: Source CSV path used in error details.
+
+        Returns:
+            Frame with normalized ``Float64`` financial columns.
+
+        Raises:
+            PparError: If a required field is null or any non-null financial
+                value cannot be converted to a finite number.
+        """
+        for column_name, required in _FINANCIAL_COLUMNS[source_type]:
+            normalized = frame.with_columns(
+                pl.col(column_name)
+                .cast(pl.Float64, strict=False)
+                .alias(_NORMALIZED_VALUE_COLUMN)
+            )
+            normalized_value = pl.col(_NORMALIZED_VALUE_COLUMN)
+            invalid_value = (
+                normalized_value.is_nan().fill_null(False)
+                | normalized_value.is_infinite().fill_null(False)
+            )
+            if required:
+                invalid_value = invalid_value | normalized_value.is_null()
+            else:
+                invalid_value = invalid_value | (
+                    pl.col(column_name).is_not_null()
+                    & normalized_value.is_null()
+                )
+            invalid_rows = normalized.filter(invalid_value)
+            if not invalid_rows.is_empty():
+                sample_columns = list(
+                    dict.fromkeys(
+                        name
+                        for name in (
+                            cols.PORTFOLIO_CODE,
+                            cols.FROM_DATE,
+                            cols.THRU_DATE,
+                            column_name,
+                        )
+                        if name in invalid_rows.columns
+                    )
+                )
+                sample_rows = _sample_rows(invalid_rows, sample_columns)
+                requirement = (
+                    "a finite numeric value"
+                    if required
+                    else "either null or a finite numeric value"
+                )
+                raise PparError(
+                    self._error_message(
+                        f"Financial field {column_name!r} in {str(path)!r} for "
+                        f"{dataset_name} must contain {requirement}. "
+                        f"Affected rows: {sample_rows}"
+                    )
+                )
+            frame = normalized.with_columns(
+                pl.col(_NORMALIZED_VALUE_COLUMN).alias(column_name)
+            ).drop(_NORMALIZED_VALUE_COLUMN)
+        return frame
 
     def _csv_to_internal_mappings(
         self,

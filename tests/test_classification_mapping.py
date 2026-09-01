@@ -1,12 +1,14 @@
 """Focused in-memory tests for classification inference and mapping behavior."""
 
 import datetime as dt
+from pathlib import Path
+import tempfile
 import unittest
 
 import polars as pl
 
 from ppar import Analytics
-from ppar.attribution import View
+from ppar.attribution import Chart, View
 from ppar.classification import Classification
 import ppar.schema as cols
 from ppar.errors import PparError
@@ -220,35 +222,182 @@ class MappingTests(unittest.TestCase):
         self.assertAlmostEqual(details[cols.PORTFOLIO_WEIGHT].item(), 1.0)
         self.assertAlmostEqual(details[cols.PORTFOLIO_CONTRIB_SIMPLE].item(), 0.04)
 
-    def test_zero_weight_mapped_group_preserves_nonzero_contribution(self) -> None:
-        """Offsetting mapped weights do not erase their combined contribution."""
-        performance = pl.DataFrame(
+    def test_zero_net_mapped_group_preserves_contribution_and_effects(self) -> None:
+        """Undefined group returns do not erase contribution or attribution effects."""
+        portfolio = pl.DataFrame(
             {
                 cols.FROM_DATE: [dt.date(2024, 1, 1)] * 3,
                 cols.THRU_DATE: [dt.date(2024, 1, 31)] * 3,
                 cols.IDENTIFIER: ["LONG", "SHORT", "CORE"],
-                cols.RETURN: [0.10, -0.10, 0.0],
+                cols.RETURN: [0.20, 0.10, 0.02],
                 cols.WEIGHT: [0.50, -0.50, 1.0],
             }
         )
+        benchmark = portfolio.with_columns(
+            pl.Series(cols.RETURN, [0.10, 0.04, 0.01])
+        )
         mapping = _pairs({"LONG": "HEDGE", "SHORT": "HEDGE", "CORE": "CORE"})
         analytics = Analytics(
-            performance,
-            performance.clone(),
+            portfolio,
+            benchmark,
+            portfolio_classification_name="Security",
+            benchmark_classification_name="Security",
+        )
+
+        attribution = analytics.attribution(
+            "Strategy",
+            _pairs({"HEDGE": "Hedge", "CORE": "Core"}),
+            (mapping, mapping),
+        )
+        details = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
+        hedge = details.filter(pl.col(cols.CLASSIFICATION_IDENTIFIER) == "HEDGE")
+        summary = attribution.to_polars(View.SUBPERIOD_SUMMARY)
+        overall = attribution.to_polars(View.OVERALL_ATTRIBUTION)
+        overall_hedge = overall.filter(
+            pl.col(cols.CLASSIFICATION_IDENTIFIER) == "HEDGE"
+        )
+
+        self.assertAlmostEqual(hedge[cols.PORTFOLIO_WEIGHT].item(), 0.0)
+        self.assertAlmostEqual(hedge[cols.BENCHMARK_WEIGHT].item(), 0.0)
+        self.assertIsNone(hedge[cols.PORTFOLIO_RETURN].item())
+        self.assertIsNone(hedge[cols.BENCHMARK_RETURN].item())
+        self.assertIsNone(hedge[cols.ACTIVE_RETURN].item())
+        self.assertAlmostEqual(hedge[cols.PORTFOLIO_CONTRIB_SIMPLE].item(), 0.05)
+        self.assertAlmostEqual(hedge[cols.BENCHMARK_CONTRIB_SIMPLE].item(), 0.03)
+        self.assertAlmostEqual(hedge[cols.ACTIVE_CONTRIB_SIMPLE].item(), 0.02)
+        self.assertAlmostEqual(hedge[cols.ALLOCATION_EFFECT_SIMPLE].item(), 0.0)
+        self.assertAlmostEqual(hedge[cols.SELECTION_EFFECT_SIMPLE].item(), 0.02)
+        self.assertAlmostEqual(hedge[cols.TOTAL_EFFECT_SIMPLE].item(), 0.02)
+        self.assertAlmostEqual(
+            overall_hedge[cols.ALLOCATION_EFFECT_SMOOTHED].item(), 0.0
+        )
+        self.assertAlmostEqual(
+            overall_hedge[cols.SELECTION_EFFECT_SMOOTHED].item(), 0.02
+        )
+        self.assertAlmostEqual(
+            overall_hedge[cols.TOTAL_EFFECT_SMOOTHED].item(), 0.02
+        )
+        self.assertIsNone(overall_hedge[cols.PORTFOLIO_RETURN].item())
+        self.assertIsNone(overall_hedge[cols.BENCHMARK_RETURN].item())
+        self.assertAlmostEqual(
+            summary[cols.TOTAL_EFFECT_SIMPLE].item(),
+            summary[cols.ACTIVE_RETURN].item(),
+        )
+        self.assertAlmostEqual(
+            overall[-1, cols.TOTAL_EFFECT_SMOOTHED],
+            overall[-1, cols.ACTIVE_RETURN],
+        )
+
+        self.assertIn("Hedge", attribution.to_html(View.SUBPERIOD_ATTRIBUTION))
+        with tempfile.TemporaryDirectory() as temporary:
+            csv_path = Path(temporary) / "attribution.csv"
+            attribution.write_csv(View.SUBPERIOD_ATTRIBUTION, csv_path)
+            self.assertIn("HEDGE", csv_path.read_text(encoding="utf-8"))
+        png = attribution.to_chart(Chart.OVERALL_ATTRIBUTION)
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_zero_net_portfolio_group_keeps_defined_benchmark_allocation(self) -> None:
+        """A defined benchmark group return retains the standard allocation effect."""
+        portfolio = pl.DataFrame(
+            {
+                cols.FROM_DATE: [dt.date(2024, 1, 1)] * 3,
+                cols.THRU_DATE: [dt.date(2024, 1, 31)] * 3,
+                cols.IDENTIFIER: ["LONG", "SHORT", "CORE"],
+                cols.RETURN: [0.20, 0.10, 0.02],
+                cols.WEIGHT: [0.50, -0.50, 1.0],
+            }
+        )
+        benchmark = portfolio.with_columns(
+            pl.Series(cols.RETURN, [0.10, 0.04, 0.00]),
+            pl.Series(cols.WEIGHT, [0.60, -0.50, 0.90]),
+        )
+        mapping = _pairs({"LONG": "HEDGE", "SHORT": "HEDGE", "CORE": "CORE"})
+        analytics = Analytics(
+            portfolio,
+            benchmark,
             portfolio_classification_name="Security",
             benchmark_classification_name="Security",
         )
 
         details = analytics.attribution(
             "Strategy",
-            _pairs({"HEDGE": "Hedge", "CORE": "Core"}),
-            (mapping, mapping),
+            mapping_data_sources=(mapping, mapping),
+        ).to_polars(View.SUBPERIOD_ATTRIBUTION)
+        hedge = details.filter(pl.col(cols.CLASSIFICATION_IDENTIFIER) == "HEDGE")
+
+        expected_allocation = -0.10 * (0.40 - 0.04)
+        expected_total = 0.01 - (-0.10 * 0.04)
+        self.assertIsNone(hedge[cols.PORTFOLIO_RETURN].item())
+        self.assertAlmostEqual(hedge[cols.BENCHMARK_RETURN].item(), 0.40)
+        self.assertAlmostEqual(
+            hedge[cols.ALLOCATION_EFFECT_SIMPLE].item(), expected_allocation
+        )
+        self.assertAlmostEqual(
+            hedge[cols.TOTAL_EFFECT_SIMPLE].item(), expected_total
+        )
+        self.assertAlmostEqual(
+            hedge[cols.SELECTION_EFFECT_SIMPLE].item(),
+            expected_total - expected_allocation,
+        )
+
+    def test_zero_weight_zero_contribution_mapped_group_has_zero_return(self) -> None:
+        """A zero-exposure group with no contribution retains a defined zero return."""
+        performance = pl.DataFrame(
+            {
+                cols.FROM_DATE: [dt.date(2024, 1, 1)] * 3,
+                cols.THRU_DATE: [dt.date(2024, 1, 31)] * 3,
+                cols.IDENTIFIER: ["LONG", "SHORT", "CORE"],
+                cols.RETURN: [0.10, 0.10, 0.02],
+                cols.WEIGHT: [0.50, -0.50, 1.0],
+            }
+        )
+        mapping = _pairs({"LONG": "HEDGE", "SHORT": "HEDGE", "CORE": "CORE"})
+        analytics = Analytics(
+            performance,
+            performance,
+            portfolio_classification_name="Security",
+            benchmark_classification_name="Security",
+        )
+
+        details = analytics.attribution(
+            "Strategy",
+            mapping_data_sources=(mapping, mapping),
         ).to_polars(View.SUBPERIOD_ATTRIBUTION)
         hedge = details.filter(pl.col(cols.CLASSIFICATION_IDENTIFIER) == "HEDGE")
 
         self.assertAlmostEqual(hedge[cols.PORTFOLIO_WEIGHT].item(), 0.0)
-        self.assertAlmostEqual(hedge[cols.PORTFOLIO_CONTRIB_SIMPLE].item(), 0.10)
-        self.assertAlmostEqual(details[cols.PORTFOLIO_CONTRIB_SIMPLE].sum(), 0.10)
+        self.assertAlmostEqual(hedge[cols.PORTFOLIO_CONTRIB_SIMPLE].item(), 0.0)
+        self.assertAlmostEqual(hedge[cols.PORTFOLIO_RETURN].item(), 0.0)
+
+    def test_near_zero_mapped_weight_is_not_treated_as_exact_zero(self) -> None:
+        """A nonzero net exposure keeps its mathematically defined mapped return."""
+        epsilon = 1e-12
+        performance = pl.DataFrame(
+            {
+                cols.FROM_DATE: [dt.date(2024, 1, 1)] * 3,
+                cols.THRU_DATE: [dt.date(2024, 1, 31)] * 3,
+                cols.IDENTIFIER: ["LONG", "SHORT", "CORE"],
+                cols.RETURN: [0.10, -0.10, 0.0],
+                cols.WEIGHT: [0.50 + epsilon, -0.50, 1.0 - epsilon],
+            }
+        )
+        mapping = _pairs({"LONG": "HEDGE", "SHORT": "HEDGE", "CORE": "CORE"})
+        analytics = Analytics(
+            performance,
+            performance,
+            portfolio_classification_name="Security",
+            benchmark_classification_name="Security",
+        )
+
+        details = analytics.attribution(
+            "Strategy",
+            mapping_data_sources=(mapping, mapping),
+        ).to_polars(View.SUBPERIOD_ATTRIBUTION)
+        hedge = details.filter(pl.col(cols.CLASSIFICATION_IDENTIFIER) == "HEDGE")
+
+        self.assertNotEqual(hedge[cols.PORTFOLIO_WEIGHT].item(), 0.0)
+        self.assertIsNotNone(hedge[cols.PORTFOLIO_RETURN].item())
+        self.assertGreater(abs(hedge[cols.PORTFOLIO_RETURN].item()), 1e6)
 
     def test_attribution_cache_distinguishes_mapping_sources(self) -> None:
         """A classification label alone cannot identify a mapped calculation."""

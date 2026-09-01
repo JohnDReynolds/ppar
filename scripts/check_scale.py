@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Callable, Collection, Sequence
+import datetime as dt
 from pathlib import Path
+import re
 import runpy
 import shutil
 import statistics
@@ -17,21 +19,32 @@ from typing import cast
 import polars as pl
 from polars.testing import assert_frame_equal
 
-from ppar.attribution import View
+from ppar import Analytics
+from ppar.attribution import Attribution, View
 from ppar.axys_apx import AxysData
-from ppar.frequency import Frequency
+from ppar.frequency import (
+    Frequency,
+    frequency_bucket,
+    frequency_bucket_effective_end,
+    load_holidays,
+)
+import ppar.schema as cols
 
 
 _ROOT = Path(__file__).resolve().parents[1]
 _TEMPLATE = _ROOT / "src" / "ppar" / "templates" / "axys_apx"
+_DEMO_GLOBALS = runpy.run_path(str(_TEMPLATE / "ppar_demo.py"))
 _AXYS_SOURCE_VALUES = cast(
     dict[str, object],
-    runpy.run_path(str(_TEMPLATE / "ppar_demo.py"))["AXYS_SOURCE_VALUES"],
+    _DEMO_GLOBALS["AXYS_SOURCE_VALUES"],
 )
+_DEMO_FROM_DATE = cast(dt.date, _DEMO_GLOBALS["FROM_DATE"])
 _ALLOWED_SCALES = (*range(10, 101, 10), 500)
 _SELECTED_SCALE = 10
 _HISTORY_SCALE = 5
-_HISTORY_BLOCK_YEARS = 5
+_EXPECTED_HISTORY_SOURCE_PERIODS = 300
+_EXPECTED_HISTORY_REPORTING_PERIODS = 99
+_EXPECTED_HISTORY_REPORTING_END = dt.date(2046, 3, 30)
 _SAMPLES = 3
 _TIMEOUT_GRACE_SECONDS = 5.0
 _SCALING_WARNING_MULTIPLIER = 1.05
@@ -170,26 +183,172 @@ def _expanded_selected_frames(
     )
 
 
-def _expanded_history_frame(source: pl.DataFrame, scale: int) -> pl.DataFrame:
-    """Return chronologically shifted, nonoverlapping performance blocks."""
-    dated = source.with_columns(
-        pl.col("From Date").str.to_date(),
-        pl.col("Thru Date").str.to_date(),
-    )
-    return pl.concat(
-        [
-            dated.with_columns(
-                pl.col("From Date").dt.offset_by(
-                    f"{copy_number * _HISTORY_BLOCK_YEARS}y"
-                ),
-                pl.col("Thru Date").dt.offset_by(
-                    f"{copy_number * _HISTORY_BLOCK_YEARS}y"
-                ),
+def _monthly_history_periods(
+    first_from_date: dt.date,
+    count: int,
+    holidays: Collection[dt.date],
+) -> list[tuple[dt.date, dt.date]]:
+    """Return consecutive monthly source periods with business-day endpoints.
+
+    Args:
+        first_from_date: Inclusive start of the first source period.
+        count: Number of monthly source periods to create.
+        holidays: Dates treated as nonbusiness days.
+
+    Returns:
+        Gapless inclusive periods ending at each month's effective business
+        endpoint.
+
+    Raises:
+        ValueError: If ``count`` is not positive.
+        RuntimeError: If the requested first date falls after its month's
+            effective endpoint.
+    """
+    if count < 1:
+        raise ValueError("History period count must be positive.")
+
+    first_bucket = frequency_bucket(first_from_date, Frequency.MONTHLY)
+    from_date = first_from_date
+    periods: list[tuple[dt.date, dt.date]] = []
+    for offset in range(count):
+        thru_date = frequency_bucket_effective_end(
+            first_bucket + offset,
+            Frequency.MONTHLY,
+            holidays,
+        )
+        if thru_date < from_date:
+            raise RuntimeError(
+                "History start falls after the first monthly business endpoint."
             )
-            for copy_number in range(scale)
-        ],
-        how="vertical",
+        periods.append((from_date, thru_date))
+        from_date = thru_date + dt.timedelta(days=1)
+    return periods
+
+
+def _expanded_history_frame(
+    source: pl.DataFrame,
+    scale: int,
+    holidays: Collection[dt.date],
+) -> pl.DataFrame:
+    """Repeat source values across consecutive calendar-month periods.
+
+    Args:
+        source: Axys/APX performance rows containing source date strings or
+            date values.
+        scale: Number of complete source-history value cycles to produce.
+        holidays: Dates treated as nonbusiness days.
+
+    Returns:
+        Expanded rows whose period keys are gapless and calendar-correct.
+
+    Raises:
+        ValueError: If ``scale`` is not positive.
+        RuntimeError: If the source period keys do not already follow the
+            configured monthly calendar.
+    """
+    if scale < 1:
+        raise ValueError("History scale must be positive.")
+
+    date_expressions = [
+        (
+            pl.col(column).str.to_date()
+            if source.schema[column] == pl.String
+            else pl.col(column).cast(pl.Date)
+        ).alias(column)
+        for column in ("From Date", "Thru Date")
+    ]
+    dated = source.with_columns(date_expressions)
+    source_periods = list(
+        dated.select("From Date", "Thru Date")
+        .unique()
+        .sort("Thru Date")
+        .iter_rows()
     )
+    generated_periods = _monthly_history_periods(
+        source_periods[0][0],
+        len(source_periods) * scale,
+        holidays,
+    )
+    if generated_periods[: len(source_periods)] != source_periods:
+        raise RuntimeError(
+            "Source history does not follow the configured monthly calendar."
+        )
+
+    period_indices = pl.DataFrame(
+        {
+            "From Date": [period[0] for period in source_periods],
+            "Thru Date": [period[1] for period in source_periods],
+            "_history_period_index": range(len(source_periods)),
+        }
+    )
+    indexed = dated.join(
+        period_indices,
+        on=["From Date", "Thru Date"],
+        how="left",
+        validate="m:1",
+    )
+    copies: list[pl.DataFrame] = []
+    for copy_number in range(scale):
+        offset = copy_number * len(source_periods)
+        replacement_dates = pl.DataFrame(
+            {
+                "_history_period_index": range(len(source_periods)),
+                "From Date": [
+                    generated_periods[offset + index][0]
+                    for index in range(len(source_periods))
+                ],
+                "Thru Date": [
+                    generated_periods[offset + index][1]
+                    for index in range(len(source_periods))
+                ],
+            }
+        )
+        copies.append(
+            indexed.drop("From Date", "Thru Date")
+            .join(
+                replacement_dates,
+                on="_history_period_index",
+                how="left",
+                validate="m:1",
+            )
+            .drop("_history_period_index")
+            .select(dated.columns)
+        )
+    return pl.concat(copies, how="vertical")
+
+
+def _set_demo_thru_date(demo_path: Path, thru_date: dt.date) -> None:
+    """Replace and verify exactly one executable demo ``THRU_DATE`` assignment.
+
+    Args:
+        demo_path: Generated demonstration script to update.
+        thru_date: Inclusive upper source-date bound for the workload.
+
+    Raises:
+        RuntimeError: If exactly one assignment cannot be found or the updated
+            script does not expose the requested date.
+    """
+    pattern = re.compile(
+        r"^(THRU_DATE(?:\s*:\s*[^=]+)?\s*=\s*)"
+        r"dt\.date\(\s*\d{4}\s*,\s*\d{1,2}\s*,\s*\d{1,2}\s*\)\s*$",
+        re.MULTILINE,
+    )
+    replacement = f"dt.date({thru_date.year}, {thru_date.month}, {thru_date.day})"
+    updated, replacement_count = pattern.subn(
+        lambda match: f"{match.group(1)}{replacement}",
+        demo_path.read_text(encoding="utf-8"),
+    )
+    if replacement_count != 1:
+        raise RuntimeError(
+            "History preparation must replace exactly one THRU_DATE assignment; "
+            f"found {replacement_count}."
+        )
+    demo_path.write_text(updated, encoding="utf-8")
+    actual = runpy.run_path(str(demo_path)).get("THRU_DATE")
+    if actual != thru_date:
+        raise RuntimeError(
+            f"History demo THRU_DATE is {actual!r}, not {thru_date!r}."
+        )
 
 
 def _copy_template(destination: Path) -> Path:
@@ -224,31 +383,65 @@ def _prepare_selected(destination: Path, scale: int) -> tuple[Path, int]:
 
 
 def _prepare_history(destination: Path) -> tuple[Path, int, int]:
-    """Create the established fivefold, five-year-block history workload."""
+    """Create the fivefold, gapless calendar-month history workload."""
     site = _copy_template(destination)
-    demo_path = site / "ppar_demo.py"
-    demo_path.write_text(
-        demo_path.read_text(encoding="utf-8").replace(
-            "THRU_DATE: dt.date | None = dt.date(2026, 5, 29)",
-            "THRU_DATE: dt.date | None = dt.date(2046, 5, 29)",
-        ),
-        encoding="utf-8",
-    )
+    holidays = load_holidays(site / "input" / "holidays.csv")
     rows = 0
     periods = 0
+    history_thru_date: dt.date | None = None
     for file_name in ("portperf.csv", "secperf.csv"):
         path = site / "input" / file_name
-        expanded = _expanded_history_frame(pl.read_csv(path), _HISTORY_SCALE)
+        expanded = _expanded_history_frame(
+            pl.read_csv(path),
+            _HISTORY_SCALE,
+            holidays,
+        )
         expanded.write_csv(path)
         rows += expanded.height
         if file_name == "portperf.csv":
-            periods = (
+            portfolio_periods = (
                 expanded.filter(pl.col("Portfolio Code") == "MEGA_ALPHA")
                 .select("From Date", "Thru Date")
                 .unique()
-                .height
+                .sort("Thru Date")
             )
+            periods = portfolio_periods.height
+            history_thru_date = cast(
+                dt.date,
+                portfolio_periods["Thru Date"].item(-1),
+            )
+    if history_thru_date is None:
+        raise RuntimeError("History preparation did not produce portfolio periods.")
+    _set_demo_thru_date(site / "ppar_demo.py", history_thru_date)
     return site, rows, periods
+
+
+def _history_reporting_periods(site: Path) -> pl.DataFrame:
+    """Calculate the quarterly periods reached by a generated history demo.
+
+    Args:
+        site: Prepared Axys/APX demonstration workspace.
+
+    Returns:
+        The calculated subperiod date pairs from the demo's classification
+        attribution.
+
+    Raises:
+        RuntimeError: If the generated script does not expose its expected
+            analytics builder.
+    """
+    demo_globals = runpy.run_path(str(site / "ppar_demo.py"))
+    builder_value = demo_globals.get("_build_analytics")
+    if not callable(builder_value):
+        raise RuntimeError("History demo does not expose _build_analytics().")
+    builder = cast(
+        Callable[[], tuple[Analytics, Attribution, Attribution]],
+        builder_value,
+    )
+    _, _, classification_attribution = builder()
+    return classification_attribution.to_polars(View.SUBPERIOD_SUMMARY).select(
+        cols.DATE_COLUMNS
+    )
 
 
 def _selected_tables(site: Path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
@@ -262,6 +455,7 @@ def _selected_tables(site: Path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFra
     )
     security_analytics = security_portfolio.to_analytics(
         security_benchmark,
+        from_date=_DEMO_FROM_DATE,
         frequency=Frequency.QUARTERLY,
         holidays=site / "input" / "holidays.csv",
     )
@@ -274,6 +468,7 @@ def _selected_tables(site: Path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFra
     )
     sector_analytics = sector_portfolio.to_analytics(
         sector_benchmark,
+        from_date=_DEMO_FROM_DATE,
         frequency=Frequency.QUARTERLY,
         holidays=site / "input" / "holidays.csv",
     )
@@ -399,13 +594,16 @@ def _check_selected(workspace: Path) -> None:
 
 
 def _check_history(workspace: Path) -> None:
-    """Run the unchanged fivefold history gate through the public demo script."""
+    """Run the fivefold reporting-history gate through the public demo script."""
     baseline, baseline_security_rows = _prepare_large_site(
         workspace / "history_baseline", 1
     )
     scaled, scaled_rows, periods = _prepare_history(workspace / "history_scaled")
-    if periods != 60 * _HISTORY_SCALE:
-        raise RuntimeError(f"Expected 300 history periods, found {periods}.")
+    if periods != _EXPECTED_HISTORY_SOURCE_PERIODS:
+        raise RuntimeError(
+            f"Expected {_EXPECTED_HISTORY_SOURCE_PERIODS} history periods, "
+            f"found {periods}."
+        )
     baseline_elapsed = _run([sys.executable, baseline / "ppar_demo.py"])
     _, _, warning, failure = _sublinear_scaling_result(
         "Analytics long-history", _HISTORY_SCALE, 1.0, 1.0
@@ -417,6 +615,23 @@ def _check_history(workspace: Path) -> None:
     artifacts = list((scaled / "output").iterdir())
     if len(artifacts) != 11 or any(path.stat().st_size == 0 for path in artifacts):
         raise RuntimeError("Long-history Analytics artifacts are incomplete.")
+    reporting_periods = _history_reporting_periods(scaled)
+    if reporting_periods.height != _EXPECTED_HISTORY_REPORTING_PERIODS:
+        raise RuntimeError(
+            "Long-history Analytics did not reach the expected reporting horizon: "
+            f"expected {_EXPECTED_HISTORY_REPORTING_PERIODS} periods, found "
+            f"{reporting_periods.height}."
+        )
+    reporting_start = cast(dt.date, reporting_periods[cols.FROM_DATE].item(0))
+    reporting_end = cast(dt.date, reporting_periods[cols.THRU_DATE].item(-1))
+    if (
+        reporting_start != _DEMO_FROM_DATE
+        or reporting_end != _EXPECTED_HISTORY_REPORTING_END
+    ):
+        raise RuntimeError(
+            "Long-history Analytics reporting bounds are incorrect: "
+            f"{reporting_start} to {reporting_end}."
+        )
     baseline_rows = baseline_security_rows + pl.read_csv(
         baseline / "input" / "portperf.csv"
     ).height

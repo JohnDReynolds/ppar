@@ -93,6 +93,11 @@ class RiskStatistics:
     ``_Statistic`` and stores the formatted results in a Polars DataFrame.
 
     Notes:
+        Accepted NumPy integer and floating return arrays are normalized to
+        ``float64`` before calculation. Periodic portfolio and benchmark
+        returns must be finite and strictly greater than -100% because the
+        reported annualized values use geometric compounding.
+
         Results can be retrieved using ``to_html()``,
         ``to_polars()``, or ``to_table()``, and
         written using ``write_csv()``.
@@ -100,7 +105,7 @@ class RiskStatistics:
 
     def __init__(
         self,
-        returns: Sequence[Performance] | Sequence[npt.NDArray[np.float64]],
+        returns: Sequence[Performance] | Sequence[npt.NDArray[np.generic]],
         frequency: Frequency,
         annual_minimum_acceptable_return: float = util.DEFAULT_ANNUAL_MINIMUM_ACCEPTABLE_RETURN,
         annual_risk_free_rate: float = util.DEFAULT_ANNUAL_RISK_FREE_RATE,
@@ -192,12 +197,18 @@ class RiskStatistics:
             self._thru_date = portfolio_totals[cols.THRU_DATE][-1]
             self._portfolio_name = return_pair[0].name
             self._benchmark_name = return_pair[1].name
-            self._portfolio_returns = portfolio_totals[cols.TOTAL_RETURN].to_numpy()
-            self._benchmark_returns = benchmark_totals[cols.TOTAL_RETURN].to_numpy()
+            self._portfolio_returns = portfolio_totals[cols.TOTAL_RETURN].to_numpy().astype(
+                np.float64,
+                copy=False,
+            )
+            self._benchmark_returns = benchmark_totals[cols.TOTAL_RETURN].to_numpy().astype(
+                np.float64,
+                copy=False,
+            )
             self._performances_to_audit = cast(Sequence[Performance], return_pair)
         elif isinstance(return_pair[0], np.ndarray) and isinstance(return_pair[1], np.ndarray):
             array_pair = cast(
-                tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]],
+                tuple[npt.NDArray[np.generic], npt.NDArray[np.generic]],
                 return_pair,
             )
             for label, values in zip(("portfolio", "benchmark"), array_pair):
@@ -217,8 +228,10 @@ class RiskStatistics:
             self._thru_date = dt.date.max
             self._portfolio_name = "Portfolio"
             self._benchmark_name = "Benchmark"
-            self._portfolio_returns = array_pair[0]
-            self._benchmark_returns = array_pair[1]
+            # Normalize before subtraction and every other calculation. In
+            # particular, unsigned integer subtraction must not wrap around.
+            self._portfolio_returns = array_pair[0].astype(np.float64, copy=False)
+            self._benchmark_returns = array_pair[1].astype(np.float64, copy=False)
             self._performances_to_audit = cast(Sequence[Performance], tuple())
         else:
             raise PparError(
@@ -256,6 +269,32 @@ class RiskStatistics:
         if not returns_are_finite:
             raise PparError("Portfolio and benchmark returns must be finite.")
 
+        # Geometric annualization and logarithmic linking require a positive
+        # wealth relative. Positive leveraged returns have no corresponding
+        # upper boundary, but a periodic return at or below -100% is undefined
+        # for these calculations.
+        for label, values in (
+            ("portfolio", self._portfolio_returns),
+            ("benchmark", self._benchmark_returns),
+        ):
+            invalid_positions = np.flatnonzero(values <= -1.0)
+            if invalid_positions.size:
+                samples = [
+                    {
+                        "index": int(position),
+                        "return": float(values[position]),
+                    }
+                    for position in invalid_positions[:10]
+                ]
+                raise PparError(
+                    f"{label.capitalize()} periodic returns must exceed -100% "
+                    "for geometric compounding.",
+                    context={
+                        "return_source": label,
+                        "invalid_returns": samples,
+                    },
+                )
+
         # If Performance objects were supplied directly, validate date alignment.
         if self._performances_to_audit:
             self._audit()
@@ -290,24 +329,44 @@ class RiskStatistics:
             .collect()
         )
 
-    def _annualize_return(self, mean_frequency_return: float, qty_periods_per_year: int) -> float:
+    def _annualize_return(
+        self,
+        mean_frequency_return: float,
+        qty_periods_per_year: int,
+        statistic_name: str,
+    ) -> float:
         """Annualize a mean periodic return.
 
         Args:
             mean_frequency_return: Mean return for the input frequency.
             qty_periods_per_year: Number of periods per year for the input
                 frequency.
+            statistic_name: Statistic label to include in validation context.
 
         Returns:
             Annualized return, or ``np.nan`` when the return series contains
-            fewer than one year's worth of observations.
+            fewer than one year's worth of observations or the supplied value
+            is already undefined.
+
+        Raises:
+            PparError: If a finite periodic value at or below -100% would be
+                geometrically compounded.
         """
         # Cannot annualize if you do not have at least a years worth of returns, so return np.nan.
-        return (
-            np.nan
-            if self._quantity_of_returns < qty_periods_per_year
-            else ((1 + mean_frequency_return) ** qty_periods_per_year) - 1
-        )
+        if self._quantity_of_returns < qty_periods_per_year or not math.isfinite(
+            mean_frequency_return
+        ):
+            return np.nan
+        if mean_frequency_return <= -1.0:
+            raise PparError(
+                f"{statistic_name} periodic value must exceed -100% for "
+                "geometric annualization.",
+                context={
+                    "statistic": statistic_name,
+                    "periodic_return": mean_frequency_return,
+                },
+            )
+        return ((1.0 + mean_frequency_return) ** qty_periods_per_year) - 1.0
 
     def _audit(self) -> None:
         """Audit the source performance pair.
@@ -320,6 +379,27 @@ class RiskStatistics:
         Performance.audit_performances(
             self._performances_to_audit, self._from_date, self._thru_date
         )
+
+    @staticmethod
+    def _variance_is_effectively_zero(
+        returns: npt.NDArray[np.float64],
+    ) -> bool:
+        """Return whether observable variation is below input precision.
+
+        Args:
+            returns: Finite periodic returns represented as ``float64``.
+
+        Returns:
+            ``True`` when sample variance is exactly zero or its standard
+            deviation is no larger than one floating-point resolution unit at
+            the scale of the input values.
+        """
+        variance = float(np.var(returns, ddof=1))
+        if variance == 0.0:
+            return True
+        input_scale = float(np.max(np.abs(returns)))
+        resolution = math.ulp(input_scale)
+        return math.sqrt(variance) <= resolution
 
     @staticmethod
     def _beta(
@@ -339,7 +419,7 @@ class RiskStatistics:
         covariance_matrix = np.cov(portfolio_returns, benchmark_returns, ddof=1)
         covariance = covariance_matrix[0, 1]
         benchmark_variance = np.var(benchmark_returns, ddof=1)
-        if np.isclose(benchmark_variance, 0.0):
+        if RiskStatistics._variance_is_effectively_zero(benchmark_returns):
             return math.nan
         return cast(float, covariance / benchmark_variance)  # cast for mypy
 
@@ -436,8 +516,12 @@ class RiskStatistics:
                 benchmark_stddev = float(np.std(self._benchmark_returns))
                 correlation_coefficient = (
                     math.nan
-                    if np.isclose(stddev, 0.0)
-                    or np.isclose(benchmark_stddev, 0.0)
+                    if RiskStatistics._variance_is_effectively_zero(
+                        self._portfolio_returns
+                    )
+                    or RiskStatistics._variance_is_effectively_zero(
+                        self._benchmark_returns
+                    )
                     else cast(
                         float,
                         np.corrcoef(
@@ -471,7 +555,11 @@ class RiskStatistics:
                     case _Statistic.ALPHA_ANNUALIZED:
                         # Alpha is a return-like quantity, so annualize by compounding
                         # rather than by sqrt(periods), which is for volatility.
-                        value = self._annualize_return(alpha, qty_periods_per_year)
+                        value = self._annualize_return(
+                            alpha,
+                            qty_periods_per_year,
+                            _Statistic.ALPHA_ANNUALIZED.value,
+                        )
                     case _Statistic.BETA:
                         value = beta
                     case _Statistic.CORRELATION:
@@ -495,7 +583,11 @@ class RiskStatistics:
                     case _Statistic.JENSENS_ALPHA:
                         value = jensens_alpha
                     case _Statistic.JENSENS_ALPHA_ANNUALIZED:
-                        value = self._annualize_return(jensens_alpha, qty_periods_per_year)
+                        value = self._annualize_return(
+                            jensens_alpha,
+                            qty_periods_per_year,
+                            _Statistic.JENSENS_ALPHA_ANNUALIZED.value,
+                        )
                     case _Statistic.M_SQUARED:
                         if idx == 0:
                             # M-squared expresses Sharpe performance as a return
@@ -508,7 +600,11 @@ class RiskStatistics:
                     case _Statistic.MEAN_RETURN:
                         value = mean
                     case _Statistic.MEAN_RETURN_ANNUALIZED:
-                        value = self._annualize_return(mean, qty_periods_per_year)
+                        value = self._annualize_return(
+                            mean,
+                            qty_periods_per_year,
+                            _Statistic.MEAN_RETURN_ANNUALIZED.value,
+                        )
                     case _Statistic.R_SQUARED:
                         value = correlation_coefficient**2
                     case _Statistic.RETURN_RANGE:

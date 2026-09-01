@@ -7,7 +7,6 @@ Attribution and RiskStatistics objects.
 """
 
 # Python Imports
-import bisect
 from collections.abc import Hashable
 from dataclasses import dataclass
 import datetime as dt
@@ -25,6 +24,7 @@ from ppar.frequency import (
     Frequency,
     date_matches_frequency,
     frequency_bucket,
+    frequency_bucket_end,
     frequency_bucket_effective_end,
     frequency_bucket_label,
     load_holidays,
@@ -60,7 +60,7 @@ def _completed_frequency_bucket_ends(
     source_periods: pl.DataFrame,
     frequency: Frequency,
     holidays: frozenset[dt.date],
-) -> tuple[dict[int, dt.date], _FrequencyTruncation | None]:
+) -> tuple[dict[int, dt.date], _FrequencyTruncation | None, int | None]:
     """Return the contiguous prefix of complete fixed-frequency buckets.
 
     Args:
@@ -71,8 +71,8 @@ def _completed_frequency_bucket_ends(
     Returns:
         Mapping from consecutive reporting buckets to their actual source thru
         dates, followed by information about the first invalid nonterminal
-        bucket. An incomplete final bucket is omitted without a truncation
-        notice.
+        bucket and the identifier of an incomplete final bucket. An incomplete
+        final bucket is omitted without a truncation notice.
     """
     source_dates = list(
         source_periods.select(cols.DATE_COLUMNS)
@@ -102,7 +102,7 @@ def _completed_frequency_bucket_ends(
             completed_bucket_ends[bucket] = thru_date
             continue
         if bucket == last_bucket:
-            return completed_bucket_ends, None
+            return completed_bucket_ends, None, bucket
         return (
             completed_bucket_ends,
             _FrequencyTruncation(
@@ -110,8 +110,113 @@ def _completed_frequency_bucket_ends(
                 thru_date,
                 frequency_bucket_effective_end(bucket, frequency, holidays),
             ),
+            None,
         )
-    return completed_bucket_ends, None
+    return completed_bucket_ends, None, None
+
+
+def _period_tuples(source_periods: pl.DataFrame) -> list[tuple[dt.date, dt.date]]:
+    """Return sorted inclusive source periods as Python date tuples."""
+    return [
+        (cast(dt.date, from_date), cast(dt.date, thru_date))
+        for from_date, thru_date in source_periods.select(cols.DATE_COLUMNS)
+        .unique()
+        .sort(cols.THRU_DATE)
+        .iter_rows()
+    ]
+
+
+def _formatted_periods(
+    periods: Sequence[tuple[dt.date, dt.date]],
+) -> list[tuple[str, str]]:
+    """Return period tuples formatted for concise error messages."""
+    return [(from_date.isoformat(), thru_date.isoformat()) for from_date, thru_date in periods]
+
+
+def _fixed_frequency_coverage_start(
+    source_periods: Sequence[tuple[dt.date, dt.date]],
+    bucket: int,
+    endpoint: dt.date,
+    previous_endpoint: dt.date | None,
+    frequency: Frequency,
+    holidays: frozenset[dt.date],
+    source_label: str,
+) -> dt.date:
+    """Validate one source's gapless coverage and return its actual start.
+
+    Args:
+        source_periods: Validated inclusive source-period date pairs.
+        bucket: Reporting bucket being validated.
+        endpoint: Common actual endpoint for the reporting bucket.
+        previous_endpoint: Actual endpoint of the preceding aligned bucket, if
+            one has already been accepted.
+        frequency: Fixed reporting frequency.
+        holidays: Dates treated as nonbusiness days.
+        source_label: Human-readable source name used in errors.
+
+    Returns:
+        First actual source date covered by the reporting bucket.
+
+    Raises:
+        PparError: If source periods are absent, cross the bucket boundary,
+            leave an interior gap, or do not cover a complete first bucket.
+    """
+    label = frequency_bucket_label(bucket, frequency)
+    periods = [
+        period
+        for period in source_periods
+        if frequency_bucket(period[1], frequency) == bucket
+    ]
+    if not periods:
+        raise PparError(f"{source_label} has no source periods for {label}.")
+    if periods[-1][1] != endpoint:
+        raise PparError(
+            f"{source_label} coverage for {label} ends {periods[-1][1].isoformat()}, "
+            f"not the aligned endpoint {endpoint.isoformat()}.",
+        )
+
+    for (_, prior_thru_date), (from_date, _) in zip(periods[:-1], periods[1:]):
+        expected_from_date = prior_thru_date + dt.timedelta(days=1)
+        if from_date != expected_from_date:
+            raise PparError(
+                f"{source_label} coverage for {label} is not gapless: expected "
+                f"{expected_from_date.isoformat()} after {prior_thru_date.isoformat()}, "
+                f"received {from_date.isoformat()}.",
+            )
+
+    actual_start = periods[0][0]
+    if previous_endpoint is not None:
+        earliest_start = previous_endpoint + dt.timedelta(days=1)
+        latest_start = frequency_bucket_end(
+            bucket - 1,
+            frequency,
+        ) + dt.timedelta(days=1)
+        if not earliest_start <= actual_start <= latest_start:
+            raise PparError(
+                f"{source_label} coverage for {label} starts "
+                f"{actual_start.isoformat()}; after the preceding aligned endpoint, "
+                f"the next complete bucket must start between "
+                f"{earliest_start.isoformat()} and {latest_start.isoformat()}.",
+            )
+        return actual_start
+
+    earliest_complete_start = frequency_bucket_effective_end(
+        bucket - 1,
+        frequency,
+        holidays,
+    ) + dt.timedelta(days=1)
+    latest_complete_start = frequency_bucket_end(
+        bucket - 1,
+        frequency,
+    ) + dt.timedelta(days=1)
+    if not earliest_complete_start <= actual_start <= latest_complete_start:
+        raise PparError(
+            f"{source_label} coverage for {label} starts {actual_start.isoformat()}; "
+            "a complete first reporting bucket must start between "
+            f"{earliest_complete_start.isoformat()} and "
+            f"{latest_complete_start.isoformat()}.",
+        )
+    return actual_start
 
 
 def _data_source_cache_token(source: util.AllDataSources | None) -> Hashable:
@@ -354,9 +459,10 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
     ) -> tuple[list[tuple[dt.date, dt.date]], list[int]]:
         """Calculate common subperiod dates for portfolio and benchmark data.
 
-        Finds from and thru dates that exist in both Performance objects,
-        aligns fixed frequencies by calendar bucket, and pairs each from date
-        with the next valid thru date.
+        Native-frequency periods must match as complete inclusive intervals
+        inside the common comparison window. Fixed frequencies may use
+        different source partitions, but each aligned bucket must cover the
+        same complete, gapless inclusive date range on both sides.
 
         Args:
             message_suffix: Suffix to include in the ``PparError`` message when no
@@ -368,24 +474,13 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
             data.
 
         Raises:
-            PparError: If no common subperiods can be calculated.
+            PparError: If no common subperiods can be calculated or source
+                intervals cannot be aligned without changing their coverage.
         """
-
-        def _common_dates(dates1: pl.Series, dates2: pl.Series) -> pl.Series:
-            """Return sorted dates that are present in both input series.
-
-            Args:
-                dates1: First date series.
-                dates2: Second date series.
-
-            Returns:
-                Sorted Polars Series containing dates common to both inputs.
-            """
-            return dates1.filter(dates1.is_in(dates2.to_list())).sort()
-
         # Cache one row per reporting period from each performance stream.
         df0 = self._performances[0].period_totals()
         df1 = self._performances[1].period_totals()
+        source_periods = [_period_tuples(source) for source in (df0, df1)]
 
         if self._frequency != Frequency.AS_OFTEN_AS_POSSIBLE:
             bucket_results = [
@@ -397,6 +492,19 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                 for source_periods in (df0, df1)
             ]
             complete_buckets = [result[0] for result in bucket_results]
+            for source_index, result in enumerate(bucket_results):
+                incomplete_terminal_bucket = result[2]
+                comparison_index = 1 - source_index
+                if (
+                    incomplete_terminal_bucket is not None
+                    and incomplete_terminal_bucket
+                    in complete_buckets[comparison_index]
+                ):
+                    raise PparError(
+                        "portfolio and benchmark terminal-bucket completeness "
+                        "differs for "
+                        f"{frequency_bucket_label(incomplete_terminal_bucket, self._frequency)}.",
+                    )
             common_buckets = sorted(
                 set(complete_buckets[0]).intersection(complete_buckets[1])
             )
@@ -418,12 +526,9 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                     RuntimeWarning,
                     stacklevel=2,
                 )
-            next_from_date = max(
-                cast(dt.date, df0[cols.FROM_DATE].min()),
-                cast(dt.date, df1[cols.FROM_DATE].min()),
-            )
             subperiod_dates = []
             subperiod_buckets = []
+            previous_endpoint: dt.date | None = None
             for bucket in common_buckets:
                 thru_date = complete_buckets[0][bucket]
                 if complete_buckets[1][bucket] != thru_date:
@@ -431,27 +536,60 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                         "portfolio and benchmark effective endpoints differ for "
                         f"{frequency_bucket_label(bucket, self._frequency)}.",
                     )
-                if next_from_date <= thru_date:
-                    subperiod_dates.append((next_from_date, thru_date))
-                    subperiod_buckets.append(bucket)
-                    next_from_date = thru_date + dt.timedelta(days=1)
+                coverage_starts = [
+                    _fixed_frequency_coverage_start(
+                        periods,
+                        bucket,
+                        thru_date,
+                        previous_endpoint,
+                        self._frequency,
+                        self._holidays,
+                        source_label,
+                    )
+                    for periods, source_label in (
+                        (source_periods[0], "portfolio"),
+                        (source_periods[1], "benchmark"),
+                    )
+                ]
+                if coverage_starts[0] != coverage_starts[1]:
+                    raise PparError(
+                        "portfolio and benchmark actual source coverage starts "
+                        f"differ for {frequency_bucket_label(bucket, self._frequency)}: "
+                        f"{coverage_starts[0].isoformat()} versus "
+                        f"{coverage_starts[1].isoformat()}.",
+                    )
+                subperiod_dates.append((coverage_starts[0], thru_date))
+                subperiod_buckets.append(bucket)
+                previous_endpoint = thru_date
         else:
-            common_from_dates = _common_dates(
-                df0[cols.FROM_DATE], df1[cols.FROM_DATE]
+            common_period_set = set(source_periods[0]).intersection(source_periods[1])
+            common_periods = sorted(
+                common_period_set,
+                key=lambda period: period[1],
             )
-            common_thru_dates = _common_dates(
-                df0[cols.THRU_DATE], df1[cols.THRU_DATE]
-            )
-            subperiod_dates = []
             subperiod_buckets = []
-            idx = 0
-            len_common_thru_dates = len(common_thru_dates)
-            for start_date in common_from_dates:
-                if idx < len_common_thru_dates and common_thru_dates[idx] < start_date:
-                    idx = bisect.bisect_left(common_thru_dates, start_date, lo=idx + 1)
-                if idx < len_common_thru_dates:
-                    subperiod_dates.append((start_date, common_thru_dates[idx]))
-                    idx += 1
+            if common_periods:
+                comparison_start = common_periods[0][0]
+                comparison_end = common_periods[-1][1]
+                unmatched_periods = [
+                    [
+                        period
+                        for period in periods
+                        if period not in common_period_set
+                        and period[1] >= comparison_start
+                        and period[0] <= comparison_end
+                    ]
+                    for periods in source_periods
+                ]
+                if unmatched_periods[0] or unmatched_periods[1]:
+                    raise PparError(
+                        "Unmatched native-frequency periods exist inside the common "
+                        "comparison window. Portfolio-only periods: "
+                        f"{_formatted_periods(unmatched_periods[0])}. "
+                        "Benchmark-only periods: "
+                        f"{_formatted_periods(unmatched_periods[1])}.",
+                    )
+            subperiod_dates = common_periods
 
         # Assert that there is at least one subperiod.
         if len(subperiod_dates) == 0:
@@ -569,13 +707,32 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                     f"{performance.error_message_context}: source periods did not "
                     "map one-to-one into aligned reporting buckets.",
                 )
-        else:
-            assigned_periods = source_periods.join_asof(
-                subperiods,
-                left_on=cols.THRU_DATE,
-                right_on="_subperiod_from_date",
-                strategy="backward",
+            out_of_bounds = assigned_periods.filter(
+                (pl.col(cols.FROM_DATE) < pl.col("_subperiod_from_date"))
+                | (pl.col(cols.THRU_DATE) > pl.col("_subperiod_thru_date"))
             )
+            if not out_of_bounds.is_empty():
+                raise PparError(
+                    f"{performance.error_message_context}: source periods extend "
+                    "outside their aligned reporting bucket: "
+                    f"{_formatted_periods(_period_tuples(out_of_bounds))}.",
+                )
+        else:
+            native_subperiods = subperiods.with_columns(
+                pl.col("_subperiod_from_date").alias("_source_from_date"),
+                pl.col("_subperiod_thru_date").alias("_source_thru_date"),
+            )
+            assigned_periods = source_periods.join(
+                native_subperiods,
+                left_on=list(cols.DATE_COLUMNS),
+                right_on=["_source_from_date", "_source_thru_date"],
+                how="inner",
+            )
+            if assigned_periods.height != source_periods.height:
+                raise PparError(
+                    f"{performance.error_message_context}: native-frequency source "
+                    "periods did not map exactly to aligned reporting periods.",
+                )
 
         # A reporting-period total return must compound the lower-frequency rows.
         # A +10% day followed by a -10% day is -1%, not 0%.
@@ -860,8 +1017,9 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
 
         Uses the supplied mapping data to roll up contribution and weight columns from
         ``performance.classification_name`` to ``to_classification_name``. Mapped
-        returns are calculated as mapped contributions divided by mapped weights, with
-        missing or undefined mapped returns filled with 0.0.
+        returns are calculated as mapped contributions divided by mapped weights. A
+        zero-weight, nonzero-contribution group has an undefined null return; a group
+        with both zero weight and zero contribution has a zero return.
 
         Args:
             performance: Existing Performance object to map.
@@ -910,8 +1068,9 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
             .with_columns(
                 pl.when(pl.col(cols.WEIGHT) != 0.0)
                 .then(pl.col(cols.CONTRIBUTION) / pl.col(cols.WEIGHT))
-                .otherwise(0.0)
-                .fill_nan(0.0)
+                .when(pl.col(cols.CONTRIBUTION) == 0.0)
+                .then(0.0)
+                .otherwise(None)
                 .alias(cols.RETURN)
             )
             .select(
@@ -931,7 +1090,7 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                 cols.IDENTIFIER,
                 cols.WEIGHT,
                 cols.RETURN,
-            ),
+            ).with_columns(pl.col(cols.RETURN).fill_null(0.0)),
             name=performance.name,
             classification_name=to_classification_name,
         )

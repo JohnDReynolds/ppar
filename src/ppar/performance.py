@@ -102,15 +102,16 @@ class Performance:
                 f"From date {from_date} is after thru date {thru_date}.",
             )
 
-        self.name, self.narrow_df = self._load_data(
-            name, data_source, from_date, thru_date
-        )
+        self.name, self.narrow_df = self._load_data(name, data_source)
         if self.narrow_df.is_empty():
             raise PparError(f"No performance rows remain {self.error_message_context}.")
         self._clean_and_validate_columns()
         self._cast_and_validate_columns()
-        self._set_classification_items()
+        self._filter_date_range(from_date, thru_date)
+        if self.narrow_df.is_empty():
+            raise PparError(f"No performance rows remain {self.error_message_context}.")
         self._clean_and_validate_dates()
+        self._set_classification_items()
         self._calculate_rows()
         self.identifiers = sorted(self.narrow_df[cols.IDENTIFIER].unique().to_list())
         self._df_overall = pl.DataFrame()
@@ -213,36 +214,62 @@ class Performance:
         ):
             raise PparError("audit_perfs(): Date logic error.")
         if common_classification_name is not None:
-            if portfolio.classification_name != benchmark.classification_name:
-                raise PparError("audit_perfs(): Common classification name error.")
+            if (
+                portfolio.classification_name != common_classification_name
+                or benchmark.classification_name != common_classification_name
+            ):
+                raise PparError(
+                    "audit_perfs(): Requested classification does not match "
+                    "both performance sources. "
+                    f"Requested={common_classification_name!r}, "
+                    f"portfolio={portfolio.classification_name!r}, "
+                    f"benchmark={benchmark.classification_name!r}."
+                )
 
     def _calculate_df_overall(self) -> pl.DataFrame:
         """Calculate overall narrow rows for the full performance period.
 
         Returns:
             One overall-period row per identifier, including linked returns,
-            day-weighted weights, summed contributions, and common total return.
+            observed-day-weighted weights, linked contributions, and common
+            total return.
         """
         overall_from_date = cast(dt.date, self.narrow_df[cols.FROM_DATE].min())
         overall_thru_date = cast(dt.date, self.narrow_df[cols.THRU_DATE].max())
-        total_days = (overall_thru_date - overall_from_date).days + 1
-        coefficient = (
-            pl.lit(1.0) if total_days == 0 else pl.col(cols.QUANTITY_OF_DAYS) / total_days
-        )
+        period_totals = self.period_totals()
+        observed_days = cast(int, period_totals[cols.QUANTITY_OF_DAYS].sum())
         overall_total_return = cast(
-            float, (self.period_totals()[cols.TOTAL_RETURN] + 1).product() - 1
+            float, (period_totals[cols.TOTAL_RETURN] + 1).product() - 1
         )
-        return (
-            self.narrow_df.group_by(cols.IDENTIFIER)
+        period_linking = period_totals.select(*cols.DATE_COLUMNS).with_columns(
+            self.linking_coefficients().alias("_linking_coefficient")
+        )
+        overall = (
+            self.narrow_df.join(period_linking, on=cols.DATE_COLUMNS)
+            .group_by(cols.IDENTIFIER)
             .agg(
-                pl.col(cols.RETURN).add(1).product().sub(1).alias(cols.RETURN),
-                (pl.col(cols.WEIGHT) * coefficient).sum().alias(cols.WEIGHT),
-                pl.col(cols.CONTRIBUTION).sum().alias(cols.CONTRIBUTION),
+                pl.when(pl.col(cols.RETURN).is_null().any())
+                .then(None)
+                .otherwise(pl.col(cols.RETURN).add(1).product().sub(1))
+                .alias(cols.RETURN),
+                (
+                    pl.col(cols.WEIGHT)
+                    * pl.col(cols.QUANTITY_OF_DAYS)
+                    / observed_days
+                )
+                .sum()
+                .alias(cols.WEIGHT),
+                (
+                    pl.col(cols.CONTRIBUTION)
+                    * pl.col("_linking_coefficient")
+                )
+                .sum()
+                .alias(cols.CONTRIBUTION),
             )
             .with_columns(
                 pl.lit(overall_from_date).alias(cols.FROM_DATE),
                 pl.lit(overall_thru_date).alias(cols.THRU_DATE),
-                pl.lit(total_days).alias(cols.QUANTITY_OF_DAYS),
+                pl.lit(observed_days).alias(cols.QUANTITY_OF_DAYS),
                 pl.lit(overall_total_return).alias(cols.TOTAL_RETURN),
             )
             .select(
@@ -256,6 +283,18 @@ class Performance:
             )
             .sort(cols.IDENTIFIER)
         )
+        if round(cast(float, overall[cols.WEIGHT].sum()), 8) != 1.0:
+            raise PparError(
+                f"{self.error_message_context}: overall weights do not sum to 1.0."
+            )
+        if round(cast(float, overall[cols.CONTRIBUTION].sum()), 11) != round(
+            overall_total_return, 11
+        ):
+            raise PparError(
+                f"{self.error_message_context}: overall contributions do not "
+                "sum to the linked total return."
+            )
+        return overall
 
     def _calculate_rows(self) -> None:
         """Add calculated contribution, elapsed-day, and total-return columns."""
@@ -374,17 +413,42 @@ class Performance:
             raise PparError(f"Performance periods overlap {self.error_message_context}.")
         self.narrow_df = self.narrow_df.sort([cols.THRU_DATE, cols.IDENTIFIER])
 
+    def _filter_date_range(
+        self,
+        from_date: dt.date,
+        thru_date: dt.date,
+    ) -> None:
+        """Apply requested bounds after source dates have been normalized.
+
+        Args:
+            from_date: Earliest period thru date to retain.
+            thru_date: Latest period thru date to retain.
+        """
+        if from_date != dt.date.min:
+            self.narrow_df = self.narrow_df.filter(
+                from_date <= pl.col(cols.THRU_DATE)
+            )
+        if thru_date != dt.date.max:
+            self.narrow_df = self.narrow_df.filter(
+                pl.col(cols.THRU_DATE) <= thru_date
+            )
+
     def _set_classification_items(self) -> None:
         """Capture identifier/name pairs supplied with narrow source-data rows."""
         if cols.NAME not in self.narrow_df.columns:
             self.classification_items = pl.DataFrame()
             return
         self.classification_items = (
-            self.narrow_df.unique(subset=[cols.IDENTIFIER], keep="last")
+            self.narrow_df.unique(
+                subset=[cols.IDENTIFIER],
+                keep="last",
+                maintain_order=True,
+            )
             .select(
                 pl.col(cols.IDENTIFIER).alias(cols.CLASSIFICATION_IDENTIFIER),
                 pl.col(cols.NAME).alias(cols.CLASSIFICATION_NAME),
             )
+            .sort(cols.CLASSIFICATION_IDENTIFIER)
         )
         self.narrow_df = self.narrow_df.drop(cols.NAME)
 
@@ -414,16 +478,12 @@ class Performance:
     def _load_data(
         name: str | None,
         data_source: util.PerformanceDataSource,
-        from_date: dt.date,
-        thru_date: dt.date,
     ) -> tuple[str | None, pl.DataFrame]:
-        """Load performance rows and apply the requested date bounds.
+        """Load performance rows without interpreting their values.
 
         Args:
             name: Optional descriptive performance name.
             data_source: CSV path or Polars DataFrame.
-            from_date: Earliest from date to retain.
-            thru_date: Latest thru date to retain.
 
         Returns:
             Resolved optional name and loaded DataFrame.
@@ -444,10 +504,6 @@ class Performance:
             raise PparError(
                 "Performance data source must be a CSV path or Polars DataFrame."
             )
-        if from_date != dt.date.min:
-            lazy_frame = lazy_frame.filter(from_date <= pl.col(cols.THRU_DATE))
-        if thru_date != dt.date.max:
-            lazy_frame = lazy_frame.filter(pl.col(cols.THRU_DATE) <= thru_date)
         return name, lazy_frame.collect()
 
     def overall_return(self) -> float:

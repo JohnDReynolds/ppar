@@ -43,8 +43,17 @@ identify the same securities in `secperf.csv` and `secmast.csv`. Each entry unde
 its displayed name.
 
 ppar reconciles the security-level performance in `secperf.csv` to the corresponding
-reported account return in `portperf.csv`. A materially unreconciled account period
-stops the run instead of producing reports from inconsistent inputs.
+reported account return in `portperf.csv`. It prefers the weight implied by
+contribution divided by a nonzero security return and otherwise uses the reported
+weight. Exact signed weights, including short positions, are preserved. Missing
+weights are inferred only when the weight-sum and portfolio-return equations
+determine them uniquely. Underdetermined, contradictory, infeasible, or materially
+unreconciled account periods stop the run instead of producing reports from
+inconsistent inputs.
+
+Each security identifier must occur at most once per account and source period.
+Duplicate rows are rejected because ppar cannot safely infer whether they are
+accidental duplicates or separate lots requiring a site-specific aggregation rule.
 
 Finally, edit `ppar_demo.py` to select the portfolio, benchmark, dates,
 classification, calculation assumptions, and reports you want to produce.

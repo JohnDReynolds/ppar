@@ -53,7 +53,7 @@ class TestPackageMetadata(unittest.TestCase):
         dependencies = project["dependencies"]
         self.assertEqual(
             {dependency.split(">=")[0] for dependency in dependencies},
-            {"matplotlib", "numpy", "polars", "pyyaml", "seaborn"},
+            {"matplotlib", "numpy", "pillow", "polars", "pyyaml", "seaborn"},
         )
         self.assertNotIn("perfaud", " ".join(dependencies).lower())
         self.assertEqual(set(project["optional-dependencies"]), {"dev"})
@@ -191,6 +191,14 @@ class TestPackageMetadata(unittest.TestCase):
         self.assertNotIn("Generic", active_text)
         self.assertNotIn("my_ppar_axys_apx", active_text)
         self.assertIn("vendor-neutral", active_text)
+
+    def test_methodology_describes_the_two_effect_attribution_model(self) -> None:
+        """Methodology matches the allocation and combined-selection outputs."""
+        methodology = (_ROOT / "docs/methodology.md").read_text(encoding="utf-8")
+
+        self.assertIn("portfolio-weighted selection effect", methodology)
+        self.assertIn("selection and interaction", methodology)
+        self.assertNotIn("allocation, selection, and interaction effects", methodology)
 
     def test_parallel_reference_directory_is_absent(self) -> None:
         """Generated demonstrations remain the source for input-file guidance."""

@@ -42,6 +42,31 @@ Performance, classification, and mapping table inputs accept only a CSV path or 
 Polars DataFrame. Focused types and lower-level APIs live in `ppar.attribution`,
 `ppar.frequency`, `ppar.risk`, and `ppar.axys_apx`.
 
+## Direct risk arrays
+
+The lower-level risk API also accepts a portfolio and benchmark pair of
+one-dimensional NumPy arrays:
+
+```python
+import numpy as np
+
+from ppar.frequency import Frequency
+from ppar.risk import RiskStatistics
+
+risk = RiskStatistics(
+    (
+        np.array([0.01, -0.02, 0.03, 0.02]),
+        np.array([0.00, -0.01, 0.02, 0.01]),
+    ),
+    Frequency.MONTHLY,
+)
+```
+
+The two arrays must have the same length and contain at least two finite, real
+numeric returns. Every periodic return must be greater than -100%. Accepted integer
+and floating arrays are normalized to `float64` before calculation, and risk
+statistics require a fixed monthly, quarterly, or yearly frequency.
+
 ## Axys/APX values
 
 `AxysData.from_values(base_directory, values)` configures Axys/APX loading from an

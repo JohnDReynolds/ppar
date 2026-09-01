@@ -65,6 +65,7 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
             _INPUT / "performance" / "Mega-Cap Benchmark.csv",
             portfolio_classification_name="Security",
             benchmark_classification_name="Security",
+            from_date=dt.date(2021, 7, 1),
             frequency=Frequency.QUARTERLY,
             holidays=_INPUT / "holidays.csv",
         )
@@ -74,7 +75,7 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
         summary = analytics.attribution().to_polars(View.SUBPERIOD_SUMMARY)
         self.assertGreater(security.height, 1)
         self.assertIn("Intel Corporation", security[cols.CLASSIFICATION_NAME].to_list())
-        self.assertEqual(summary.height, 20)
+        self.assertEqual(summary.height, 19)
         self.assertEqual(summary[cols.THRU_DATE].item(-1), dt.date(2026, 3, 31))
 
     def test_setup_variants_are_valid_and_run_complete_workflows(self) -> None:
@@ -107,6 +108,55 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
                     [path.name for path in directory.rglob("*.py")],
                     ["ppar_demo.py"],
                 )
+
+    def test_malformed_inputs_preserve_prior_atomic_report_bundles(self) -> None:
+        """Both generated demos reject malformed input without publishing output."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for source, axys_apx in (("generic", False), ("axys_apx", True)):
+                directory = setup(root / source, axys_apx=axys_apx)
+                command = [sys.executable, directory / "ppar_demo.py"]
+                subprocess.run(command, check=True, capture_output=True, text=True)
+
+                output = directory / "output"
+                expected_artifacts = {
+                    path.name: path.read_bytes()
+                    for path in output.iterdir()
+                    if path.is_file()
+                }
+                marker = output / "prior-bundle-marker.txt"
+                marker.write_text("retain prior output", encoding="utf-8")
+
+                if axys_apx:
+                    malformed_path = directory / "input" / "portperf.csv"
+                    required_column = "Portfolio Return"
+                else:
+                    malformed_path = (
+                        directory
+                        / "input"
+                        / "performance"
+                        / "Mega-Cap Alpha Portfolio.csv"
+                    )
+                    required_column = cols.RETURN
+                pl.read_csv(malformed_path).drop(required_column).write_csv(malformed_path)
+
+                completed = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("PparError", completed.stderr)
+                self.assertTrue(marker.is_file())
+                self.assertEqual(marker.read_text(encoding="utf-8"), "retain prior output")
+                actual_artifacts = {
+                    path.name: path.read_bytes()
+                    for path in output.iterdir()
+                    if path.is_file() and path != marker
+                }
+                self.assertEqual(actual_artifacts, expected_artifacts)
 
 
 if __name__ == "__main__":

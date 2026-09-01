@@ -30,7 +30,7 @@ OUTPUT_DIRECTORY = DIRECTORY / "output"
 # The date bounds are inclusive. Change them to focus every table and chart on
 # one reporting window. Use dt.date.min for no lower date bound and dt.date.max
 # for no upper date bound.
-FROM_DATE = dt.date(2021, 6, 1)
+FROM_DATE = dt.date(2021, 7, 1)
 THRU_DATE = dt.date(2026, 5, 29)
 
 # This grouping appears in the classification tables and charts and determines

@@ -1,9 +1,9 @@
-"""Write and atomically publish portfolio analytics report bundles.
+"""Write and transactionally publish portfolio analytics report bundles.
 
 The context manager in this module lets applications write a full report bundle
-to a staging sibling directory. Only a successful context replaces the public
-output directory, so a failed calculation leaves the last successful bundle
-untouched.
+to a staging sibling directory. A successful context replaces the entire public
+output directory. Python exceptions and interruptions trigger cleanup and, when
+publication has begun, restoration of the prior bundle.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from ppar.attribution import Chart, View
 from ppar.errors import PparError
@@ -24,10 +24,14 @@ if TYPE_CHECKING:
     from ppar.attribution import Attribution
     from ppar.risk import RiskStatistics
 
+__all__ = ["atomic_output_directory", "write_report_bundle"]
+
+_Selection = TypeVar("_Selection", View, Chart)
+
 
 @contextmanager
-def atomic_output_directory(output_directory: util.PathLike) -> Iterator[Path]:
-    """Yield a staging directory and atomically publish it on success.
+def atomic_output_directory(output_directory: str | Path) -> Iterator[Path]:
+    """Yield a staging directory and transactionally publish it on success.
 
     Args:
         output_directory: Directory that should contain the completed report
@@ -43,8 +47,11 @@ def atomic_output_directory(output_directory: util.PathLike) -> Iterator[Path]:
             is restored whenever it existed.
 
     Notes:
-        Files must not be retained in the staging directory after the context
-        exits because the staging path is renamed to ``output_directory``.
+        The complete ``output_directory`` is replaced; files from the prior
+        directory are not retained. The transaction is rollback-safe for Python
+        exceptions and interruptions, but it does not claim process-crash
+        atomicity. Files must not be retained using the staging path because that
+        path is renamed to ``output_directory`` on success.
     """
     output = Path(output_directory).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -54,14 +61,14 @@ def atomic_output_directory(output_directory: util.PathLike) -> Iterator[Path]:
     try:
         yield staging
         _publish(staging, output)
-    except Exception:
+    except BaseException:  # pylint: disable=broad-exception-caught
         _remove(staging)
         raise
 
 
 def write_report_bundle(
     *,
-    output_directory: util.PathLike,
+    output_directory: str | Path,
     security_attribution: Attribution | None = None,
     security_views: Iterable[View] = (),
     classification_attribution: Attribution | None = None,
@@ -91,17 +98,31 @@ def write_report_bundle(
         Output filenames in deterministic display order.
 
     Raises:
-        PparError: If no reports are selected or a selected report category does
-            not have its corresponding calculation.
+        PparError: If no reports are selected, a selection is repeated or has the
+            wrong enum type, or a selected report category does not have its
+            corresponding calculation.
         OSError: If the output directory or a report file cannot be written.
 
     Notes:
         Callers may write directly to their final output directory or use
-        :func:`atomic_output_directory` to publish the complete bundle atomically.
+        :func:`atomic_output_directory` for rollback-safe replacement of the
+        complete bundle.
     """
-    selected_security_views = tuple(security_views)
-    selected_classification_views = tuple(classification_views)
-    selected_classification_charts = tuple(classification_charts)
+    selected_security_views = _validated_selections(
+        security_views,
+        View,
+        "security_views",
+    )
+    selected_classification_views = _validated_selections(
+        classification_views,
+        View,
+        "classification_views",
+    )
+    selected_classification_charts = _validated_selections(
+        classification_charts,
+        Chart,
+        "classification_charts",
+    )
 
     if selected_security_views and security_attribution is None:
         raise PparError(
@@ -160,15 +181,45 @@ def _publish(staging: Path, output: Path) -> None:
     """Replace ``output`` with ``staging`` while preserving rollback safety."""
     backup = Path(tempfile.mkdtemp(prefix=f".{output.name}-backup-", dir=output.parent))
     backup.rmdir()
-    if output.exists():
-        os.replace(output, backup)
     try:
+        if output.exists():
+            os.replace(output, backup)
         os.replace(staging, output)
-    except Exception:
+    except BaseException:  # pylint: disable=broad-exception-caught
         if backup.exists():
+            _remove(output)
             os.replace(backup, output)
         raise
     _remove(backup)
+
+
+def _validated_selections(
+    values: Iterable[_Selection],
+    expected_type: type[_Selection],
+    parameter: str,
+) -> tuple[_Selection, ...]:
+    """Return validated, unique report selections in caller-supplied order."""
+    selections = tuple(values)
+    seen: set[_Selection] = set()
+    for index, selection in enumerate(selections):
+        if not isinstance(selection, expected_type):
+            raise PparError(
+                f"{parameter}[{index}] must be a {expected_type.__name__}; received "
+                f"{type(selection).__name__}.",
+                context={
+                    "parameter": parameter,
+                    "index": index,
+                    "expected_type": expected_type.__name__,
+                    "actual_type": type(selection).__name__,
+                },
+            )
+        if selection in seen:
+            raise PparError(
+                f"{parameter} contains repeated selection {selection.name}.",
+                context={"parameter": parameter, "selection": selection.name},
+            )
+        seen.add(selection)
+    return selections
 
 
 def _remove(path: Path) -> None:

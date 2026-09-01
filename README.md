@@ -8,7 +8,7 @@ vendor-neutral CSV files or Axys/APX exports.
 
 ## Start here
 
-ppar requires Python 3.11.9 or newer.
+ppar supports Python 3.11.9 through Python 3.14.
 
 ```bash
 python -m pip install ppar

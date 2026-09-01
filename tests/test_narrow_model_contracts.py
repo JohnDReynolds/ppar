@@ -13,7 +13,7 @@ from ppar import Analytics
 from ppar.attribution import View
 import ppar.schema as cols
 from ppar.frequency import Frequency
-from tests import test_utilities as test_util
+from tests import helpers as test_util
 
 _MONTHLY_PERIODS: tuple[test_util.Period, ...] = (
     (dt.date(2024, 1, 1), dt.date(2024, 1, 31)),

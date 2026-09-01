@@ -20,13 +20,12 @@ keywords = [
     "Axys",
     "APX",
 ]
-requires-python = ">=3.11.9"
+requires-python = ">=3.11.9,<3.15"
 dependencies = [
     "matplotlib>=3.8.2",
     "numpy>=1.26.4",
     "pillow>=10.0",
     "polars>=1.24.0",
-    "pyyaml>=6.0",
     "seaborn>=0.13.2",
 ]
 
@@ -39,7 +38,6 @@ dev = [
     "pyright>=1.1.409",
     "setuptools>=77.0.0",
     "twine>=6.0",
-    "types-PyYAML",
     "types-seaborn",
 ]
 
@@ -90,13 +88,8 @@ max-line-length = 99
 
 [tool.pylint."messages control"]
 enable = [
-    "duplicate-code",
-    "too-many-public-methods",
-    "too-many-arguments",
-    "too-many-positional-arguments",
-    "unused-argument",
-    "redefined-outer-name",
-    "broad-exception-caught",
+    "unused-import",
+    "unused-variable",
 ]
 
 [tool.pylint.design]

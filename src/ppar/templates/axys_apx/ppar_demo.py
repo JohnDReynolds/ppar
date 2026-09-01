@@ -27,9 +27,10 @@ from ppar.publication import atomic_output_directory, write_report_bundle
 DIRECTORY = Path(__file__).resolve().parent
 OUTPUT_DIRECTORY = DIRECTORY / "output"
 
-# The date bounds are inclusive. Change them to focus every table and chart on
-# one reporting window. Use dt.date.min for no lower date bound and dt.date.max
-# for no upper date bound.
+# FROM_DATE is the earliest source period end date to retain; THRU_DATE is the
+# latest. Both bounds are inclusive, so a bound inside a source period selects
+# that complete period when its end date is within the bounds. Use dt.date.min
+# for no lower bound and dt.date.max for no upper bound.
 FROM_DATE = dt.date(2021, 7, 1)
 THRU_DATE = dt.date(2026, 5, 29)
 
@@ -172,7 +173,8 @@ def main() -> int:
 
     # atomic_output_directory() lets the script build the complete report bundle in
     # a staging directory and replace the entire OUTPUT_DIRECTORY only after every
-    # report succeeds. Using atomic_output_directory() is optional.
+    # report succeeds. It provides rollback safety for Python errors and interruptions;
+    # using it is optional.
     with atomic_output_directory(OUTPUT_DIRECTORY) as staging_directory:
         # Native source periods do not establish a fixed annualization frequency, so
         # risk statistics are limited to monthly, quarterly, or yearly runs.
@@ -209,12 +211,11 @@ def _build_analytics() -> tuple[Analytics, Attribution, Attribution]:
     # headings above and reconciles security-level weights so their weighted returns
     # agree with the corresponding account return in portperf.csv. Analytics then
     # matches portfolio and benchmark periods and applies the requested frequency.
-    source = AxysData.from_values(DIRECTORY, AXYS_SOURCE_VALUES)
+    source = AxysData(DIRECTORY, AXYS_SOURCE_VALUES)
     portfolios = source.get_portfolios(
         (PORTFOLIO, BENCHMARK),
         from_date=FROM_DATE,
         thru_date=THRU_DATE,
-        classification_name=CLASSIFICATION,
     )
     portfolio = portfolios[PORTFOLIO]
     benchmark = portfolios[BENCHMARK]
@@ -241,8 +242,15 @@ def _build_analytics() -> tuple[Analytics, Attribution, Attribution]:
     )
 
     # 3. Create classification attribution. This rolls holdings into CLASSIFICATION
-    # groups. The source loader attached those group codes and names to both accounts.
-    classification_attribution = analytics.attribution()
+    # groups. Naming the paired source here makes the selected grouping explicit at
+    # the point where its attribution is calculated.
+    classification_attribution = analytics.attribution_for(
+        source.get_classification_sources_for_pair(
+            CLASSIFICATION,
+            portfolio,
+            benchmark,
+        )
+    )
     return analytics, security_attribution, classification_attribution
 
 

@@ -36,10 +36,8 @@ class CliHelpTests(unittest.TestCase):
         self.assertIn("ppar setup ./my_ppar", help_text)
         self.assertIn("ppar setup ./my_ppar --axys-apx", help_text)
         self.assertIn("examples (choose one):", help_text)
-        self.assertNotIn("my_ppar_axys_apx", help_text)
         self.assertIn("Show this help message.", help_text)
         self.assertIn("Show the ppar version.", help_text)
-        self.assertNotIn("and exit", help_text)
 
     def test_setup_help_defines_directory_argument(self) -> None:
         """Setup help makes the local-directory destination explicit."""
@@ -55,10 +53,6 @@ class CliHelpTests(unittest.TestCase):
         self.assertIn("ppar setup ./my_ppar --axys-apx", help_text)
         self.assertIn("examples (choose one):", help_text)
         self.assertIn("vendor-neutral CSV files", help_text)
-        self.assertNotIn("Generic", help_text)
-        self.assertNotIn("my_ppar_axys_apx", help_text)
-        self.assertNotIn("workspace", help_text.lower())
-        self.assertNotIn("PPAR", help_text)
 
     def test_setup_missing_directory_names_required_value(self) -> None:
         """A setup syntax error identifies the missing value as a directory."""

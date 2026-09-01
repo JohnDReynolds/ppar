@@ -4,17 +4,16 @@ from __future__ import annotations
 
 # Python imports
 from dataclasses import dataclass
-from typing import cast
-
 # Third-party imports
 import polars as pl
 
 # Project imports
 from ppar.axys_apx.classification_sources import AxysClassificationSourceLoader
 from ppar.axys_apx.portfolios import AxysPortfolio
-from ppar.axys_apx.specification import AxysSpecification
+from ppar.axys_apx.specification import _AxysSpecification
 import ppar.schema as cols
 from ppar.errors import PparError
+import ppar.utilities as util
 
 
 @dataclass(frozen=True)
@@ -62,16 +61,15 @@ def combine_classification_sources(
             f"benchmark={benchmark_sources.classification_name!r}",
         )
 
-    classification_data_source = (
+    classification_data_source = util._deduplicate_identifier_pairs(  # pylint: disable=protected-access
         pl.concat(
             [
                 portfolio_sources.classification_data_source,
                 benchmark_sources.classification_data_source,
             ],
             how="vertical",
-        )
-        .unique(subset=[cols.IDENTIFIER], keep="any")
-        .sort(cols.IDENTIFIER)
+        ),
+        "Combined Axys classification data",
     )
     mapping_data_sources = _combine_mapping_sources(
         portfolio_sources,
@@ -118,14 +116,13 @@ class AxysSupportingSourceLoader:
 
     def __init__(
         self,
-        specification: AxysSpecification,
+        specification: _AxysSpecification,
         loader: AxysClassificationSourceLoader,
     ) -> None:
         """Initialize a supporting-source loader.
 
         Args:
-            specification: Parsed Axys configuration used to determine default
-                source names.
+            specification: Validated focused Axys/APX source configuration.
             loader: Source loader used to normalize configured source files.
         """
         self._specification = specification
@@ -156,25 +153,17 @@ class AxysSupportingSourceLoader:
         classification = self._loader.load(
             "classification", classification_name, unique_security_ids
         )
-        classification_source = self._specification.classifications.get(
-            classification_name,
-            {},
-        )
-        if self._specification.is_security_master(classification_name):
+        if classification_name == "Security":
             mapping_data_sources = None
         else:
-            mapping_name = classification_source.get("mapping", classification_name)
-            mapping = self._loader.load("mapping", mapping_name, unique_security_ids)
-            mapping_data_sources = (mapping, mapping)
-        display_name = cast(
-            str,
-            classification_source.get(
-                "display_name",
+            mapping = self._loader.load(
+                "mapping",
                 classification_name,
-            ),
-        )
+                unique_security_ids,
+            )
+            mapping_data_sources = (mapping, mapping)
         return AxysClassificationSources(
-            display_name,
+            classification_name,
             classification,
             mapping_data_sources,
         )

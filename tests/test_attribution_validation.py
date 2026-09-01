@@ -9,7 +9,7 @@ from unittest import mock
 import polars as pl
 
 # Test Imports
-from tests import test_utilities as test_util
+from tests import helpers as test_util
 
 # Project Imports
 from ppar import Analytics
@@ -24,7 +24,7 @@ from ppar.performance import Performance
 class TestAttributionValidation(unittest.TestCase):
     """Verify attribution-specific failures outside calculation invariants."""
 
-    def test_return_below_negative_one_raises_error_203(self) -> None:
+    def test_return_below_negative_one_is_rejected(self) -> None:
         """Attribution linking rejects a return less than negative one."""
         invalid_return = pl.DataFrame(
             {
@@ -39,7 +39,7 @@ class TestAttributionValidation(unittest.TestCase):
         with self.assertRaises(PparError):
             Analytics(invalid_return, invalid_return.clone()).attribution()
 
-    def test_large_detail_html_output_raises_error_204(self) -> None:
+    def test_large_detail_html_output_is_rejected(self) -> None:
         """Overlarge detail HTML tables are rejected before rendering."""
         analytics = Analytics(
             test_util.performance_data_path("Magnificent 7"),
@@ -50,7 +50,7 @@ class TestAttributionValidation(unittest.TestCase):
             analytics.attribution().to_html(View.SUBPERIOD_ATTRIBUTION)
 
     def test_html_row_limit_accepts_1010_and_rejects_1011(self) -> None:
-        """HTML output methods enforce the documented 1,010-row boundary."""
+        """HTML output enforces the established 1,010-row boundary."""
         analytics = Analytics(
             test_util.performance_data_path("Magnificent 7"),
             test_util.performance_data_path("Magnificent 7"),
@@ -68,27 +68,28 @@ class TestAttributionValidation(unittest.TestCase):
                 "attribution_html",
                 return_value="html",
             ),
-            mock.patch.object(
-                attribution_module.html_table,
-                "attribution_table",
-                return_value=mock.sentinel.table,
-            ),
         ):
             self.assertEqual(attribution.to_html(View.OVERALL_ATTRIBUTION), "html")
-            self.assertIs(
-                attribution.to_table(View.OVERALL_ATTRIBUTION),
-                mock.sentinel.table,
-            )
 
         with mock.patch.object(
             attribution,
             "_fetch_dataframe",
             return_value=pl.DataFrame({"row": range(1_011)}),
         ):
-            for output_method in (attribution.to_html, attribution.to_table):
-                with self.subTest(output_method=output_method.__name__):
-                    with self.assertRaises(PparError):
-                        output_method(View.OVERALL_ATTRIBUTION)
+            with self.assertRaisesRegex(
+                PparError,
+                "Overall Attribution has 1,011 rows; HTML output is limited to "
+                "1,010 rows.*to_polars.*write_csv",
+            ) as raised:
+                attribution.to_html(View.OVERALL_ATTRIBUTION)
+            self.assertEqual(
+                raised.exception.context,
+                {
+                    "view": "Overall Attribution",
+                    "row_count": 1_011,
+                    "row_limit": 1_010,
+                },
+            )
 
     def test_runtime_audit_rejects_corrupted_smoothed_effect_total(self) -> None:
         """A broken linked-effect total cannot survive the production audit."""

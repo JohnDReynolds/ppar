@@ -12,7 +12,7 @@ import unittest
 import warnings
 
 # Test Imports
-from tests import test_utilities as test_util
+from tests import helpers as test_util
 
 # Project Imports
 from ppar import Analytics
@@ -30,7 +30,7 @@ from ppar.performance import Performance
 from ppar.errors import PparError
 import ppar.utilities as util
 
-_HOLIDAYS_PATH = Path("tests/data/holidays.csv")
+_HOLIDAYS_PATH = test_util.HOLIDAYS_PATH
 
 
 class TestFrequencyIntegration(unittest.TestCase):
@@ -584,8 +584,17 @@ class TestFrequencyIntegration(unittest.TestCase):
 
     def test_specify_dates(self) -> None:
         """Explicit dates filter the fixture performance rows inclusively."""
+        performance_source = test_util.make_performance_df(
+            (
+                (dt.date(2023, 3, 2), dt.date(2023, 3, 31)),
+                (dt.date(2023, 1, 2), dt.date(2023, 1, 31)),
+                (dt.date(2023, 2, 14), dt.date(2023, 2, 28)),
+                (dt.date(2023, 2, 2), dt.date(2023, 2, 12)),
+            ),
+            {"A": ([0.01] * 4, [1.0] * 4)},
+        )
         performance = Performance(
-            test_util.performance_data_path("case_adjust_from_dates"),
+            performance_source,
             from_date="2023-01-31",
             thru_date="2023-02-28",
         )

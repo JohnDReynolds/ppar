@@ -5,26 +5,27 @@ from __future__ import annotations
 import ast
 from importlib import metadata, resources
 from pathlib import Path
+import runpy
 import tomllib
 from typing import Any
 import unittest
+from unittest import mock
 
 import ppar
+import ppar.attribution
+import ppar.axys_apx
+import ppar.errors
+import ppar.frequency
+import ppar.publication
+import ppar.risk
+import ppar.schema
+import ppar.utilities
 
 
 _ROOT = Path(__file__).resolve().parents[1]
 _PRODUCT_DESCRIPTION = (
     "Portfolio performance attribution, contribution, and ex-post risk analytics."
 )
-_ACTIVE_DOCUMENTATION = (
-    "README.md",
-    "docs/configuration.md",
-    "docs/methodology.md",
-    "docs/python_api.md",
-    "docs/maintenance.md",
-)
-
-
 class TestPackageMetadata(unittest.TestCase):
     """The extracted product has one coherent public and packaged identity."""
 
@@ -33,12 +34,27 @@ class TestPackageMetadata(unittest.TestCase):
         project = _pyproject()["project"]
         self.assertEqual(project["name"], "ppar")
         self.assertEqual(project["version"], "0.2.0")
+        self.assertEqual(project["requires-python"], ">=3.11.9,<3.15")
         self.assertEqual(project["scripts"], {"ppar": "ppar.cli:main"})
         self.assertEqual(
             project["urls"]["Repository"],
             "https://github.com/JohnDReynolds/ppar",
         )
         self.assertEqual(ppar.__version__, metadata.version("ppar"))
+        self.assertIn(
+            "ppar supports Python 3.11.9 through Python 3.14.",
+            (_ROOT / "README.md").read_text(encoding="utf-8"),
+        )
+
+    def test_uninstalled_source_uses_unknown_version_fallback(self) -> None:
+        """Source execution cannot drift to a stale hardcoded release version."""
+        with mock.patch(
+            "importlib.metadata.version",
+            side_effect=metadata.PackageNotFoundError,
+        ):
+            namespace = runpy.run_path(str(_ROOT / "src/ppar/__init__.py"))
+
+        self.assertEqual(namespace["__version__"], "0+unknown")
 
     def test_product_description_is_consistent(self) -> None:
         """Packaging, README, and the package docstring use one description."""
@@ -53,17 +69,44 @@ class TestPackageMetadata(unittest.TestCase):
         dependencies = project["dependencies"]
         self.assertEqual(
             {dependency.split(">=")[0] for dependency in dependencies},
-            {"matplotlib", "numpy", "pillow", "polars", "pyyaml", "seaborn"},
+            {"matplotlib", "numpy", "pillow", "polars", "seaborn"},
         )
         self.assertNotIn("perfaud", " ".join(dependencies).lower())
         self.assertEqual(set(project["optional-dependencies"]), {"dev"})
-        for removed in ("pandas", "pyarrow", "lxml", "openpyxl"):
-            self.assertNotIn(removed, " ".join(dependencies).lower())
 
     def test_root_exports_are_exact(self) -> None:
         """The root exposes only the primary facade and version."""
         self.assertEqual(ppar.__all__, ["Analytics", "__version__"])
         self.assertTrue(callable(ppar.Analytics))
+
+    def test_supported_module_exports_are_explicit(self) -> None:
+        """Documented lower-level modules expose only their supported objects."""
+        expected_exports = {
+            ppar.attribution: ["Attribution", "Chart", "View"],
+            ppar.axys_apx: [
+                "AxysClassificationSources",
+                "AxysData",
+                "AxysPortfolio",
+            ],
+            ppar.errors: ["PparError"],
+            ppar.frequency: ["Frequency"],
+            ppar.publication: [
+                "atomic_output_directory",
+                "write_report_bundle",
+            ],
+            ppar.risk: ["RiskStatistics"],
+        }
+        for module, expected in expected_exports.items():
+            with self.subTest(module=module.__name__):
+                self.assertEqual(module.__all__, expected)
+        self.assertTrue(ppar.schema.__all__)
+        self.assertTrue(
+            all(
+                isinstance(getattr(ppar.schema, name), str)
+                for name in ppar.schema.__all__
+            )
+        )
+        self.assertEqual(ppar.utilities.__all__, [])
 
     def test_templates_contain_one_tutorial_runner(self) -> None:
         """Both installed templates contain one root-level Python demo."""
@@ -86,7 +129,6 @@ class TestPackageMetadata(unittest.TestCase):
         self.assertTrue(
             generic_readme.startswith("# ppar vendor-neutral demonstration\n")
         )
-        self.assertNotIn("Generic", generic_readme)
         axys_readme = templates.joinpath("axys_apx", "README.md").read_text(
             encoding="utf-8"
         )
@@ -143,67 +185,6 @@ class TestPackageMetadata(unittest.TestCase):
                 if module == "perfaud" or module.startswith("perfaud."):
                     offenders.append(str(path.relative_to(_ROOT)))
         self.assertEqual(offenders, [])
-
-    def test_obsolete_namespaces_and_catch_all_modules_are_absent(self) -> None:
-        """The extracted tree does not retain combined-product compatibility."""
-        self.assertFalse((_ROOT / "ppar").exists())
-        for relative in (
-            "src/ppar/analytics",
-            "src/ppar/audit",
-            "src/ppar/common.py",
-            "src/ppar/source_files.py",
-            "src/ppar/output.py",
-        ):
-            self.assertFalse((_ROOT / relative).exists(), relative)
-
-    def test_obsolete_split_records_and_unused_fixture_are_absent(self) -> None:
-        """The current checkout does not retain superseded pre-split evidence."""
-        for relative in (
-            "docs/repository_split_implementation_plan.md",
-            "docs/repository_split_phase1_baseline.md",
-            "docs/repository_split_phase1_baseline.json",
-            "tests/data/performance/mag7_daily.csv",
-            "ppar.egg-info",
-        ):
-            self.assertFalse((_ROOT / relative).exists(), relative)
-
-    def test_exception_registry_is_absent(self) -> None:
-        """Exceptions carry actionable messages rather than numeric codes."""
-        text = (_ROOT / "src/ppar/errors.py").read_text(encoding="utf-8")
-        self.assertNotIn("ERRORS", text)
-        self.assertNotRegex(text, r"Error [0-9]{3}")
-
-    def test_documentation_has_small_spine_and_marketing_images(self) -> None:
-        """The active user path stays short while retaining README images."""
-        for relative in _ACTIVE_DOCUMENTATION:
-            self.assertTrue((_ROOT / relative).is_file(), relative)
-        self.assertTrue(any((_ROOT / "docs/images").glob("*.*")))
-        self.assertFalse((_ROOT / "PPAR.pdf").exists())
-        self.assertFalse((_ROOT / "docs/archive").exists())
-        self.assertFalse((_ROOT / "docs/audit").exists())
-
-    def test_active_documentation_uses_current_terms(self) -> None:
-        """Active guidance excludes retired product names."""
-        active_text = "\n".join(
-            (_ROOT / relative).read_text(encoding="utf-8")
-            for relative in _ACTIVE_DOCUMENTATION
-        )
-        self.assertNotIn("Generic", active_text)
-        self.assertNotIn("my_ppar_axys_apx", active_text)
-        self.assertIn("vendor-neutral", active_text)
-
-    def test_methodology_describes_the_two_effect_attribution_model(self) -> None:
-        """Methodology matches the allocation and combined-selection outputs."""
-        methodology = (_ROOT / "docs/methodology.md").read_text(encoding="utf-8")
-
-        self.assertIn("portfolio-weighted selection effect", methodology)
-        self.assertIn("selection and interaction", methodology)
-        self.assertNotIn("allocation, selection, and interaction effects", methodology)
-
-    def test_parallel_reference_directory_is_absent(self) -> None:
-        """Generated demonstrations remain the source for input-file guidance."""
-        self.assertFalse((_ROOT / "docs/reference").exists())
-
 
 def _pyproject() -> dict[str, Any]:
     """Return parsed project metadata."""

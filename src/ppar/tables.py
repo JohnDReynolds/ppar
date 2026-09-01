@@ -294,7 +294,10 @@ def attribution_table(
     Returns:
         HtmlTable object for the attribution view.
     """
-    classification_label = util.normalize_optional_string(classification_label)
+    classification_label = util.normalize_optional_string(
+        classification_label,
+        "classification_label",
+    )
     columns, spanners = _attribution_layout(view_name, classification_label)
     return HtmlTable(
         df=df,

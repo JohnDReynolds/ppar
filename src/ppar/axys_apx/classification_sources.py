@@ -1,51 +1,27 @@
-"""Load normalized Axys classification and mapping sources."""
+"""Load Axys/APX classification sources from the configured security master."""
 
 from __future__ import annotations
 
 # Python imports
-from collections.abc import Mapping
-from typing import Any, Final, cast
+from typing import Any, Final, Literal, cast
 
 # Third-party imports
 import polars as pl
 
 # Project imports
-from ppar.axys_apx.specification import AxysSpecification, ErrorMessage, SourceType
 from ppar.axys_apx.column_aliases import resolve_column
 from ppar.axys_apx.security_identity import (
     SecurityIdConstruction,
     security_id_construction,
     with_constructed_security_id,
 )
-import ppar.schema as cols
+from ppar.axys_apx.source_validation import sample_rows
+from ppar.axys_apx.specification import _AxysSpecification, _ErrorMessage
 from ppar.errors import PparError
+import ppar.schema as cols
 import ppar.utilities as util
 
-_CLASSIFICATION_FIELDS_ALLOWED: Final[set[str]] = {
-    "display_name",
-    "file_path",
-    "identifier_column",
-    "name_column",
-    "is_security_master",
-    "filter_column",
-    "filter_value",
-    "mapping",
-}
-_MAPPING_FIELDS_ALLOWED: Final[set[str]] = {
-    "classification_column",
-    "display_name_column",
-}
-_FILE_BACKED_CLASSIFICATION_FIELDS_REQUIRED: Final[set[str]] = {
-    "file_path",
-    "identifier_column",
-    "name_column",
-}
-_CLASSIFICATION_MAPPING_COLUMN_NAMES: Final[set[str]] = {
-    "identifier_column",
-    "name_column",
-    "filter_column",
-}
-_MAPPING_FIELDS_REQUIRED: Final[set[str]] = {"classification_column"}
+_SourceType = Literal["classification", "mapping"]
 _SECURITY_MASTER_FIELDS_REQUIRED: Final[set[str]] = {
     "identifier_column",
     "name_column",
@@ -67,100 +43,69 @@ _FILTER_TO_SECURITY_IDS: Final[str] = "_filter_to_security_ids"
 _SOURCE_FILE_PATH: Final[str] = "_source_file_path"
 _SECURITY_ID_CONSTRUCTION: Final[str] = "_security_id_construction"
 _CONSTRUCTED_SECURITY_ID_COLUMN: Final[str] = "__ppar_constructed_security_id"
-_NORMALIZED_SOURCE_COLUMNS: Final[tuple[str, str]] = (cols.IDENTIFIER, cols.NAME)
 
 
 class AxysClassificationSourceLoader:
-    """Normalize Axys classification and mapping CSV sources.
+    """Normalize security and security-master classification sources.
 
     Attributes:
-        _specification: Parsed Axys source configuration.
-        _error_message: Callback used to add facade-level validation context.
+        _specification: Validated focused Axys/APX source configuration.
+        _error_message: Callback used to add facade-level source context.
     """
 
     def __init__(
         self,
-        specification: AxysSpecification,
-        error_message: ErrorMessage,
-        source_path_overrides: Mapping[str, util.PathLike] | None = None,
+        specification: _AxysSpecification,
+        error_message: _ErrorMessage,
     ) -> None:
-        """Initialize a classification/mapping source loader.
+        """Initialize a security-master source loader.
 
         Args:
-            specification: Parsed Axys configuration.
+            specification: Validated focused Axys/APX source configuration.
             error_message: Callback that adds facade-level source context to
                 validation messages.
-            source_path_overrides: Optional source file paths keyed by
-                configured classification source name.
-
-        Raises:
-            PparError: If a source path override references an unknown
-                classification source.
         """
         self._specification = specification
         self._error_message = error_message
-        self._source_path_overrides = dict(source_path_overrides or {})
-        self._validate_source_path_overrides()
 
     def load(
         self,
-        source_type: SourceType,
+        source_type: _SourceType,
         source_name: str | None,
         unique_security_ids: list[str],
     ) -> pl.DataFrame:
-        """Load a normalized classification or mapping source.
+        """Load one normalized classification or security-to-group mapping.
 
         Args:
-            source_type: Kind of supporting source to load.
-            source_name: Configured source name, or ``None`` to return an empty
-                DataFrame.
-            unique_security_ids: Security identifiers retained in loaded
-                portfolio output.
+            source_type: Whether to produce classification items or a mapping.
+            source_name: ``Security`` or a configured security-master mapping name.
+            unique_security_ids: Security identifiers retained in portfolio output.
 
         Returns:
             Two-column DataFrame containing normalized identifier/name pairs.
 
         Raises:
-            PparError: If the source is unknown, its specification is invalid,
-                its CSV does not exist, or its declared columns do not exist.
+            PparError: If the source name, security master, or configured columns are
+                invalid.
         """
         if not source_name:
             return pl.DataFrame()
 
-        data_source = self._source_definition(source_type, source_name)
-        if data_source is None:
-            raise PparError(
-                self._error_message(f"Unknown {source_type} {source_name!r}"),
-            )
-
-        self._validate_source_definition(source_type, source_name, data_source)
-        effective_source = self._effective_source_definition(
-            source_type,
-            source_name,
-            data_source,
-        )
-
-        file_path = self._source_file_path(source_type, source_name, effective_source)
+        source = self._effective_source_definition(source_type, source_name)
+        file_path = self._specification.resolve_path(source[_SOURCE_FILE_PATH])
         if not util.file_path_exists(file_path):
             raise PparError(self._error_message(util.file_path_error(file_path)))
 
         construction = cast(
             SecurityIdConstruction | None,
-            effective_source.get(_SECURITY_ID_CONSTRUCTION),
+            source.get(_SECURITY_ID_CONSTRUCTION),
         )
-        schema_overrides = self._schema_overrides(effective_source, construction)
+        schema_overrides = self._schema_overrides(source, construction)
         if construction is None:
-            lazy_frame = pl.scan_csv(
-                file_path,
-                schema_overrides=schema_overrides,
-            )
+            lazy_frame = pl.scan_csv(file_path, schema_overrides=schema_overrides)
         else:
-            source_frame = pl.read_csv(
-                file_path,
-                schema_overrides=schema_overrides,
-            )
             source_frame = with_constructed_security_id(
-                source_frame,
+                pl.read_csv(file_path, schema_overrides=schema_overrides),
                 construction,
                 output_column=_CONSTRUCTED_SECURITY_ID_COLUMN,
                 dataset_name="security_master",
@@ -168,478 +113,155 @@ class AxysClassificationSourceLoader:
                 error_message=self._error_message,
             )
             lazy_frame = source_frame.lazy()
-        self._validate_csv_columns(source_type, source_name, effective_source, lazy_frame)
+        self._validate_csv_columns(source_type, source_name, source, lazy_frame)
 
-        if effective_source.get(_FILTER_TO_SECURITY_IDS, False):
+        if source[_FILTER_TO_SECURITY_IDS]:
             lazy_frame = lazy_frame.filter(
-                pl.col(effective_source["identifier_column"]).is_in(unique_security_ids)
-            )
-        if {"filter_column", "filter_value"}.issubset(effective_source):
-            lazy_frame = lazy_frame.filter(
-                pl.col(effective_source["filter_column"])
-                == effective_source["filter_value"]
+                pl.col(source["identifier_column"]).is_in(unique_security_ids)
             )
 
-        rename_mappings = {
-            effective_source["identifier_column"]: cols.IDENTIFIER,
-            effective_source["name_column"]: cols.NAME,
-        }
         source_frame = lazy_frame.collect()
         self._validate_identity_columns(
             source_frame,
             source_type,
             source_name,
-            effective_source,
+            source,
             file_path,
         )
-        return (
-            source_frame
-            .rename(rename_mappings)
-            .select(_NORMALIZED_SOURCE_COLUMNS)
-            .unique(subset=[cols.IDENTIFIER], keep="any")
+        normalized = source_frame.select(
+            pl.col(source["identifier_column"]).alias(cols.IDENTIFIER),
+            pl.col(source["name_column"]).alias(cols.NAME),
         )
+        return util._deduplicate_identifier_pairs(  # pylint: disable=protected-access
+            normalized,
+            f"Axys {source_type} {source_name!r} from {str(file_path)!r}",
+        )
+
+    def _effective_source_definition(
+        self,
+        source_type: _SourceType,
+        source_name: str,
+    ) -> dict[str, Any]:
+        """Return security-master fields for one supported source request.
+
+        Args:
+            source_type: Whether to produce classification items or a mapping.
+            source_name: ``Security`` or a configured mapping name.
+
+        Returns:
+            Internal source definition containing its path and two selected columns.
+
+        Raises:
+            PparError: If ``source_name`` is not supported.
+        """
+        if source_type == "classification" and source_name == _SECURITY_CLASSIFICATION_NAME:
+            security_master = self._security_master_definition(source_name)
+            return {
+                _SOURCE_FILE_PATH: security_master[_SOURCE_FILE_PATH],
+                "identifier_column": security_master["identifier_column"],
+                "name_column": security_master["name_column"],
+                _FILTER_TO_SECURITY_IDS: True,
+                **self._security_id_construction_fields(security_master),
+            }
+
+        mapping = self._specification.mappings.get(source_name)
+        if mapping is None:
+            raise PparError(
+                self._error_message(f"Unknown {source_type} {source_name!r}"),
+            )
+        security_master = self._security_master_definition(source_name)
+        if source_type == "classification":
+            return {
+                _SOURCE_FILE_PATH: security_master[_SOURCE_FILE_PATH],
+                "identifier_column": mapping["classification_column"],
+                "name_column": mapping["display_name_column"],
+                _FILTER_TO_SECURITY_IDS: False,
+            }
+        return {
+            _SOURCE_FILE_PATH: security_master[_SOURCE_FILE_PATH],
+            "identifier_column": security_master["identifier_column"],
+            "name_column": mapping["classification_column"],
+            _FILTER_TO_SECURITY_IDS: True,
+            **self._security_id_construction_fields(security_master),
+        }
 
     @staticmethod
     def _schema_overrides(
-        data_source: dict[str, Any],
+        source: dict[str, Any],
         construction: SecurityIdConstruction | None,
     ) -> dict[str, type[pl.DataType]]:
-        """Return CSV types that preserve identifiers and names as text.
-
-        Args:
-            data_source: Effective classification or mapping source.
-            construction: Optional composite security-identifier definition.
-
-        Returns:
-            Partial Polars CSV schema keyed by source column.
-        """
+        """Return CSV types that preserve identifiers and names as text."""
         overrides = dict(construction.schema_overrides) if construction else {}
         for field_name in ("identifier_column", "name_column"):
-            source_column = data_source.get(field_name)
-            if (
-                isinstance(source_column, str)
-                and source_column != _CONSTRUCTED_SECURITY_ID_COLUMN
-            ):
+            source_column = source[field_name]
+            if source_column != _CONSTRUCTED_SECURITY_ID_COLUMN:
                 overrides[source_column] = pl.String
-        filter_column = data_source.get("filter_column")
-        if isinstance(filter_column, str) and isinstance(
-            data_source.get("filter_value"), str
-        ):
-            overrides[filter_column] = pl.String
         return overrides
+
+    def _validate_csv_columns(
+        self,
+        source_type: _SourceType,
+        source_name: str,
+        source: dict[str, Any],
+        lazy_frame: pl.LazyFrame,
+    ) -> None:
+        """Reject configured source columns absent from the security master."""
+        required = {source["identifier_column"], source["name_column"]}
+        nonexistent = required - set(lazy_frame.collect_schema().names())
+        if nonexistent:
+            raise PparError(
+                self._error_message(
+                    f"Nonexistent column names for {source_type} {source_name!r}: "
+                    f"{nonexistent}"
+                ),
+            )
 
     def _validate_identity_columns(
         self,
         frame: pl.DataFrame,
-        source_type: SourceType,
+        source_type: _SourceType,
         source_name: str,
-        data_source: dict[str, Any],
+        source: dict[str, Any],
         file_path: util.PathLike,
     ) -> None:
-        """Reject null, blank, or padded identifiers in supporting sources.
-
-        Args:
-            frame: Loaded and filtered source rows.
-            source_type: Kind of supporting source being loaded.
-            source_name: Configured source name used in error details.
-            data_source: Effective source definition.
-            file_path: Source CSV path used in error details.
-
-        Raises:
-            PparError: If an identity field is null, blank, or padded.
-        """
-        identity_fields = ["identifier_column"]
+        """Reject null, blank, or padded identifiers in supporting sources."""
+        field_names = ["identifier_column"]
         if source_type == "mapping":
-            identity_fields.append("name_column")
-        for field_name in identity_fields:
-            column_name = cast(str, data_source[field_name])
-            value = pl.col(column_name)
-            stripped_value = value.str.strip_chars()
-            invalid_rows = frame.filter(
-                value.is_null()
-                | stripped_value.eq("")
-                | value.ne(stripped_value)
-            )
+            field_names.append("name_column")
+        for field_name in field_names:
+            column_name = cast(str, source[field_name])
+            invalid_rows = util.invalid_identity_rows(frame, column_name)
             if invalid_rows.is_empty():
                 continue
-            sample_rows = invalid_rows.select(column_name).head(10).to_dicts()
             raise PparError(
                 self._error_message(
                     f"Identity field {column_name!r} in {str(file_path)!r} for "
                     f"{source_type} {source_name!r} must be non-null, nonblank, "
                     "and free of surrounding whitespace. "
-                    f"Affected rows: {sample_rows}"
+                    f"Affected rows: {sample_rows(invalid_rows, [column_name])}"
                 )
             )
-
-    def _source_definition(
-        self,
-        source_type: SourceType,
-        source_name: str,
-    ) -> dict[str, Any] | None:
-        """Return an explicit source definition or synthesized classification.
-
-        Args:
-            source_type: Kind of supporting source being loaded.
-            source_name: Configured source name being loaded.
-
-        Returns:
-            Source definition from the Axys specification, a synthesized
-            mapping-backed classification definition, or ``None`` when the
-            source is unknown.
-        """
-        data_sources = (
-            self._specification.classifications
-            if source_type == "classification"
-            else self._specification.mappings
-        )
-        data_source = data_sources.get(source_name)
-        if data_source is not None:
-            return data_source
-
-        if source_type == "classification":
-            if source_name == _SECURITY_CLASSIFICATION_NAME:
-                return {"is_security_master": True}
-            mapping_source = self._specification.mappings.get(source_name)
-            if (
-                isinstance(mapping_source, dict)
-                and "display_name_column" in mapping_source
-            ):
-                return {
-                    "mapping": source_name,
-                    "name_column": mapping_source["display_name_column"],
-                }
-            if isinstance(mapping_source, dict):
-                raise PparError(
-                    self._error_message(
-                        f"Mapping {source_name!r} cannot be used as a classification "
-                        "without display_name_column."
-                    ),
-                )
-        return None
-
-    def _validate_csv_columns(
-        self,
-        source_type: SourceType,
-        source_name: str,
-        data_source: dict[str, Any],
-        lazy_frame: pl.LazyFrame,
-    ) -> None:
-        """Validate that configured source columns exist in the CSV.
-
-        Args:
-            source_type: Kind of supporting source being loaded.
-            source_name: Configured source name being loaded.
-            data_source: Source definition from the Axys specification.
-            lazy_frame: Lazy CSV scan used to inspect available columns.
-
-        Raises:
-            PparError: If any configured CSV column name does not exist.
-        """
-        specified_column_names = {
-            data_source[field]
-            for field in _CLASSIFICATION_MAPPING_COLUMN_NAMES
-            if field in data_source
-        }
-        nonexistent_column_names = specified_column_names - set(
-            lazy_frame.collect_schema().names()
-        )
-        if nonexistent_column_names:
-            raise PparError(
-                self._error_message(
-                    f"Nonexistent column names for {source_type} {source_name!r}: "
-                    f"{nonexistent_column_names}"
-                ),
-            )
-
-    def _validate_source_definition(
-        self,
-        source_type: SourceType,
-        source_name: str,
-        data_source: dict[str, Any],
-    ) -> None:
-        """Validate a classification or mapping source specification.
-
-        Args:
-            source_type: Kind of supporting source being loaded.
-            source_name: Configured source name being loaded.
-            data_source: Source definition from the Axys specification.
-
-        Raises:
-            PparError: If required fields are missing, unknown fields are
-                present, ``is_security_master`` is not boolean, required
-                source fields are missing, or a non-security-master
-                classification does not identify a configured mapping.
-        """
-        allowed_fields = (
-            _CLASSIFICATION_FIELDS_ALLOWED
-            if source_type == "classification"
-            else _MAPPING_FIELDS_ALLOWED
-        )
-        unknown_fields = set(data_source) - allowed_fields
-        if unknown_fields:
-            raise PparError(
-                self._error_message(
-                    f"Unknown fields for {source_type} {source_name!r}: {unknown_fields}"
-                ),
-            )
-
-        is_security_master = data_source.get("is_security_master", False)
-        if not isinstance(is_security_master, bool):
-            raise PparError(
-                self._error_message(
-                    f"Invalid is_security_master value for {source_type} {source_name!r}: "
-                    f"{is_security_master!r} must be a boolean."
-                ),
-            )
-
-        if source_type == "mapping":
-            self._validate_mapping_definition(source_name, data_source)
-            return
-
-        if is_security_master:
-            return
-
-        mapping_name = data_source.get("mapping")
-        self._validate_classification_mapping(source_name, mapping_name)
-        self._validate_classification_source_fields(source_name, data_source)
-
-    def _validate_mapping_definition(
-        self,
-        source_name: str,
-        data_source: dict[str, Any],
-    ) -> None:
-        """Validate a mapping definition that points into the security master.
-
-        Args:
-            source_name: Configured mapping source name.
-            data_source: Mapping definition from the Axys specification.
-
-        Raises:
-            PparError: If the required ``classification_column`` field is
-                missing.
-        """
-        missing_fields = _MAPPING_FIELDS_REQUIRED - set(data_source)
-        if missing_fields:
-            raise PparError(
-                self._error_message(
-                    f"Missing fields for mapping {source_name!r}: {missing_fields}"
-                ),
-            )
-
-    def _validate_classification_source_fields(
-        self,
-        source_name: str,
-        data_source: dict[str, Any],
-    ) -> None:
-        """Validate explicit or security-master-backed classification fields.
-
-        Args:
-            source_name: Configured classification source name.
-            data_source: Classification definition from the Axys specification.
-
-        Raises:
-            PparError: If the classification has neither a complete explicit
-                source definition nor a security-master-backed definition.
-        """
-        has_file_path = "file_path" in data_source
-        if has_file_path:
-            missing_fields = _FILE_BACKED_CLASSIFICATION_FIELDS_REQUIRED - set(
-                data_source
-            )
-            if missing_fields:
-                raise PparError(
-                    self._error_message(
-                        f"Missing fields for classification {source_name!r}: "
-                        f"{missing_fields}"
-                    ),
-                )
-            return
-
-        if "identifier_column" in data_source:
-            raise PparError(
-                self._error_message(
-                    f"Missing fields for classification {source_name!r}: "
-                    "{'file_path'}"
-                ),
-            )
-
-        missing_fields = {"name_column"} - set(data_source)
-        if missing_fields:
-            raise PparError(
-                self._error_message(
-                    f"Missing fields for classification {source_name!r}: "
-                    f"{missing_fields}"
-                ),
-            )
-
-    def _validate_classification_mapping(
-        self,
-        source_name: str,
-        mapping_name: object,
-    ) -> None:
-        """Validate a non-security-master classification mapping reference.
-
-        Args:
-            source_name: Configured classification source name.
-            mapping_name: Mapping reference from the classification source
-                definition.
-
-        Raises:
-            PparError: If the classification does not reference a configured
-                mapping.
-        """
-        if not isinstance(mapping_name, str) or not mapping_name:
-            raise PparError(
-                self._error_message(
-                    f"Missing mapping for classification {source_name!r}. "
-                    "Non-security-master classifications must specify a mapping."
-                ),
-            )
-        if mapping_name not in self._specification.mappings:
-            raise PparError(
-                self._error_message(
-                    f"Unknown mapping {mapping_name!r} for classification {source_name!r}"
-                ),
-            )
-
-    def _source_file_path(
-        self,
-        source_type: SourceType,
-        source_name: str,
-        data_source: dict[str, Any],
-    ) -> util.PathLike:
-        """Return the override or configured default path for a source.
-
-        Args:
-            source_type: Kind of supporting source being loaded.
-            source_name: Configured classification or mapping source name.
-            data_source: Source definition from the Axys specification.
-
-        Returns:
-            Resolved source file path.
-        """
-        override_path = (
-            self._source_path_overrides.get(source_name)
-            if source_type == "classification"
-            else None
-        )
-        file_path = override_path if override_path is not None else data_source[_SOURCE_FILE_PATH]
-        return self._specification.resolve_path(file_path)
-
-    def _effective_source_definition(
-        self,
-        source_type: SourceType,
-        source_name: str,
-        data_source: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Return inherited path and column settings for a loadable source.
-
-        Args:
-            source_type: Kind of supporting source being loaded.
-            source_name: Configured source name being loaded.
-            data_source: Raw source definition from the Axys specification.
-
-        Returns:
-            Source definition with explicit file path, identifier column, name
-            column, and security-ID filtering behavior.
-
-        Raises:
-            PparError: If required security master settings are missing.
-        """
-        if source_type == "mapping":
-            security_master = self._security_master_definition(source_name)
-            return {
-                _SOURCE_FILE_PATH: security_master[_SOURCE_FILE_PATH],
-                "identifier_column": security_master["identifier_column"],
-                "name_column": data_source["classification_column"],
-                _FILTER_TO_SECURITY_IDS: True,
-                **self._security_id_construction_fields(security_master),
-            }
-
-        if data_source.get("is_security_master", False):
-            security_master = self._security_master_definition(source_name)
-            return {
-                _SOURCE_FILE_PATH: self._explicit_or_security_master_path(
-                    data_source,
-                    security_master,
-                ),
-                "identifier_column": (
-                    security_master["identifier_column"]
-                    if _SECURITY_ID_CONSTRUCTION in security_master
-                    else data_source.get(
-                        "identifier_column",
-                        security_master["identifier_column"],
-                    )
-                ),
-                "name_column": data_source.get(
-                    "name_column", security_master["name_column"]
-                ),
-                _FILTER_TO_SECURITY_IDS: True,
-                **self._security_id_construction_fields(security_master),
-            }
-
-        if "file_path" in data_source:
-            return {
-                **data_source,
-                _SOURCE_FILE_PATH: data_source["file_path"],
-                _FILTER_TO_SECURITY_IDS: False,
-            }
-
-        mapping_name = cast(str, data_source["mapping"])
-        mapping = self._specification.mappings[mapping_name]
-        security_master = self._security_master_definition(source_name)
-        return {
-            **data_source,
-            _SOURCE_FILE_PATH: security_master[_SOURCE_FILE_PATH],
-            "identifier_column": mapping["classification_column"],
-            _FILTER_TO_SECURITY_IDS: False,
-        }
 
     def _security_master_definition(self, source_name: str) -> dict[str, Any]:
-        """Return validated top-level security master path and columns.
-
-        Args:
-            source_name: Source requiring security master settings, used for
-                validation context.
-
-        Returns:
-            Source definition containing the security master path and columns.
-
-        Raises:
-            PparError: If the security master path or required columns are not
-                configured.
-        """
+        """Return validated security-master path, identity, and name columns."""
         security_master_path = self._specification.file_path(
             _SECURITY_MASTER_FILE_KEY
         )
-        configured_columns_value = self._specification.file_columns(
+        configured_columns = self._specification.file_columns(
             _SECURITY_MASTER_FILE_KEY
         )
-        if not security_master_path:
-            raise PparError(
-                self._error_message(
-                    "files.security_master.path is required for source "
-                    f"{source_name!r}."
-                ),
-            )
-        if not isinstance(configured_columns_value, dict):
-            raise PparError(
-                self._error_message("files.security_master.columns must be a mapping."),
-            )
-        configured_columns = configured_columns_value
-        supported_config_keys = (
+        supported_keys = (
             set(_SECURITY_MASTER_CONFIG_KEYS.values())
             | set(_SECURITY_MASTER_IDENTITY_KEYS)
         )
-        unsupported_config_keys = sorted(
-            str(key) for key in configured_columns if key not in supported_config_keys
+        unsupported = sorted(
+            str(key) for key in configured_columns if key not in supported_keys
         )
-        if unsupported_config_keys:
+        if unsupported:
             raise PparError(
                 self._error_message(
                     "files.security_master.columns has unsupported keys: "
-                    + ", ".join(unsupported_config_keys)
+                    + ", ".join(unsupported)
                     + "."
                 ),
             )
@@ -649,8 +271,7 @@ class AxysClassificationSourceLoader:
             self._error_message,
             file_name=_SECURITY_MASTER_FILE_KEY,
         )
-
-        security_master_columns = self._resolve_security_master_columns(
+        resolved_columns = self._resolve_security_master_columns(
             source_name,
             security_master_path,
             configured_columns,
@@ -658,8 +279,8 @@ class AxysClassificationSourceLoader:
         )
         definition: dict[str, Any] = {
             _SOURCE_FILE_PATH: security_master_path,
-            "identifier_column": security_master_columns["identifier_column"],
-            "name_column": security_master_columns["name_column"],
+            "identifier_column": resolved_columns["identifier_column"],
+            "name_column": resolved_columns["name_column"],
         }
         if construction is not None:
             definition[_SECURITY_ID_CONSTRUCTION] = construction
@@ -673,23 +294,7 @@ class AxysClassificationSourceLoader:
         *,
         composite_identifier: bool,
     ) -> dict[str, str]:
-        """Return explicit or exact-default security master column names.
-
-        Args:
-            source_name: Source requiring security master settings, used for
-                validation context.
-            security_master_path: Configured security master source path.
-            configured_columns: Explicit YAML security master column mappings.
-            composite_identifier: Whether ``security_id`` construction replaces
-                a single identifier source column.
-
-        Returns:
-            Mapping for ``identifier_column`` and ``name_column``.
-
-        Raises:
-            PparError: If a column cannot be resolved or if multiple candidates
-                match the security master header.
-        """
+        """Resolve required security-master columns from explicit or exact names."""
         path = self._specification.resolve_path(security_master_path)
         if not util.file_path_exists(path):
             raise PparError(self._error_message(util.file_path_error(path)))
@@ -715,23 +320,18 @@ class AxysClassificationSourceLoader:
                     f"Source requiring security master: {source_name!r}"
                 ),
             )
-            if source_column is None:
-                missing_fields.append(
-                    f"{config_key!r}"
+            if source_column is None or source_column not in available_columns:
+                configured_as = (
+                    f" configured as {source_column!r}" if source_column else ""
                 )
-                continue
-            if source_column not in available_columns:
-                missing_fields.append(
-                    f"{config_key!r} configured as {source_column!r}"
-                )
-                continue
-            resolved_columns[field_name] = source_column
+                missing_fields.append(f"{config_key!r}{configured_as}")
+            else:
+                resolved_columns[field_name] = source_column
 
         if missing_fields:
             raise PparError(
                 self._error_message(
-                    "Missing "
-                    f"{missing_fields} for files.security_master.columns. "
+                    f"Missing {missing_fields} for files.security_master.columns. "
                     f"CSV columns available are: {sorted(available_columns)}. "
                     f"Source requiring security master: {source_name!r}"
                 ),
@@ -747,30 +347,3 @@ class AxysClassificationSourceLoader:
         if construction is None:
             return {}
         return {_SECURITY_ID_CONSTRUCTION: cast(SecurityIdConstruction, construction)}
-
-    @staticmethod
-    def _explicit_or_security_master_path(
-        data_source: dict[str, Any],
-        security_master: dict[str, Any],
-    ) -> util.PathLike:
-        """Return an explicit source path or inherited security master path."""
-        return cast(
-            util.PathLike,
-            data_source.get("file_path", security_master[_SOURCE_FILE_PATH]),
-        )
-
-    def _validate_source_path_overrides(self) -> None:
-        """Validate that file path overrides reference configured sources.
-
-        Raises:
-            PparError: If any override key is not a configured classification
-                source name.
-        """
-        configured_source_names = set(self._specification.classifications)
-        unknown_source_names = set(self._source_path_overrides) - configured_source_names
-        if unknown_source_names:
-            raise PparError(
-                self._error_message(
-                    f"Unknown source path override names: {unknown_source_names}"
-                ),
-            )

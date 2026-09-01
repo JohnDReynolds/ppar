@@ -10,7 +10,7 @@ from __future__ import annotations
 # Python imports
 import datetime as dt
 import math
-from typing import Callable, Final, Sequence
+from typing import Callable, Final
 
 # Third-party imports
 import polars as pl
@@ -18,6 +18,7 @@ import polars as pl
 # Project imports
 import ppar.schema as cols
 from ppar.axys_apx.weight_solver import derive_reconciled_weights
+from ppar.axys_apx.source_validation import normalize_financial_fields, sample_rows
 from ppar.errors import PparError
 
 ErrorMessage = Callable[[str], str]
@@ -34,97 +35,6 @@ _SECURITY_UNIQUE_KEY_COLUMNS: Final[tuple[str, ...]] = (
     *_PERIOD_UNIQUE_KEY_COLUMNS,
     cols.IDENTIFIER,
 )
-_NORMALIZED_VALUE_COLUMN: Final[str] = "__ppar_normalized_financial_value"
-
-
-def _sample_rows(
-    frame: pl.DataFrame,
-    column_names: Sequence[str],
-) -> list[dict[str, object]]:
-    """Return compact error rows with dates formatted for readability."""
-    sample = frame.select(column_names).head(10)
-    date_columns = [
-        column_name
-        for column_name in cols.DATE_COLUMNS
-        if column_name in sample.columns and sample.schema[column_name] == pl.Date
-    ]
-    if date_columns:
-        sample = sample.with_columns(
-            pl.col(column_name).dt.to_string("%Y-%m-%d")
-            for column_name in date_columns
-        )
-    return sample.to_dicts()
-
-
-def _normalize_financial_values(
-    frame: pl.DataFrame,
-    dataset_name: str,
-    columns: tuple[tuple[str, bool], ...],
-    error_message: ErrorMessage,
-) -> pl.DataFrame:
-    """Return a numeric frame after defensive finite-value validation.
-
-    Args:
-        frame: Portfolio- or security-performance rows.
-        dataset_name: Source kind used in error details.
-        columns: Column names paired with whether null values are invalid.
-        error_message: Callback that adds facade-level source context.
-
-    Returns:
-        Frame with validated financial columns represented as ``Float64``.
-
-    Raises:
-        PparError: If a required value is null or any non-null value cannot be
-            converted to a finite number.
-    """
-    for column_name, required in columns:
-        normalized = frame.with_columns(
-            pl.col(column_name)
-            .cast(pl.Float64, strict=False)
-            .alias(_NORMALIZED_VALUE_COLUMN)
-        )
-        normalized_value = pl.col(_NORMALIZED_VALUE_COLUMN)
-        invalid_value = (
-            normalized_value.is_nan().fill_null(False)
-            | normalized_value.is_infinite().fill_null(False)
-        )
-        if required:
-            invalid_value = invalid_value | normalized_value.is_null()
-        else:
-            invalid_value = invalid_value | (
-                pl.col(column_name).is_not_null()
-                & normalized_value.is_null()
-            )
-        invalid_rows = normalized.filter(invalid_value)
-        if not invalid_rows.is_empty():
-            sample_columns = list(
-                dict.fromkeys(
-                    name
-                    for name in (
-                        cols.PORTFOLIO_CODE,
-                        cols.FROM_DATE,
-                        cols.THRU_DATE,
-                        column_name,
-                    )
-                    if name in invalid_rows.columns
-                )
-            )
-            sample_rows = _sample_rows(invalid_rows, sample_columns)
-            requirement = (
-                "a finite numeric value"
-                if required
-                else "either null or a finite numeric value"
-            )
-            raise PparError(
-                error_message(
-                    f"Financial field {column_name!r} for {dataset_name} must "
-                    f"contain {requirement}. Affected rows: {sample_rows}"
-                )
-            )
-        frame = normalized.with_columns(
-            pl.col(_NORMALIZED_VALUE_COLUMN).alias(column_name)
-        ).drop(_NORMALIZED_VALUE_COLUMN)
-    return frame
 
 
 def filter_to_common_periods(
@@ -180,9 +90,9 @@ def filter_to_common_periods(
             error_message(
                 "Portfolio and security performance period keys differ. "
                 "Missing from security_performance: "
-                f"{_sample_rows(missing_from_security, key_columns)}. "
+                f"{sample_rows(missing_from_security, key_columns)}. "
                 "Missing from portfolio_performance: "
-                f"{_sample_rows(missing_from_portfolio, key_columns)}."
+                f"{sample_rows(missing_from_portfolio, key_columns)}."
             )
         )
     return portfolio_performance, security_performance
@@ -215,13 +125,13 @@ def derive_security_performance_for_all_periods(
             reconciled, a derived period return is materially different from
             its portfolio return, or a security row is not assigned a weight.
     """
-    portfolio_performance = _normalize_financial_values(
+    portfolio_performance = normalize_financial_fields(
         portfolio_performance,
         "portfolio_performance",
         ((cols.PORTFOLIO_RETURN, True),),
         error_message,
     )
-    security_performance = _normalize_financial_values(
+    security_performance = normalize_financial_fields(
         security_performance,
         "security_performance",
         (
@@ -255,7 +165,7 @@ def derive_security_performance_for_all_periods(
             error_message(
                 "Duplicate security performance rows are ambiguous and cannot "
                 "be reconciled safely. Affected keys: "
-                f"{_sample_rows(duplicate_security_rows, sample_columns)}"
+                f"{sample_rows(duplicate_security_rows, sample_columns)}"
             )
         )
 

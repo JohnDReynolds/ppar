@@ -3,6 +3,7 @@
 # Python Imports
 import datetime as dt
 from collections.abc import Sequence
+import inspect
 import unittest
 from unittest import mock
 
@@ -52,15 +53,37 @@ class TestAnalyticsContracts(unittest.TestCase):
         attribution = analytics.attribution()
         summary = attribution.to_polars(View.SUBPERIOD_SUMMARY)
 
-        self.assertEqual(analytics.classification_names(), ("Security", "Security"))
         self.assertTrue((summary[cols.ACTIVE_RETURN] == 0.0).all())
         self.assertTrue((summary[cols.TOTAL_EFFECT_SIMPLE] == 0.0).all())
 
-    def test_date_window_keeps_only_periods_within_requested_bounds(self) -> None:
-        """Date parameters constrain the aligned reportable periods."""
+    def test_constructor_keeps_only_data_sources_positional(self) -> None:
+        """Names, dates, frequency, calendars, and risk inputs are keyword-only."""
+        parameters = inspect.signature(Analytics).parameters
+
+        self.assertEqual(
+            parameters["portfolio_data_source"].kind,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+        self.assertEqual(
+            parameters["benchmark_data_source"].kind,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+        for name in tuple(parameters)[2:]:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    parameters[name].kind,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+
+    def test_internal_classification_names_are_not_a_public_method(self) -> None:
+        """Analytics exposes calculations rather than its orchestration state."""
+        self.assertFalse(hasattr(Analytics(_two_asset_performance()), "classification_names"))
+
+    def test_date_bounds_select_aligned_periods_by_thru_date(self) -> None:
+        """A lower bound inside February retains the complete February period."""
         analytics = Analytics(
             _two_asset_performance(),
-            from_date="2024-02-01",
+            from_date="2024-02-15",
             thru_date=dt.date(2024, 3, 31),
         )
 
@@ -75,6 +98,22 @@ class TestAnalyticsContracts(unittest.TestCase):
             [dt.date(2024, 2, 29), dt.date(2024, 3, 31)],
         )
 
+    def test_fixed_frequency_uses_the_same_period_end_lower_bound(self) -> None:
+        """A lower bound inside January retains the complete first-quarter input."""
+        analytics = Analytics(
+            _two_asset_performance(),
+            from_date=dt.date(2024, 1, 15),
+            thru_date=dt.date(2024, 3, 31),
+            frequency=Frequency.QUARTERLY,
+        )
+
+        summary = analytics.attribution().to_polars(View.SUBPERIOD_SUMMARY)
+
+        self.assertEqual(
+            summary.select(cols.FROM_DATE, cols.THRU_DATE).row(0),
+            (dt.date(2024, 1, 1), dt.date(2024, 3, 31)),
+        )
+
     def test_different_known_classifications_require_requested_target(self) -> None:
         """A caller must choose a target classification for unlike inputs."""
         analytics = Analytics(
@@ -87,17 +126,32 @@ class TestAnalyticsContracts(unittest.TestCase):
         with self.assertRaises(PparError):
             analytics.attribution()
 
-    def test_repeated_attribution_retrieval_reuses_cached_instance(self) -> None:
-        """Repeated requests for a classification reuse calculated attribution."""
+    def test_repeated_attribution_requests_return_fresh_instances(self) -> None:
+        """Each attribution request constructs an independently audited result."""
         analytics = Analytics(
             _two_asset_performance(),
             portfolio_classification_name="Security",
         )
 
-        first = analytics.attribution()
-        second = analytics.attribution()
+        with mock.patch.object(Attribution, "audit", autospec=True) as audit:
+            first = analytics.attribution()
+            second = analytics.attribution()
 
-        self.assertIs(first, second)
+        self.assertIsNot(first, second)
+        self.assertEqual(audit.call_count, 2)
+
+    def test_analytics_audit_checks_its_performance_pair(self) -> None:
+        """Analytics audit remains independent of previously returned results."""
+        analytics = Analytics(
+            _two_asset_performance(),
+            portfolio_classification_name="Security",
+        )
+        attribution = analytics.attribution()
+
+        with mock.patch.object(attribution, "audit") as attribution_audit:
+            analytics.audit()
+
+        attribution_audit.assert_not_called()
 
     def test_mapping_sources_require_exact_portfolio_benchmark_pair(self) -> None:
         """Mapping setup rejects missing and silently ignored extra sources."""

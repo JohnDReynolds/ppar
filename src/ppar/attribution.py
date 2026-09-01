@@ -35,6 +35,8 @@ import ppar.utilities as util
 _DEFAULT_OUTPUT_PRECISION = 8
 _MAXIMUM_HTML_ROWS = 1_010
 
+__all__ = ["Attribution", "Chart", "View"]
+
 
 class Chart(Enum):
     """Attribution chart types supported by :meth:`Attribution.to_chart`.
@@ -124,15 +126,14 @@ class Attribution:
 
     An ``Attribution`` instance contains portfolio and benchmark ``Performance``
     objects, a ``Classification``, and the resulting contribution and attribution
-    effects. It provides public methods for retrieving those results as charts,
-    HTML, HTML, Polars DataFrames, charts, and CSV.
+    effects. Results are available as Polars DataFrames, HTML, PNG charts, and CSV.
     """
 
     def __init__(
         self,
         performances: Sequence[Performance],
         classification_name: str | None,
-        classification_data_source: util.ClassificationDataSource | None,
+        classification_data_source: str | Path | pl.DataFrame | None,
         frequency: Frequency,
         classification_label: str | None = None,
     ):
@@ -148,14 +149,21 @@ class Attribution:
                 omitted, classification display data is inferred from the performances.
             frequency: Frequency associated with the attribution periods.
             classification_label: Optional label displayed in tables and charts. If
-                empty, the classification name is used.
+                supplied, this overrides the classification name for presentation.
+                If omitted, the classification name is used.
 
         Raises:
             PparError: If classification setup, performance alignment, linking, or
                 attribution calculation fails validation.
         """
-        classification_label = util.normalize_optional_string(classification_label)
-        classification_name = util.normalize_optional_string(classification_name)
+        classification_label = util.normalize_optional_string(
+            classification_label,
+            "classification_label",
+        )
+        classification_name = util.normalize_optional_string(
+            classification_name,
+            "classification_name",
+        )
 
         performance_pair = util.two_item_tuple(performances, "Attribution performances")
 
@@ -370,44 +378,6 @@ class Attribution:
                     util.Tolerance.MEDIUM,
                 ):
                     raise PparError(f"_audit_columns: {col_name} does not foot when summed.")
-
-    def _audit_view(self, view: View) -> None:
-        """Audit a rendered attribution view.
-
-        Args:
-            view: View to audit.
-
-        Raises:
-            PparError: If contribution does not equal weight multiplied by return, or if
-                column-level audit checks fail.
-        """
-        # Get the DataFrame for the view.
-        df = self._fetch_dataframe(view)
-
-        # Assert that weight * return == contribution
-        for idx, _ in enumerate(self._performances):
-            if not self._performances[idx].subperiods_have_been_consolidated:
-                needed_columns = (
-                    cols.PORTFOLIO_COLUMNS_SIMPLE if idx == 0 else cols.BENCHMARK_COLUMNS_SIMPLE
-                )
-                if all(col in df.columns for col in needed_columns):
-                    contributions = df[needed_columns[0]] * df[needed_columns[1]]
-                    if not (df[needed_columns[2]].round(11) == contributions.round(11)).all():
-                        raise PparError("audit_view(): weight * return != contribution")
-
-        # Audit all columns.
-        match view:
-            case View.SUBPERIOD_ATTRIBUTION | View.SUBPERIOD_SUMMARY:
-                # Subperiods.  There is not a total row.
-                df_overall = pl.DataFrame()
-                # Sub-period, sector-level numbers interact with one-another, so they do not tie.
-                do_assert_simple_column_pairs = view != View.SUBPERIOD_ATTRIBUTION
-            case _:
-                # There is a total row.
-                df_overall = df[-1]
-                df = df[:-1]
-                do_assert_simple_column_pairs = True
-        Attribution._audit_columns(df, df_overall, do_assert_simple_column_pairs)
 
     def _from_date(self) -> dt.date:
         """Return the first from date in the attribution period.
@@ -868,9 +838,12 @@ class Attribution:
         normalized_sort_columns: tuple[str, ...] = ()
         if columns_to_sort is not None:
             if isinstance(columns_to_sort, str):
-                normalized_sort_columns = (
-                    (columns_to_sort,) if columns_to_sort.strip() else ()
-                )
+                if not columns_to_sort.strip():
+                    raise PparError(
+                        "columns_to_sort must not be blank; use None to omit it.",
+                        context={"option": "columns_to_sort", "value": columns_to_sort},
+                    )
+                normalized_sort_columns = (columns_to_sort,)
             else:
                 try:
                     normalized_sort_columns = tuple(columns_to_sort)
@@ -1049,8 +1022,8 @@ class Attribution:
         is_view = isinstance(chart_or_view, View)
 
         # Line 1: Portfolio Name (vs Benchmark Name)
-        portfolio_name = self._performances[0].name or ""
-        benchmark_name = self._performances[1].name or ""
+        portfolio_name = self._performances[0].name or "Portfolio"
+        benchmark_name = self._performances[1].name or "Benchmark"
         line1 = (
             portfolio_name
             if (
@@ -1111,6 +1084,22 @@ class Attribution:
                 repr(chart),
                 context={"chart": repr(chart)},
             )
+        if isinstance(columns_to_sort, str) and not columns_to_sort.strip():
+            raise PparError(
+                "columns_to_sort must not be blank; use None to omit it.",
+                context={"option": "columns_to_sort", "value": columns_to_sort},
+            )
+        if not isinstance(columns_to_sort, str) and columns_to_sort is not None:
+            blank_columns = [
+                column
+                for column in columns_to_sort
+                if isinstance(column, str) and not column.strip()
+            ]
+            if blank_columns:
+                raise PparError(
+                    "columns_to_sort must not contain blank column names.",
+                    context={"option": "columns_to_sort", "value": repr(columns_to_sort)},
+                )
 
         try:
             from ppar import charts as format_chart  # pylint: disable=import-outside-toplevel
@@ -1188,9 +1177,7 @@ class Attribution:
 
             case Chart.OVERALL_ATTRIBUTION:
                 # Set the default sorting.
-                if columns_to_sort is None or (
-                    isinstance(columns_to_sort, str) and not columns_to_sort.strip()
-                ):
+                if columns_to_sort is None:
                     columns_to_sort = cols.TOTAL_EFFECT_SMOOTHED
                     sort_descendings = True
                 # Set the DataFrame and remove the last "Total" row.
@@ -1202,9 +1189,7 @@ class Attribution:
 
             case _:  # Chart.OVERALL_CONTRIBUTION:
                 # Set the default sorting.
-                if columns_to_sort is None or (
-                    isinstance(columns_to_sort, str) and not columns_to_sort.strip()
-                ):
+                if columns_to_sort is None:
                     columns_to_sort = cols.PORTFOLIO_CONTRIB_SMOOTHED
                     sort_descendings = True
                 # Set the DataFrame and remove the last "Total" row.
@@ -1251,7 +1236,16 @@ class Attribution:
             label_total=True,
         )
         if _MAXIMUM_HTML_ROWS < len(df):
-            raise PparError(f"{view.value}, Rows = {len(df)}")
+            raise PparError(
+                f"{view.value} has {len(df):,} rows; HTML output is limited to "
+                f"{_MAXIMUM_HTML_ROWS:,} rows. Use to_polars() or write_csv() for "
+                "larger results.",
+                context={
+                    "view": view.value,
+                    "row_count": len(df),
+                    "row_limit": _MAXIMUM_HTML_ROWS,
+                },
+            )
         return html_table.attribution_html(
             df,
             view.value,
@@ -1282,51 +1276,10 @@ class Attribution:
         """
         return self._fetch_dataframe(view, columns_to_sort, sort_descendings)
 
-    def to_table(
-        self,
-        view: View,
-        columns_to_sort: str | Sequence[str] | None = None,
-        sort_descendings: bool | Sequence[bool] = False,
-    ) -> html_table.HtmlTable:
-        """Return a lightweight HTML table object for a view.
-
-        Args:
-            view: View to render.
-            columns_to_sort: Optional column name or sequence of column names to sort
-                by.
-            sort_descendings: Boolean or sequence of booleans indicating whether the
-                corresponding sort columns should be sorted descending.
-
-        Returns:
-            HtmlTable object for the requested view.
-
-        Raises:
-            PparError: If the requested view has more than 1,010 rows or view
-                construction fails validation.
-        """
-        df = self._fetch_dataframe(
-            view,
-            columns_to_sort,
-            sort_descendings,
-            label_total=True,
-        )
-
-        # Large HTML tables can be very slow. This commonly occurs for views
-        # containing one row per subperiod and classification item.
-        if _MAXIMUM_HTML_ROWS < len(df):
-            raise PparError(f"{view.value}, Rows = {len(df)}")
-
-        return html_table.attribution_table(
-            df,
-            view.value,
-            self._title_lines(view),
-            self._classification_label,
-        )
-
     def write_csv(
         self,
         view: View,
-        file_path: util.PathLike,
+        file_path: str | Path,
         columns_to_sort: str | Sequence[str] | None = None,
         sort_descendings: bool | Sequence[bool] = False,
         float_precision: int = _DEFAULT_OUTPUT_PRECISION,

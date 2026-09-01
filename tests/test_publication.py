@@ -1,8 +1,10 @@
-"""Tests for atomic report-directory publication."""
+"""Tests for transactional report-directory publication."""
 
 from pathlib import Path
+import os
 import tempfile
 import unittest
+from unittest import mock
 from unittest.mock import MagicMock
 
 from ppar.attribution import Chart, View
@@ -39,6 +41,87 @@ class AtomicOutputDirectoryTests(unittest.TestCase):
 
             self.assertEqual((output / "old.txt").read_text(encoding="utf-8"), "old")
             self.assertFalse((output / "partial.txt").exists())
+
+    def test_interruptions_preserve_prior_output_and_remove_staging(self) -> None:
+        """KeyboardInterrupt and SystemExit receive the same cleanup as errors."""
+        for interruption in (KeyboardInterrupt, SystemExit):
+            with self.subTest(interruption=interruption.__name__):
+                with tempfile.TemporaryDirectory() as temporary:
+                    parent = Path(temporary)
+                    output = parent / "output"
+                    output.mkdir()
+                    (output / "old.txt").write_text("old", encoding="utf-8")
+
+                    with self.assertRaises(interruption):
+                        with atomic_output_directory(output) as staging:
+                            (staging / "partial.txt").write_text(
+                                "partial",
+                                encoding="utf-8",
+                            )
+                            raise interruption()
+
+                    self.assertEqual(
+                        (output / "old.txt").read_text(encoding="utf-8"),
+                        "old",
+                    )
+                    self.assertEqual(
+                        [path.name for path in parent.iterdir()],
+                        ["output"],
+                    )
+
+    def test_publication_failure_rolls_back_and_removes_staging(self) -> None:
+        """A failed staging rename restores the prior complete directory."""
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            output = parent / "output"
+            output.mkdir()
+            (output / "old.txt").write_text("old", encoding="utf-8")
+            real_replace = os.replace
+
+            def fail_staging_replace(source: str | Path, destination: str | Path) -> None:
+                if "-staging-" in Path(source).name:
+                    raise OSError("publish failed")
+                real_replace(source, destination)
+
+            with (
+                mock.patch("ppar.publication.os.replace", side_effect=fail_staging_replace),
+                self.assertRaisesRegex(OSError, "publish failed"),
+            ):
+                with atomic_output_directory(output) as staging:
+                    (staging / "new.txt").write_text("new", encoding="utf-8")
+
+            self.assertEqual((output / "old.txt").read_text(encoding="utf-8"), "old")
+            self.assertEqual([path.name for path in parent.iterdir()], ["output"])
+
+    def test_publication_interruption_rolls_back_prior_output(self) -> None:
+        """An interruption during publication restores the prior directory."""
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            output = parent / "output"
+            output.mkdir()
+            (output / "old.txt").write_text("old", encoding="utf-8")
+            real_replace = os.replace
+
+            def interrupt_staging_replace(
+                source: str | Path,
+                destination: str | Path,
+            ) -> None:
+                if "-staging-" in Path(source).name:
+                    raise KeyboardInterrupt
+                real_replace(source, destination)
+
+            with (
+                mock.patch(
+                    "ppar.publication.os.replace",
+                    side_effect=interrupt_staging_replace,
+                ),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                with atomic_output_directory(output) as staging:
+                    (staging / "new.txt").write_text("new", encoding="utf-8")
+
+            self.assertEqual((output / "old.txt").read_text(encoding="utf-8"), "old")
+            self.assertEqual([path.name for path in parent.iterdir()], ["output"])
 
 
 class WriteReportBundleTests(unittest.TestCase):
@@ -134,6 +217,48 @@ class WriteReportBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(PparError, "At least one report"):
                 write_report_bundle(output_directory=output)
 
+            self.assertFalse(output.exists())
+
+    def test_rejects_duplicate_selections_before_writing(self) -> None:
+        """Repeated selections cannot overwrite the same report filename."""
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "reports"
+            with self.assertRaisesRegex(PparError, "repeated selection") as raised:
+                write_report_bundle(
+                    output_directory=output,
+                    security_attribution=MagicMock(),
+                    security_views=(
+                        View.OVERALL_ATTRIBUTION,
+                        View.OVERALL_ATTRIBUTION,
+                    ),
+                )
+
+            self.assertEqual(raised.exception.context["parameter"], "security_views")
+            self.assertFalse(output.exists())
+
+    def test_rejects_wrong_selection_type_before_writing(self) -> None:
+        """Invalid iterable members raise PparError rather than AttributeError."""
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "reports"
+            with self.assertRaisesRegex(
+                PparError,
+                r"classification_charts\[0\] must be a Chart",
+            ) as raised:
+                write_report_bundle(
+                    output_directory=output,
+                    classification_attribution=MagicMock(),
+                    classification_charts=(View.OVERALL_ATTRIBUTION,),  # type: ignore[arg-type]
+                )
+
+            self.assertEqual(
+                raised.exception.context,
+                {
+                    "parameter": "classification_charts",
+                    "index": 0,
+                    "expected_type": "Chart",
+                    "actual_type": "View",
+                },
+            )
             self.assertFalse(output.exists())
 
 

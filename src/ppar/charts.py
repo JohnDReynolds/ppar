@@ -178,11 +178,23 @@ def heatmap(
 
     Returns:
         PNG image bytes for the rendered heatmap.
+
+    Notes:
+        Explicitly null calculated values remain masked and unannotated. A
+        missing date/classification pivot cell is filled with the model's
+        defined zero value. Portfolio-only heatmaps omit ordinary missing
+        holdings but retain available zero-net mapped results.
     """
-    # If it is a "portfolio-only" heatmap, then get rid of the cells where the portfolio weight is
-    # zero.  They are there because the benchmark weight is not 0.0.
+    # Portfolio-only heatmaps omit an ordinary missing holding, represented by
+    # zero weight and a defined zero metric. A zero-net mapped group remains
+    # visible when its selected metric is nonzero or mathematically undefined.
     if column_name in (cols.PORTFOLIO_CONTRIB_SIMPLE, cols.PORTFOLIO_RETURN):
-        df = df.filter(pl.col(cols.PORTFOLIO_WEIGHT) != 0)
+        metric = pl.col(column_name)
+        df = df.filter(
+            (pl.col(cols.PORTFOLIO_WEIGHT) != 0)
+            | metric.is_null()
+            | metric.ne(0)
+        )
 
     # Keep each classification on one stable row even if its display name changes or
     # becomes a duplicate later in the reporting period.
@@ -200,7 +212,7 @@ def heatmap(
     )
 
     # The default sort should be on column_name descending.
-    if column_name_to_sort is None or not column_name_to_sort.strip():
+    if column_name_to_sort is None:
         column_name_to_sort = column_name
         sort_descending = True
 
@@ -231,7 +243,9 @@ def heatmap(
     if column_name_to_sort == column_name:
         heatmap_data = (
             heatmap_data.with_columns(
-                pl.sum_horizontal(date_columns).alias("_row_total")
+                pl.sum_horizontal(
+                    [pl.col(name).fill_nan(0.0) for name in date_columns]
+                ).alias("_row_total")
             )
             .sort("_row_total", descending=sort_descending)
             .drop("_row_total")
@@ -370,7 +384,8 @@ def _prepare_heatmap_rows(df: pl.DataFrame, column_name: str) -> pl.DataFrame:
 
     Returns:
         Date labels, stable classification labels, and metric values ready for
-        an aggregation-free pivot.
+        an aggregation-free pivot. Explicit null metrics are represented as
+        ``NaN`` so they remain distinguishable from absent pivot cells.
 
     Raises:
         ValueError: If a date contains more than one value for a classification
@@ -398,6 +413,12 @@ def _prepare_heatmap_rows(df: pl.DataFrame, column_name: str) -> pl.DataFrame:
                     for identifier in df[cols.CLASSIFICATION_IDENTIFIER]
                 ],
             ),
+            # Preserve an explicit undefined calculation as NaN so the pivot's
+            # null fill applies only to an absent date/classification cell.
+            pl.col(column_name)
+            .cast(pl.Float64)
+            .fill_null(float("nan"))
+            .alias(column_name),
         )
         .select("date_label", "classification_label", column_name)
     )

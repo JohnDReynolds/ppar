@@ -20,7 +20,7 @@ from ppar.risk import RiskStatistics
 class TestRiskStatisticsValidation(unittest.TestCase):
     """Verify risk-statistics input rejection and calculation boundaries."""
 
-    def test_unsupported_frequency_raises_error_402(self) -> None:
+    def test_unsupported_frequency_is_rejected(self) -> None:
         """Daily-frequency risk statistics are not supported."""
         with self.assertRaises(PparError):
             RiskStatistics(
@@ -28,7 +28,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
                 Frequency.AS_OFTEN_AS_POSSIBLE,
             )
 
-    def test_insufficient_returns_raise_error_403(self) -> None:
+    def test_insufficient_returns_are_rejected(self) -> None:
         """At least two observations are required to calculate statistics."""
         with self.assertRaises(PparError):
             RiskStatistics(
@@ -36,7 +36,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
                 Frequency.MONTHLY,
             )
 
-    def test_mismatched_return_counts_raise_error_404(self) -> None:
+    def test_mismatched_return_counts_are_rejected(self) -> None:
         """Portfolio and benchmark arrays must contain matching periods."""
         with self.assertRaises(PparError):
             RiskStatistics(
@@ -44,7 +44,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
                 Frequency.MONTHLY,
             )
 
-    def test_nan_returns_raise_error_405(self) -> None:
+    def test_nan_returns_are_rejected(self) -> None:
         """Missing observations are not valid calculated risk inputs."""
         with self.assertRaises(PparError):
             RiskStatistics(
@@ -52,7 +52,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
                 Frequency.MONTHLY,
             )
 
-    def test_infinite_returns_raise_error_405(self) -> None:
+    def test_infinite_returns_are_rejected(self) -> None:
         """Infinite observations cannot enter risk calculations."""
         with self.assertRaises(PparError):
             RiskStatistics(
@@ -134,7 +134,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
         with self.assertRaisesRegex(PparError, "Annualized Alpha.*exceed -100%"):
             RiskStatistics((portfolio, benchmark), Frequency.MONTHLY)
 
-    def test_invalid_financial_parameters_raise_error_406(self) -> None:
+    def test_invalid_financial_parameters_are_rejected(self) -> None:
         """Rates, confidence, portfolio value, and currency label are validated."""
         returns = (np.array([0.01, 0.02]), np.array([0.01, 0.02]))
         invalid_arguments = (
@@ -154,7 +154,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
                         **arguments,  # type: ignore[arg-type]
                     )
 
-    def test_invalid_return_source_shapes_and_types_raise_error_407(self) -> None:
+    def test_invalid_return_source_shapes_and_types_are_rejected(self) -> None:
         """Return inputs must be a homogeneous pair of one-dimensional arrays."""
         invalid_returns = (
             (np.array([[0.01, 0.02]]), np.array([[0.01, 0.02]])),

@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import datetime as dt
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 # Third-party imports
@@ -14,7 +15,7 @@ import polars as pl
 # Project imports
 from ppar.axys_apx import reconciliation
 from ppar.axys_apx.performance_sources import AxysPerformanceSourceLoader
-from ppar.axys_apx.specification import AxysSpecification
+from ppar.axys_apx.specification import _AxysSpecification
 import ppar.schema as cols
 from ppar.errors import PparError
 from ppar.frequency import Frequency
@@ -22,7 +23,6 @@ import ppar.utilities as util
 
 if TYPE_CHECKING:
     from ppar import Analytics
-    from ppar.axys_apx.supporting_sources import AxysClassificationSources
 
 _ANALYTICS_REQUIRED_COLUMNS = {
     cols.FROM_DATE,
@@ -32,7 +32,29 @@ _ANALYTICS_REQUIRED_COLUMNS = {
     cols.WEIGHT,
 }
 _SECURITY_PERFORMANCE_CLASSIFICATION_NAME = "Security"
+_PORTFOLIO_NAME_SEPARATOR = " - "
 _PortfolioErrorMessage = Callable[[str, str | None], str]
+
+
+def _portfolio_display_name(
+    portfolio_code: str,
+    portfolio_performance: pl.DataFrame,
+) -> str:
+    """Return the code-prefixed name from the latest retained period.
+
+    Args:
+        portfolio_code: Exact account code represented by the source rows.
+        portfolio_performance: Validated retained rows for that account.
+
+    Returns:
+        Portfolio code and latest chronological display name joined by the
+        established separator.
+    """
+    chronological = portfolio_performance.sort(
+        [cols.THRU_DATE, cols.FROM_DATE]
+    )
+    latest_name = cast(str, chronological[-1, cols.PORTFOLIO_NAME])
+    return f"{portfolio_code}{_PORTFOLIO_NAME_SEPARATOR}{latest_name}"
 
 
 @dataclass(frozen=True)
@@ -41,21 +63,20 @@ class AxysPortfolio:
 
     Attributes:
         portfolio_code: Identifier used to select the portfolio in Axys sources.
-        portfolio_name: Display name supplied to analytics output.
+        portfolio_name: Code-prefixed display name from the latest retained
+            portfolio-performance period, supplied to analytics output.
         security_performance: Reconciled security-level performance rows
             accepted by :class:`ppar.Analytics`.
-        classification_sources: Optional classification source bundle requested
-            alongside the portfolio.
     """
 
     portfolio_code: str
     portfolio_name: str
     security_performance: pl.DataFrame
-    classification_sources: AxysClassificationSources | None = None
 
     def to_analytics(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
-        benchmark_data_source: AxysPortfolio | util.PerformanceDataSource | None = None,
+        benchmark_data_source: AxysPortfolio | str | Path | pl.DataFrame | None = None,
+        *,
         benchmark_name: str | None = None,
         portfolio_classification_name: str = _SECURITY_PERFORMANCE_CLASSIFICATION_NAME,
         benchmark_classification_name: str | None = None,
@@ -71,7 +92,7 @@ class AxysPortfolio:
             util.DEFAULT_PORTFOLIO_VALUE,
             util.DEFAULT_CURRENCY_SYMBOL,
         ),
-        holidays: util.PathLike | None = None,
+        holidays: str | Path | None = None,
     ) -> Analytics:
         """Return an Analytics instance for this reconciled Axys portfolio.
 
@@ -84,8 +105,8 @@ class AxysPortfolio:
                 security-performance rows. Defaults to ``"Security"``.
             benchmark_classification_name: Classification name associated with the
                 benchmark performance data.
-            from_date: Earliest allowed from date.
-            thru_date: Latest allowed thru date.
+            from_date: Earliest period ``thru_date`` to retain.
+            thru_date: Latest period ``thru_date`` to retain.
             frequency: Reporting frequency used to consolidate subperiods.
             annual_minimum_acceptable_return: Annual minimum acceptable return used in
                 downside-risk calculations.
@@ -99,8 +120,7 @@ class AxysPortfolio:
 
         Returns:
             Analytics instance initialized with this portfolio's reconciled
-            security-performance rows, display name, and optional default attribution
-            sources.
+            security-performance rows and display name.
 
         Raises:
             PparError: If Analytics validation fails.
@@ -118,7 +138,6 @@ class AxysPortfolio:
             util.PerformanceDataSource | None,
             None if benchmark is not None else benchmark_data_source,
         )
-        default_attribution_sources = self._default_attribution_sources(benchmark)
         if benchmark is not None:
             benchmark_performance_data_source = benchmark.security_performance
             benchmark_name = benchmark.portfolio_name if benchmark_name is None else benchmark_name
@@ -138,69 +157,12 @@ class AxysPortfolio:
             from_date=from_date,
             thru_date=thru_date,
             frequency=frequency,
-            default_attribution_sources=default_attribution_sources,
             annual_minimum_acceptable_return=annual_minimum_acceptable_return,
             annual_risk_free_rate=annual_risk_free_rate,
             confidence_level=confidence_level,
             portfolio_value=portfolio_value,
             holidays=holidays,
         )
-
-    def _default_attribution_sources(
-        self,
-        benchmark: AxysPortfolio | None,
-    ) -> AxysClassificationSources | None:
-        """Return default attribution sources for this portfolio/benchmark pair.
-
-        Args:
-            benchmark: Optional Axys benchmark portfolio.
-
-        Returns:
-            Default attribution sources for ``Analytics.attribution()``.
-
-        Raises:
-            PparError: If the portfolio and benchmark carry conflicting or
-                incomplete default classification sources.
-        """
-        if benchmark is None:
-            return self.classification_sources
-
-        portfolio_sources = self.classification_sources
-        benchmark_sources = benchmark.classification_sources
-        if portfolio_sources is None and benchmark_sources is None:
-            return None
-        if portfolio_sources is None or benchmark_sources is None:
-            raise PparError(
-                "Both AxysPortfolio objects must be loaded with the same "
-                "classification_name to use default attribution sources.",
-            )
-        # Import lazily to avoid a module import cycle.
-        from ppar.axys_apx.supporting_sources import (  # pylint: disable=import-outside-toplevel
-            combine_classification_sources,
-        )
-
-        return combine_classification_sources(
-            portfolio_sources,
-            benchmark_sources,
-        )
-
-    @property
-    def required_classification_sources(self) -> AxysClassificationSources:
-        """Return requested classification sources or raise a clear error.
-
-        Returns:
-            Classification source bundle requested with this portfolio.
-
-        Raises:
-            PparError: If the portfolio was loaded without a classification.
-        """
-        if self.classification_sources is None:
-            raise PparError(
-                "AxysPortfolio was loaded without classification sources. "
-                "Pass classification_name to AxysData.get_portfolio().",
-            )
-        return self.classification_sources
-
 
 class AxysPortfolioLoader:  # pylint: disable=too-few-public-methods
     """Load and reconcile requested Axys portfolios.
@@ -215,7 +177,7 @@ class AxysPortfolioLoader:  # pylint: disable=too-few-public-methods
 
     def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
-        specification: AxysSpecification,
+        specification: _AxysSpecification,
         loader: AxysPerformanceSourceLoader,
         error_message: _PortfolioErrorMessage,
         portfolio_performance_path: util.PathLike,
@@ -342,11 +304,10 @@ class AxysPortfolioLoader:  # pylint: disable=too-few-public-methods
                 ),
             )
 
-        portfolio_name = str(portfolio_performance[cols.PORTFOLIO_NAME][0])
-        if self._specification.prefix_portfolio_code:
-            portfolio_name = (
-                f"{portfolio_code}{self._specification.prefix_portfolio_code}{portfolio_name}"
-            )
+        portfolio_name = _portfolio_display_name(
+            portfolio_code,
+            portfolio_performance,
+        )
         return AxysPortfolio(
             portfolio_code,
             portfolio_name,

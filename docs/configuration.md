@@ -2,8 +2,8 @@
 
 `ppar setup DIRECTORY` creates the vendor-neutral demonstration. Add `--axys-apx` to
 create the Axys/APX demonstration instead. Each directory contains one executable,
-extensively commented `ppar_demo.py`. The generated workflow does not use a YAML
-workspace configuration or provide a `ppar run` command. Run the script directly:
+extensively commented `ppar_demo.py`. The generated workflow does not provide a
+`ppar run` command. Run the script directly:
 
 ```bash
 python DIRECTORY/ppar_demo.py
@@ -19,7 +19,7 @@ Both demonstrations expose corresponding values for:
 
 | Python value | Purpose |
 | --- | --- |
-| `FROM_DATE`, `THRU_DATE` | Inclusive reporting window |
+| `FROM_DATE`, `THRU_DATE` | Inclusive earliest and latest source-period end dates to retain |
 | `CLASSIFICATION` | Primary grouping used for classification reports |
 | `FREQUENCY` | Period consolidation; must be fixed when risk statistics are selected |
 | `HOLIDAYS` | Headerless file of nonbusiness dates |
@@ -32,14 +32,37 @@ Both demonstrations expose corresponding values for:
 | `CLASSIFICATION_CHARTS` | PNG classification charts to produce |
 | `INCLUDE_RISK_STATISTICS` | Whether to produce the HTML risk-statistics table |
 
+Date selection uses each complete source period's `thru_date`. For example,
+`FROM_DATE = 2024-02-15` retains a February 1–29 source period because that period
+ends after the inclusive lower bound. A `THRU_DATE` inside that same source period
+excludes it because the period ends after the inclusive upper bound. ppar does not
+calculate a partial-period return from a bound inside a source period.
+
 The Axys/APX script additionally defines `PORTFOLIO`, `BENCHMARK`, and
 `AXYS_SOURCE_VALUES`. The latter is an ordinary nested dictionary containing source
-paths, vendor-column mappings, and classification mappings. `AxysData.from_values()`
-validates and uses those Python values without reading YAML.
+paths, vendor-column mappings, and classification mappings. `AxysData()` validates
+and uses those Python values.
+
+The supported top-level keys in `AXYS_SOURCE_VALUES` are `files`, `mappings`, and
+`security_id`. `files` is limited to `portfolio_performance`,
+`security_performance`, and `security_master`. Each `mappings` entry identifies a
+classification code column and display-name column in `secmast.csv`. `security_id`
+is optional and configures composite security identities when the exports do not
+provide one shared identifier column. Independent classification files, filters,
+display-name overrides, and source-path override dictionaries are outside the focused
+Axys/APX contract; use the vendor-neutral `Analytics` inputs for those layouts.
 
 The default Axys/APX demonstration reads `portperf.csv`, `secperf.csv`, and
 `secmast.csv`. Its generated README explains the three input contracts, while
 `AXYS_SOURCE_VALUES` shows the exact paths and source headings to customize.
+Portfolio loading remains separate from report selection: each attribution call
+explicitly obtains the Security or selected-classification sources from `AxysData`.
+
+Axys/APX portfolio codes and names are exact text and must be nonblank and free of
+surrounding whitespace. When a portfolio is renamed across source periods, ppar uses
+the latest name in the retained reporting window and prefixes it with the exact
+portfolio code. Physical CSV row order and names outside the selected date window do
+not affect report titles.
 
 For each `secperf.csv` row, ppar prefers the weight implied by contribution divided
 by a nonzero security return and otherwise uses the reported weight. Exact signed
@@ -55,6 +78,18 @@ mapping CSV paths directly. Its performance files have a header and the columns
 column supplies display names. Classification and mapping files are headerless
 two-column CSVs.
 
+Performance identifiers and both mapping columns are exact textual identities.
+Leading zeroes are preserved. These values must be non-null, nonblank, and free of
+surrounding whitespace; meaningful internal spaces are retained.
+
+A classification row pairs an identifier with its display name. Exact duplicate
+identifier/name pairs are collapsed; assigning conflicting names to one identifier
+stops the run. A mapping row pairs a source identifier with a target classification
+identifier. Exact duplicate source/target pairs are also collapsed; assigning
+conflicting targets to one source identifier stops the run. An identifier omitted
+from a mapping remains its own target. These rules apply equally to CSV and Polars
+DataFrame inputs.
+
 ## Output
 
 Both scripts visibly select the same curated report bundle. Edit `SECURITY_VIEWS`,
@@ -66,6 +101,7 @@ When `INCLUDE_RISK_STATISTICS` is `True`, risk statistics are produced only when
 `FREQUENCY` is a fixed, valid frequency. With `Frequency.AS_OFTEN_AS_POSSIBLE`, source
 periods are preserved and risk statistics are intentionally omitted.
 
-Each successful run atomically replaces `output/` with the complete new bundle. If
-loading, calculation, report rendering, or publication fails, the previous successful
-output remains intact.
+Each successful run transactionally replaces `output/` with the complete new bundle.
+If loading, calculation, report rendering, or publication raises a Python exception or
+interruption, the previous successful output remains intact. This rollback guarantee
+does not extend to an abrupt process or system crash.

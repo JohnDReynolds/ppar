@@ -32,15 +32,28 @@ These filenames and fields form ppar's demonstration contract. They are not
 guaranteed native Axys/APX object, profile, report, filename, or column names because
 export formats vary by site.
 
+`portfolio_code` and `portfolio_name` are exact text. They must be nonblank and free
+of surrounding whitespace. A name may change across source periods; ppar uses the
+latest name in the retained reporting window and prefixes it with the exact portfolio
+code in output titles.
+
 `AXYS_SOURCE_VALUES` in `ppar_demo.py` maps each file path and ppar field to the exact
 heading used by your exports. Replace the demonstration CSV files in `input/`, or
 point those paths to files elsewhere, and update the headings as needed.
+
+The script loads the portfolio and benchmark first, then explicitly selects the
+classification sources for each attribution report. This keeps the report grouping
+visible where its attribution is calculated.
 
 Returns, weights, and contributions are decimals: `0.05` means 5%. The demonstrated
 security identity combines `security_type` and `security_symbol`, so those fields must
 identify the same securities in `secperf.csv` and `secmast.csv`. Each entry under
 `mappings` identifies the `secmast.csv` columns containing a classification code and
 its displayed name.
+
+The supported top-level settings are `files`, `mappings`, and the optional
+`security_id`. Classifications for this Axys/APX workflow come from `secmast.csv`;
+independent classification files and filters are not part of this source contract.
 
 ppar reconciles the security-level performance in `secperf.csv` to the corresponding
 reported account return in `portperf.csv`. It prefers the weight implied by

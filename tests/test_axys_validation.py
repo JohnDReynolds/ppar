@@ -11,13 +11,17 @@ import unittest
 
 # Third-Party Imports
 import polars as pl
-import yaml
 
 # Test Imports
-from tests import test_utilities as test_util
+from tests import helpers as test_util
 
 # Project Imports
 from ppar.axys_apx import AxysData
+from ppar.axys_apx.reconciliation import derive_security_performance_for_all_periods
+from ppar.axys_apx.security_identity import (
+    SecurityIdConstruction,
+    with_constructed_security_id,
+)
 import ppar.schema as cols
 from ppar.errors import PparError
 
@@ -26,23 +30,22 @@ from ppar.errors import PparError
 class _AxysArguments:
     """Constructor inputs that a validation test needs to override."""
 
-    specifications_path: Path = field(
-        default_factory=lambda: test_util.axys_data_path("axys_column_mappings.yaml", ".yaml")
+    base_directory: Path = field(
+        default_factory=lambda: test_util.axys_data_path("portperf.csv").parent
     )
+    values: Mapping[str, object] = field(default_factory=test_util.axys_source_values)
     portfolio_performance_path: Path | None = field(
         default_factory=lambda: test_util.axys_data_path("portperf.csv")
     )
     security_performance_path: Path | None = field(
         default_factory=lambda: test_util.axys_data_path("secperf.csv")
     )
-    source_path_overrides: Mapping[str, Path] | None = None
     portfolio_code: str = "PORT_SMALL"
     classification_name: str | None = None
 
 
 def _assert_axys_error(
     test: unittest.TestCase,
-    _error_code: int,
     arguments: _AxysArguments | None = None,
     message_contains: str | None = None,
 ) -> None:
@@ -51,10 +54,10 @@ def _assert_axys_error(
 
     with test.assertRaises(PparError) as context:
         data = AxysData(
-            arguments.specifications_path,
-            arguments.portfolio_performance_path,
-            arguments.security_performance_path,
-            arguments.source_path_overrides,
+            arguments.base_directory,
+            arguments.values,
+            portfolio_performance_path=arguments.portfolio_performance_path,
+            security_performance_path=arguments.security_performance_path,
         )
         portfolio = data.get_portfolio(arguments.portfolio_code)
         if arguments.classification_name is not None:
@@ -63,13 +66,6 @@ def _assert_axys_error(
     test.assertTrue(str(context.exception).strip(), str(context.exception))
     if message_contains is not None:
         test.assertIn(message_contains, str(context.exception))
-
-
-def _write_yaml(directory: Path, contents: object) -> Path:
-    """Write temporary YAML contents and return its path."""
-    path = directory / "ppar.yaml"
-    path.write_text(yaml.safe_dump(contents), encoding="utf-8")
-    return path
 
 
 def _write_text_csv(directory: Path, file_name: str, contents: str) -> Path:
@@ -91,28 +87,8 @@ def _write_frame_csv(
 
 
 def _fixture_specification() -> dict[str, object]:
-    """Load the committed valid specification as mutable data."""
-    path = test_util.axys_data_path("axys_column_mappings.yaml", ".yaml")
-    specification: object = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert isinstance(specification, dict)
-    mutable_specification = cast(dict[str, object], specification)
-    _file_definition(mutable_specification, "portfolio_performance")["path"] = str(
-        test_util.axys_data_path("portperf.csv")
-    )
-    _file_definition(mutable_specification, "security_performance")["path"] = str(
-        test_util.axys_data_path("secperf.csv")
-    )
-    _file_definition(mutable_specification, "security_master")["path"] = str(
-        test_util.axys_data_path("secmast.csv")
-    )
-    classifications = _classification_definitions(mutable_specification)
-    for classification in classifications.values():
-        if isinstance(classification, dict):
-            classification_source = cast(dict[str, object], classification)
-            file_path = classification_source.get("file_path")
-            if isinstance(file_path, str):
-                classification_source["file_path"] = str(test_util.axys_data_path(file_path))
-    return mutable_specification
+    """Return the committed valid Python source settings as mutable data."""
+    return test_util.axys_source_values()
 
 
 def _file_definition(
@@ -125,11 +101,6 @@ def _file_definition(
     definition = files[file_name]
     assert isinstance(definition, dict)
     return definition
-
-
-def _classification_definitions(specification: dict[str, object]) -> dict[str, object]:
-    """Return mutable classification definitions from a specification."""
-    return cast(dict[str, object], specification.setdefault("classifications", {}))
 
 
 def _mapping_definitions(specification: dict[str, object]) -> dict[str, object]:
@@ -231,69 +202,165 @@ def _valid_security_rows(
     }
 
 
+def _reconciliation_frames(
+    portfolio_rows: Mapping[str, Sequence[object]],
+    security_rows: Mapping[str, Sequence[object]],
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Return raw normalized frames for the defensive reconciliation boundary."""
+    portfolio = (
+        pl.DataFrame(portfolio_rows)
+        .rename(
+            {
+                "PORTFOLIO_CODE": cols.PORTFOLIO_CODE,
+                "FROM_DATE": cols.FROM_DATE,
+                "THRU_DATE": cols.THRU_DATE,
+                "PORT_RETURN": cols.PORTFOLIO_RETURN,
+            }
+        )
+        .with_columns(
+            pl.col(cols.FROM_DATE).str.to_date(),
+            pl.col(cols.THRU_DATE).str.to_date(),
+        )
+    )
+    security = (
+        pl.DataFrame(security_rows)
+        .rename(
+            {
+                "PORTFOLIO_CODE": cols.PORTFOLIO_CODE,
+                "FROM_DATE": cols.FROM_DATE,
+                "THRU_DATE": cols.THRU_DATE,
+                "SECURITY_ID": cols.IDENTIFIER,
+                "BEGIN_WEIGHT": cols.WEIGHT,
+                "SEC_RETURN": cols.RETURN,
+                "CONTRIBUTION": cols.CONTRIBUTION,
+            }
+        )
+        .with_columns(
+            pl.col(cols.FROM_DATE).str.to_date(),
+            pl.col(cols.THRU_DATE).str.to_date(),
+        )
+    )
+    return portfolio, security
+
+
 class TestAxysValidation(unittest.TestCase):
     """Verify Axys input validation and numbered error behavior."""
 
-    def test_nonfinite_portfolio_returns_raise_contextual_error(self) -> None:
-        """Account returns must be finite before reconciliation begins."""
-        for invalid_value in (float("nan"), float("inf"), float("-inf"), "bad"):
-            with self.subTest(invalid_value=invalid_value), tempfile.TemporaryDirectory() as tmp:
-                directory = Path(tmp)
-                portfolio_path = _write_frame_csv(
-                    directory,
-                    "portperf.csv",
-                    _valid_portfolio_rows(portfolio_returns=[invalid_value]),
-                )
-                security_path = _write_frame_csv(
-                    directory,
-                    "secperf.csv",
-                    _valid_security_rows(),
-                )
-                data = AxysData.from_values(
-                    directory,
-                    _minimal_source_values(portfolio_path, security_path),
-                )
-
-                with self.assertRaises(PparError) as context:
-                    data.get_portfolio("PORT")
-
-                message = str(context.exception)
-                self.assertIn(cols.PORTFOLIO_RETURN, message)
-                self.assertIn("2024-01-31", message)
-
-    def test_invalid_security_financial_values_raise_contextual_error(self) -> None:
-        """Security returns and non-null weight evidence must be finite."""
-        cases: tuple[tuple[str, dict[str, Sequence[object]]], ...] = (
-            (cols.RETURN, {"security_returns": [float("nan")]}),
-            (cols.RETURN, {"security_returns": [None]}),
-            (cols.WEIGHT, {"weights": [float("inf")]}),
-            (cols.CONTRIBUTION, {"contributions": [float("-inf")]}),
-            (cols.CONTRIBUTION, {"contributions": ["bad"]}),
+    def test_financial_validation_matches_loader_and_reconciliation_boundaries(
+        self,
+    ) -> None:
+        """Every invalid financial field produces equivalent boundary evidence."""
+        fields = (
+            (cols.PORTFOLIO_RETURN, "portfolio_performance", "portfolio_returns", True),
+            (cols.RETURN, "security_performance", "security_returns", True),
+            (cols.WEIGHT, "security_performance", "weights", False),
+            (cols.CONTRIBUTION, "security_performance", "contributions", False),
         )
-        for column_name, overrides in cases:
-            with self.subTest(column_name=column_name), tempfile.TemporaryDirectory() as tmp:
+        invalid_values = (None, "bad", float("nan"), float("inf"), float("-inf"))
+        for column_name, dataset_name, override_name, required in fields:
+            for invalid_value in invalid_values:
+                if invalid_value is None and not required:
+                    continue
+                with (
+                    self.subTest(column_name=column_name, invalid_value=invalid_value),
+                    tempfile.TemporaryDirectory() as tmp,
+                ):
+                    directory = Path(tmp)
+                    portfolio_overrides: dict[str, Sequence[object]] = {}
+                    security_overrides: dict[str, Sequence[object]] = {}
+                    if dataset_name == "portfolio_performance":
+                        portfolio_overrides[override_name] = [invalid_value]
+                    else:
+                        security_overrides[override_name] = [invalid_value]
+                    portfolio_rows = _valid_portfolio_rows(**portfolio_overrides)
+                    security_rows = _valid_security_rows(**security_overrides)
+                    portfolio_path = _write_frame_csv(
+                        directory,
+                        "portperf.csv",
+                        portfolio_rows,
+                    )
+                    security_path = _write_frame_csv(
+                        directory,
+                        "secperf.csv",
+                        security_rows,
+                    )
+                    data = AxysData(
+                        directory,
+                        _minimal_source_values(portfolio_path, security_path),
+                    )
+
+                    with self.assertRaises(PparError) as loader_context:
+                        data.get_portfolio("PORT")
+                    direct_portfolio, direct_security = _reconciliation_frames(
+                        portfolio_rows,
+                        security_rows,
+                    )
+                    with self.assertRaises(PparError) as reconciliation_context:
+                        derive_security_performance_for_all_periods(
+                            direct_portfolio,
+                            direct_security,
+                            lambda message: message,
+                        )
+
+                    for message in (
+                        str(loader_context.exception),
+                        str(reconciliation_context.exception),
+                    ):
+                        self.assertIn(column_name, message)
+                        self.assertIn(dataset_name, message)
+                        self.assertIn("PORT", message)
+                        self.assertIn("2024-01-31", message)
+                    source_file = (
+                        "portperf.csv"
+                        if dataset_name == "portfolio_performance"
+                        else "secperf.csv"
+                    )
+                    self.assertIn(source_file, str(loader_context.exception))
+
+    def test_null_optional_financial_evidence_is_accepted_at_both_boundaries(
+        self,
+    ) -> None:
+        """Only required fields reject null; optional evidence may be absent."""
+        for override_name in ("weights", "contributions"):
+            with (
+                self.subTest(override_name=override_name),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
                 directory = Path(tmp)
+                security_overrides: dict[str, Sequence[object]] = {
+                    override_name: [None]
+                }
+                portfolio_rows = _valid_portfolio_rows()
+                security_rows = _valid_security_rows(**security_overrides)
                 portfolio_path = _write_frame_csv(
                     directory,
                     "portperf.csv",
-                    _valid_portfolio_rows(),
+                    portfolio_rows,
                 )
                 security_path = _write_frame_csv(
                     directory,
                     "secperf.csv",
-                    _valid_security_rows(**overrides),
+                    security_rows,
                 )
-                data = AxysData.from_values(
+                data = AxysData(
                     directory,
                     _minimal_source_values(portfolio_path, security_path),
                 )
 
-                with self.assertRaises(PparError) as context:
-                    data.get_portfolio("PORT")
+                portfolio = data.get_portfolio("PORT")
+                direct_portfolio, direct_security = _reconciliation_frames(
+                    portfolio_rows,
+                    security_rows,
+                )
+                reconciled, periods = derive_security_performance_for_all_periods(
+                    direct_portfolio,
+                    direct_security,
+                    lambda message: message,
+                )
 
-                message = str(context.exception)
-                self.assertIn(column_name, message)
-                self.assertIn("2024-01-31", message)
+                self.assertEqual(portfolio.security_performance.height, 1)
+                self.assertEqual(reconciled.height, 1)
+                self.assertEqual(len(periods), 1)
 
     def test_numeric_looking_portfolio_codes_remain_distinct_strings(self) -> None:
         """Portfolio selection preserves leading zeroes in account codes."""
@@ -318,7 +385,7 @@ class TestAxysValidation(unittest.TestCase):
                     contributions=[0.02, 0.03, 0.04, 0.05],
                 ),
             )
-            data = AxysData.from_values(
+            data = AxysData(
                 directory,
                 _minimal_source_values(portfolio_path, security_path),
             )
@@ -364,7 +431,7 @@ class TestAxysValidation(unittest.TestCase):
                     "SECTOR_NAME": [f"Sector {value}" for value in identifiers],
                 },
             )
-            data = AxysData.from_values(
+            data = AxysData(
                 directory,
                 _minimal_source_values(
                     portfolio_path,
@@ -373,8 +440,8 @@ class TestAxysValidation(unittest.TestCase):
                 ),
             )
 
-            portfolio = data.get_portfolio("PORT", classification_name="Sector")
-            sources = portfolio.required_classification_sources
+            portfolio = data.get_portfolio("PORT")
+            sources = data.get_classification_sources("Sector", portfolio)
             assert sources.mapping_data_sources is not None
             mapping = sources.mapping_data_sources[0]
 
@@ -409,7 +476,7 @@ class TestAxysValidation(unittest.TestCase):
                     "secperf.csv",
                     _valid_security_rows(security_ids=[invalid_identifier]),
                 )
-                data = AxysData.from_values(
+                data = AxysData(
                     directory,
                     _minimal_source_values(portfolio_path, security_path),
                 )
@@ -422,47 +489,153 @@ class TestAxysValidation(unittest.TestCase):
                 self.assertIn("secperf.csv", message)
                 self.assertIn("2024-01-31", message)
 
-    def test_blank_classification_codes_are_rejected(self) -> None:
-        """Classification codes cannot become null identities during CSV parsing."""
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp)
-            portfolio_path = _write_frame_csv(
-                directory,
-                "portperf.csv",
-                _valid_portfolio_rows(),
-            )
-            security_path = _write_frame_csv(
-                directory,
-                "secperf.csv",
-                _valid_security_rows(),
-            )
-            security_master_path = _write_frame_csv(
-                directory,
-                "secmast.csv",
-                {
-                    "SECURITY_ID": ["S1"],
-                    "SECURITY_NAME": ["Security One"],
-                    "SECTOR_CODE": [None],
-                    "SECTOR_NAME": ["Unknown"],
-                },
-            )
-            data = AxysData.from_values(
-                directory,
-                _minimal_source_values(
-                    portfolio_path,
-                    security_path,
-                    security_master_path,
-                ),
-            )
+    def test_blank_or_padded_portfolio_names_are_rejected(self) -> None:
+        """Selected portfolio display names must be complete, exact text."""
+        for invalid_name in (None, "", " ", " Portfolio", "Portfolio "):
+            with (
+                self.subTest(invalid_name=invalid_name),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                directory = Path(tmp)
+                portfolio_rows = _valid_portfolio_rows()
+                portfolio_rows["PORTFOLIO_NAME"] = [invalid_name]
+                portfolio_path = _write_frame_csv(
+                    directory,
+                    "portperf.csv",
+                    portfolio_rows,
+                )
+                security_path = _write_frame_csv(
+                    directory,
+                    "secperf.csv",
+                    _valid_security_rows(),
+                )
+                data = AxysData(
+                    directory,
+                    _minimal_source_values(portfolio_path, security_path),
+                )
 
-            with self.assertRaises(PparError) as context:
-                data.get_portfolio("PORT", classification_name="Sector")
+                with self.assertRaises(PparError) as context:
+                    data.get_portfolio("PORT")
 
-            message = str(context.exception)
-            self.assertIn("SECTOR_CODE", message)
-            self.assertIn("secmast.csv", message)
+                message = str(context.exception)
+                self.assertIn(cols.PORTFOLIO_NAME, message)
+                self.assertIn("non-null, nonblank", message)
+                self.assertIn("portperf.csv", message)
+                self.assertIn("2024-01-31", message)
 
-    def test_missing_portfolio_performance_columns_raise_error_502(self) -> None:
+    def test_classification_identities_reject_null_blank_and_padding(self) -> None:
+        """Security-master classification codes must be complete exact text."""
+        for invalid_value in (None, "", " TECH "):
+            with (
+                self.subTest(invalid_value=invalid_value),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                directory = Path(tmp)
+                portfolio_path = _write_frame_csv(
+                    directory,
+                    "portperf.csv",
+                    _valid_portfolio_rows(),
+                )
+                security_path = _write_frame_csv(
+                    directory,
+                    "secperf.csv",
+                    _valid_security_rows(),
+                )
+                security_master_path = _write_frame_csv(
+                    directory,
+                    "secmast.csv",
+                    {
+                        "SECURITY_ID": ["S1"],
+                        "SECURITY_NAME": ["Security One"],
+                        "SECTOR_CODE": [invalid_value],
+                        "SECTOR_NAME": ["Unknown"],
+                    },
+                )
+                data = AxysData(
+                    directory,
+                    _minimal_source_values(
+                        portfolio_path,
+                        security_path,
+                        security_master_path,
+                    ),
+                )
+
+                portfolio = data.get_portfolio("PORT")
+                with self.assertRaises(PparError) as context:
+                    data.get_classification_sources("Sector", portfolio)
+
+                message = str(context.exception)
+                self.assertIn("SECTOR_CODE", message)
+                self.assertIn("classification", message)
+                self.assertIn("secmast.csv", message)
+
+    def test_mapping_identities_reject_null_blank_and_padding(self) -> None:
+        """Security-to-classification destination codes must be exact text."""
+        for invalid_value in (None, "", " TECH "):
+            with (
+                self.subTest(invalid_value=invalid_value),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                directory = Path(tmp)
+                security_master_path = _write_frame_csv(
+                    directory,
+                    "secmast.csv",
+                    {
+                        "SECURITY_ID": ["S001"],
+                        "SECURITY_NAME": ["Synthetic Security S001"],
+                        "SECTOR_CODE": [invalid_value],
+                        "SECTOR_DESC": ["Technology"],
+                    },
+                )
+                specification = _fixture_specification()
+                security_master = _file_definition(specification, "security_master")
+                security_master["path"] = str(security_master_path)
+                data = AxysData(directory, specification)
+                with self.assertRaises(PparError) as context:
+                    data._classification_loader.load(  # pylint: disable=protected-access
+                        "mapping",
+                        "Sector",
+                        ["S001"],
+                    )
+
+                message = str(context.exception)
+                self.assertIn("SECTOR_CODE", message)
+                self.assertIn("mapping", message)
+                self.assertIn("secmast.csv", message)
+
+    def test_security_master_components_reject_null_blank_and_padding(self) -> None:
+        """Composite security-master identity components remain strictly validated."""
+        construction = SecurityIdConstruction(
+            components=("security_type", "security_symbol"),
+            source_columns=("SECURITY_TYPE", "SECURITY_SYMBOL"),
+            separator="_",
+        )
+        for invalid_value in (None, "", " csus "):
+            with self.subTest(invalid_value=invalid_value):
+                frame = pl.DataFrame(
+                    {
+                        "SECURITY_TYPE": [invalid_value],
+                        "SECURITY_SYMBOL": ["S001"],
+                    },
+                    schema_overrides={"SECURITY_TYPE": pl.String},
+                )
+
+                with self.assertRaises(PparError) as context:
+                    with_constructed_security_id(
+                        frame,
+                        construction,
+                        output_column=cols.IDENTIFIER,
+                        dataset_name="security_master",
+                        source_path=Path("secmast.csv"),
+                        error_message=lambda message: message,
+                    )
+
+                message = str(context.exception)
+                self.assertIn("security_type", message)
+                self.assertIn("security_master", message)
+                self.assertIn("secmast.csv", message)
+
+    def test_missing_portfolio_performance_columns_are_rejected(self) -> None:
         """Required portfolio performance columns are validated before processing."""
         with tempfile.TemporaryDirectory() as temp_dir:
             portfolio_performance_path = _write_text_csv(
@@ -475,11 +648,10 @@ class TestAxysValidation(unittest.TestCase):
             )
             _assert_axys_error(
                 self,
-                502,
                 _AxysArguments(portfolio_performance_path=portfolio_performance_path),
             )
 
-    def test_missing_security_performance_columns_raise_error_502(self) -> None:
+    def test_missing_security_performance_columns_are_rejected(self) -> None:
         """Required security performance columns are validated before processing."""
         with tempfile.TemporaryDirectory() as temp_dir:
             security_performance_path = _write_text_csv(
@@ -493,12 +665,11 @@ class TestAxysValidation(unittest.TestCase):
             )
             _assert_axys_error(
                 self,
-                502,
                 _AxysArguments(security_performance_path=security_performance_path),
             )
 
-    def test_unconfigured_legacy_performance_columns_raise_error_502(self) -> None:
-        """Legacy headings are not guessed when a mapping is omitted."""
+    def test_unconfigured_performance_columns_are_rejected(self) -> None:
+        """Unconfigured headings are not guessed when a mapping is omitted."""
         specification = _fixture_specification()
         _file_definition(specification, "portfolio_performance")["columns"] = {
             "from_date": "FROM_DATE",
@@ -509,7 +680,6 @@ class TestAxysValidation(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
-            specifications_path = _write_yaml(directory, specification)
             portfolio_performance_path = _write_text_csv(
                 directory,
                 "portperf.csv",
@@ -521,19 +691,20 @@ class TestAxysValidation(unittest.TestCase):
 
             _assert_axys_error(
                 self,
-                502,
                 _AxysArguments(
-                    specifications_path=specifications_path,
+                    base_directory=directory,
+                    values=specification,
                     portfolio_performance_path=portfolio_performance_path,
                 ),
                 "portfolio_return",
             )
 
-    def test_material_reconciliation_difference_raises_error_503(self) -> None:
+    def test_material_reconciliation_difference_is_rejected(self) -> None:
         """An unreconciled return difference outside tolerance is rejected."""
         with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
             portfolio_performance_path = _write_frame_csv(
-                Path(temp_dir),
+                directory,
                 "portperf.csv",
                 {
                     "PORTFOLIO_CODE": ["PORT_FAIL_HIGH"],
@@ -543,19 +714,32 @@ class TestAxysValidation(unittest.TestCase):
                     "PORT_RETURN": [0.50],
                 },
             )
+            security_performance_path = _write_frame_csv(
+                directory,
+                "secperf.csv",
+                {
+                    # Positive weights confine the attainable return to the
+                    # 1%-to-2% range, making the portfolio's 50% target infeasible.
+                    "PORTFOLIO_CODE": ["PORT_FAIL_HIGH", "PORT_FAIL_HIGH"],
+                    "FROM_DATE": ["2024-03-01", "2024-03-01"],
+                    "THRU_DATE": ["2024-03-31", "2024-03-31"],
+                    "SECURITY_ID": ["LOW_RETURN_1", "LOW_RETURN_2"],
+                    "BEGIN_WEIGHT": [0.50, 0.50],
+                    "SEC_RETURN": [0.01, 0.02],
+                    "CONTRIBUTION": [0.005, 0.01],
+                },
+            )
             _assert_axys_error(
                 self,
-                503,
                 _AxysArguments(
                     portfolio_performance_path=portfolio_performance_path,
-                    security_performance_path=test_util.axys_data_path(
-                        "unreachable_target_secperf.csv"
-                    ),
+                    security_performance_path=security_performance_path,
                     portfolio_code="PORT_FAIL_HIGH",
                 ),
+                "infeasible without reversing a source-supported sign",
             )
 
-    def test_equal_return_reconciliation_failure_raises_error_503(self) -> None:
+    def test_equal_return_reconciliation_failure_is_rejected(self) -> None:
         """Unachievable equal-security target returns are rejected."""
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
@@ -585,7 +769,6 @@ class TestAxysValidation(unittest.TestCase):
             )
             _assert_axys_error(
                 self,
-                503,
                 _AxysArguments(
                     portfolio_performance_path=portfolio_performance_path,
                     security_performance_path=security_performance_path,
@@ -593,119 +776,126 @@ class TestAxysValidation(unittest.TestCase):
                 ),
             )
 
-    def test_invalid_yaml_raises_error_504(self) -> None:
-        """A syntactically invalid YAML specification is rejected."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "ppar.yaml"
-            path.write_text("classifications: [", encoding="utf-8")
-            _assert_axys_error(self, 504, _AxysArguments(specifications_path=path))
+    def test_non_mapping_source_values_are_rejected(self) -> None:
+        """A list cannot be used as the source-settings object."""
+        values = cast(Mapping[str, object], ["not", "a", "mapping"])
+        _assert_axys_error(self, _AxysArguments(values=values))
 
-    def test_non_mapping_yaml_root_raises_error_504(self) -> None:
-        """A YAML list cannot be used as the specification object."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), ["not", "a", "mapping"])
-            _assert_axys_error(self, 504, _AxysArguments(specifications_path=path))
+    def test_non_analytics_file_datasets_are_rejected(self) -> None:
+        """Perfaud-oriented source datasets are not accepted by ppar."""
+        for dataset_name in ("holdings", "transactions", "splits"):
+            with self.subTest(dataset_name=dataset_name):
+                specification = _fixture_specification()
+                files = cast(dict[str, object], specification["files"])
+                files[dataset_name] = {"path": f"{dataset_name}.csv"}
+
+                _assert_axys_error(
+                    self,
+                    _AxysArguments(values=specification),
+                    f"files has unsupported datasets: {dataset_name}",
+                )
 
     def test_omitted_performance_paths_use_conventional_filenames(self) -> None:
-        """Omitted Analytics performance paths resolve beside the YAML."""
+        """Omitted Analytics performance paths resolve in the base directory."""
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
-            path = _write_yaml(directory, {})
             data = AxysData(
-                path,
+                directory,
+                {},
                 portfolio_performance_path=None,
                 security_performance_path=None,
             )
 
             self.assertEqual(
                 data.portfolio_performance_path,
-                directory / "portperf.csv",
+                directory.resolve() / "portperf.csv",
             )
             self.assertEqual(
                 data.security_performance_path,
-                directory / "secperf.csv",
+                directory.resolve() / "secperf.csv",
             )
 
-    def test_unknown_classification_raises_error_504(self) -> None:
+    def test_unknown_classification_is_rejected(self) -> None:
         """Requested classification names must be defined in the specification."""
-        _assert_axys_error(self, 504, _AxysArguments(classification_name="unknown"))
+        _assert_axys_error(self, _AxysArguments(classification_name="unknown"))
 
-    def test_invalid_configured_date_is_rejected(self) -> None:
-        """Configured date filters must be ISO dates."""
+    def test_source_only_settings_remain_valid(self) -> None:
+        """Documented files, columns, mappings, and security identity are accepted."""
+        data = AxysData(
+            test_util.axys_data_path("portperf.csv").parent,
+            _fixture_specification(),
+        )
+
+        self.assertEqual(
+            set(data.source_values),
+            {"files", "mappings"},
+        )
+
+    def test_blank_source_paths_are_rejected(self) -> None:
+        """A blank configured path or constructor override cannot mean omitted."""
         specification = _fixture_specification()
-        specification["from_date"] = "01/01/2024"
+        portfolio_definition = _file_definition(
+            specification,
+            "portfolio_performance",
+        )
+        portfolio_definition["path"] = " "
+        with self.assertRaisesRegex(PparError, "path must be a nonblank string"):
+            AxysData(test_util.axys_data_path("portperf.csv").parent, specification)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(specifications_path=path),
-                "from_date must be an ISO date",
+        with self.assertRaisesRegex(PparError, "Source path must not be blank"):
+            AxysData(
+                test_util.axys_data_path("portperf.csv").parent,
+                _fixture_specification(),
+                portfolio_performance_path="",
             )
 
-    def test_invalid_configured_classification_is_rejected(self) -> None:
-        """Configured classification must be a string."""
+    def test_blank_performance_column_mapping_is_rejected(self) -> None:
+        """Configured source-column names must contain non-whitespace text."""
         specification = _fixture_specification()
-        specification["classification"] = ["Country"]
+        portfolio_definition = _file_definition(
+            specification,
+            "portfolio_performance",
+        )
+        columns = portfolio_definition["columns"]
+        assert isinstance(columns, dict)
+        columns["from_date"] = " "
+        data = AxysData(
+            test_util.axys_data_path("portperf.csv").parent,
+            specification,
+        )
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(specifications_path=path),
-                "classification must be a string",
-            )
+        with self.assertRaisesRegex(PparError, "values must be non-empty strings"):
+            data.get_portfolio("PORT_SMALL")
 
-    def test_unknown_defaults_section_raises_error_504(self) -> None:
-        """The unsupported split defaults section fails strict validation."""
-        specification = _fixture_specification()
-        specification["defaults"] = {"classification": "Country"}
+    def test_blank_requested_classification_is_rejected(self) -> None:
+        """Classification omission uses ``None`` rather than a blank name."""
+        data = AxysData(
+            test_util.axys_data_path("portperf.csv").parent,
+            _fixture_specification(),
+        )
+        portfolio = data.get_portfolio("PORT_SMALL")
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(specifications_path=path),
-                "unsupported top-level keys: defaults",
-            )
+        with self.assertRaisesRegex(PparError, "classification_name must not be blank"):
+            data.get_classification_sources(" ", portfolio)
 
-    def test_invalid_root_classification_shape_is_rejected(self) -> None:
-        """The root classification selection must be a string."""
-        specification = _fixture_specification()
-        specification["classification"] = {"Security": {}}
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(specifications_path=path),
-                "classification must be a string",
-            )
-
-    def test_unknown_source_settings_raise_error_504(self) -> None:
+    def test_unknown_source_settings_are_rejected(self) -> None:
         """Unsupported top-level source settings fail strict validation."""
         specification = _fixture_specification()
-        specification["portfolio_performance_path"] = "legacy.csv"
+        specification["unsupported_option"] = True
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(specifications_path=path),
-                "unsupported top-level keys: portfolio_performance_path",
-            )
+        _assert_axys_error(
+            self,
+            _AxysArguments(values=specification),
+            "unsupported top-level keys: unsupported_option",
+        )
 
     def test_missing_portfolio_error_includes_requested_dates(self) -> None:
         """Portfolio-loading errors report the requested date window."""
         data = AxysData(
-            test_util.axys_data_path("axys_column_mappings.yaml", ".yaml"),
-            test_util.axys_data_path("portperf.csv"),
-            test_util.axys_data_path("secperf.csv"),
+            test_util.axys_data_path("portperf.csv").parent,
+            _fixture_specification(),
+            portfolio_performance_path=test_util.axys_data_path("portperf.csv"),
+            security_performance_path=test_util.axys_data_path("secperf.csv"),
         )
 
         with self.assertRaises(PparError) as context:
@@ -718,75 +908,38 @@ class TestAxysValidation(unittest.TestCase):
         self.assertIn("from_date=2024-01-01", str(context.exception))
         self.assertIn("thru_date=2024-12-31", str(context.exception))
 
-    def test_missing_required_source_field_raises_error_504(self) -> None:
-        """Explicit classification source definitions require a path."""
+    def test_missing_required_mapping_field_is_rejected(self) -> None:
+        """Security-master mappings require code and display-name columns."""
         specification = _fixture_specification()
-        classifications = _classification_definitions(specification)
-        classifications["BadMissingFilePath"] = {
-            "identifier_column": "CODE",
-            "name_column": "DESCRIPTION",
-            "mapping": "Sector",
+        mappings = _mapping_definitions(specification)
+        mappings["MissingDisplayName"] = {
+            "classification_column": "SECTOR_CODE",
         }
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(
-                    specifications_path=path,
-                    classification_name="BadMissingFilePath",
-                ),
-            )
-
-    def test_unknown_source_path_override_raises_error_504(self) -> None:
-        """Source path overrides must reference configured source names."""
         _assert_axys_error(
             self,
-            504,
-            _AxysArguments(
-                source_path_overrides={"UnknownSource": Path("x.csv")},
-            ),
-            "Unknown source path override names",
+            _AxysArguments(values=specification),
+            "missing required keys: display_name_column",
         )
 
-    def test_mapping_only_source_path_override_raises_error_504(self) -> None:
-        """Source path overrides apply to classifications, not mapping-only names."""
-        _assert_axys_error(
-            self,
-            504,
-            _AxysArguments(
-                source_path_overrides={"Sector": Path("x.csv")},
-            ),
-            "Unknown source path override names",
-        )
-
-    def test_nonexistent_source_column_raises_error_504(self) -> None:
-        """Specified source columns must exist in their CSV source."""
+    def test_nonexistent_source_column_is_rejected(self) -> None:
+        """Configured mapping columns must exist in the security master."""
         specification = _fixture_specification()
-        classifications = _classification_definitions(specification)
-        classifications["BadFilterColumnName"] = {
-            "file_path": str(test_util.axys_data_path("classification_lookup.csv")),
-            "identifier_column": "CODE",
-            "name_column": "DESCRIPTION",
-            "filter_column": "CLASSIFICATION_TYPE_XXX",
-            "filter_value": "SECTOR",
-            "mapping": "Sector",
-        }
+        mappings = _mapping_definitions(specification)
+        mapping = cast(dict[str, object], mappings["Sector"])
+        mapping["classification_column"] = "SECTOR_CODE_XXX"
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(
-                    specifications_path=path,
-                    classification_name="BadFilterColumnName",
-                ),
-            )
+        _assert_axys_error(
+            self,
+            _AxysArguments(
+                values=specification,
+                classification_name="Sector",
+            ),
+            "Nonexistent column names",
+        )
 
-    def test_unconfigured_legacy_security_master_columns_raise_error_504(self) -> None:
-        """Legacy security-master headings are not guessed without mappings."""
+    def test_unconfigured_security_master_columns_are_rejected(self) -> None:
+        """Security-master headings are not guessed without mappings."""
         specification = _fixture_specification()
         _file_definition(specification, "security_master").pop("columns", None)
 
@@ -803,36 +956,14 @@ class TestAxysValidation(unittest.TestCase):
             _file_definition(specification, "security_master")["path"] = str(
                 security_master_path
             )
-            specifications_path = _write_yaml(directory, specification)
-
             _assert_axys_error(
                 self,
-                504,
                 _AxysArguments(
-                    specifications_path=specifications_path,
+                    base_directory=directory,
+                    values=specification,
                     classification_name="Security",
                 ),
                 "security_name",
-            )
-
-    def test_retired_security_master_name_column_is_rejected(self) -> None:
-        """The security-master name mapping uses the normalized key."""
-        specification = _fixture_specification()
-        _file_definition(specification, "security_master")["columns"] = {
-            "identifier_column": "SECURITY_ID",
-            "name_column": "SECURITY_NAME",
-        }
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            specifications_path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(
-                    specifications_path=specifications_path,
-                    classification_name="Security",
-                ),
-                "files.security_master.columns has unsupported keys: name_column",
             )
 
     def test_mapping_without_display_name_column_cannot_be_classification(self) -> None:
@@ -841,107 +972,39 @@ class TestAxysValidation(unittest.TestCase):
         mappings = _mapping_definitions(specification)
         mappings["SectorCodeOnly"] = {"classification_column": "SECTOR_CODE"}
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            specifications_path = _write_yaml(Path(temp_dir), specification)
+        _assert_axys_error(
+            self,
+            _AxysArguments(values=specification),
+            "missing required keys: display_name_column",
+        )
 
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(
-                    specifications_path=specifications_path,
-                    classification_name="SectorCodeOnly",
-                ),
-                "cannot be used as a classification without display_name_column",
-            )
-
-    def test_unknown_source_field_raises_error_504(self) -> None:
-        """Unrecognized source-definition fields are rejected."""
+    def test_unknown_source_field_is_rejected(self) -> None:
+        """Unrecognized mapping-definition fields are rejected."""
         specification = _fixture_specification()
-        classifications = _classification_definitions(specification)
-        sector = cast(dict[str, object], classifications["SectorLookup"])
-        sector["file_path"] = str(test_util.axys_data_path("classification_lookup.csv"))
-        sector["mapping"] = "BadUnknownField"
         mappings = _mapping_definitions(specification)
-        mappings["BadUnknownField"] = {"unknown_field_xxx": "security_master.csv"}
+        mapping = cast(dict[str, object], mappings["Sector"])
+        mapping["unknown_field_xxx"] = "security_master.csv"
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(specifications_path=path, classification_name="SectorLookup"),
-            )
-
-    def test_non_security_master_classification_requires_mapping(self) -> None:
-        """Classifications below security grain must identify their mapping."""
-        specification = _fixture_specification()
-        classifications = _classification_definitions(specification)
-        sector = cast(dict[str, object], classifications["SectorLookup"])
-        del sector["mapping"]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(specifications_path=path, classification_name="SectorLookup"),
-                "Missing mapping for classification 'SectorLookup'",
-            )
-
-    def test_classification_mapping_must_be_configured(self) -> None:
-        """Classification mapping references must point to configured mappings."""
-        specification = _fixture_specification()
-        classifications = _classification_definitions(specification)
-        sector = cast(dict[str, object], classifications["SectorLookup"])
-        sector["mapping"] = "UnknownMapping"
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(specifications_path=path, classification_name="SectorLookup"),
-                "Unknown mapping 'UnknownMapping' for classification 'SectorLookup'",
-            )
+        _assert_axys_error(
+            self,
+            _AxysArguments(values=specification),
+            "mapping 'Sector' has unsupported keys: unknown_field_xxx",
+        )
 
     def test_mapping_definition_rejects_classification_mapping_field(self) -> None:
-        """The mapping field belongs to classifications, not mapping sources."""
+        """Focused mapping definitions accept only security-master columns."""
         specification = _fixture_specification()
-        classifications = _classification_definitions(specification)
         mappings = _mapping_definitions(specification)
-        sector = cast(dict[str, object], classifications["SectorLookup"])
         sector_mapping = cast(dict[str, object], mappings["Sector"])
-        sector["file_path"] = str(test_util.axys_data_path("classification_lookup.csv"))
         sector_mapping["mapping"] = "Sector"
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(
-                    specifications_path=path,
-                    classification_name="SectorLookup",
-                ),
-                "Unknown fields for mapping 'Sector'",
-            )
+        _assert_axys_error(
+            self,
+            _AxysArguments(values=specification),
+            "mapping 'Sector' has unsupported keys: mapping",
+        )
 
-    def test_non_boolean_is_security_master_setting_raises_error_504(self) -> None:
-        """The optional is_security_master setting accepts booleans only."""
-        specification = _fixture_specification()
-        classifications = _classification_definitions(specification)
-        sector = cast(dict[str, object], classifications["SectorLookup"])
-        sector["is_security_master"] = "true"
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = _write_yaml(Path(temp_dir), specification)
-            _assert_axys_error(
-                self,
-                504,
-                _AxysArguments(specifications_path=path, classification_name="SectorLookup"),
-            )
-
-    def test_no_common_periods_raise_error_505(self) -> None:
+    def test_no_common_periods_are_rejected(self) -> None:
         """Performance sources must retain at least one common period."""
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
@@ -971,7 +1034,6 @@ class TestAxysValidation(unittest.TestCase):
             )
             _assert_axys_error(
                 self,
-                505,
                 _AxysArguments(
                     portfolio_performance_path=portfolio_performance_path,
                     security_performance_path=security_performance_path,

@@ -36,6 +36,13 @@ the usual Brinson-Fachler formula and selection is the reconciling residual. Whe
 benchmark group return is undefined, allocation is zero and selection carries the
 complete total effect.
 
+Heatmaps preserve the same distinction. A zero-net group's defined nonzero
+contribution remains visible, while a mathematically undefined portfolio or active
+return is masked and is not annotated as zero. An absent date/classification cell
+represents no group exposure or contribution and retains the model's defined zero.
+Portfolio-only heatmaps omit ordinary missing holdings whose weight and selected
+metric are both zero.
+
 At the native source frequency, portfolio and benchmark returns are compared only
 when their complete inclusive date pairs match. Leading or trailing history outside
 the shared window may be omitted, but an unmatched period inside that window is an
@@ -71,4 +78,14 @@ degrees of freedom. A genuinely constant benchmark, or variation no larger than 
 floating-point resolution at the scale of its values, has undefined beta. A
 representable low-volatility benchmark remains valid; it is not classified as
 constant by a fixed absolute threshold. The same scale-aware variation decision is
-used before calculating correlation.
+used before calculating correlation. A covariance residue no larger than one
+floating-point unit at the scale of the centered return cross-products is treated as
+zero beta; an observable small positive or negative beta remains valid.
+
+Sharpe, Sortino, and information ratios apply the corresponding source-resolution
+test to volatility, downside deviation, and active-return dispersion. A small but
+observable risk denominator therefore produces its ordinary finite ratio regardless
+of the absolute return scale. Exact or resolution-limited zero risk with a zero
+numerator is undefined; with a nonzero numerator it produces signed infinity. Treynor
+uses every finite, nonzero beta as a signed divisor, including a small negative beta,
+while an undefined beta keeps Treynor undefined.

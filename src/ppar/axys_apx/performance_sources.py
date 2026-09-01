@@ -10,13 +10,18 @@ from typing import Final, Literal
 import polars as pl
 
 # Project imports
-from ppar.axys_apx.specification import AxysSpecification, ErrorMessage
+from ppar.axys_apx.specification import _AxysSpecification, _ErrorMessage
 from ppar.axys_apx.column_aliases import resolve_column
 from ppar.axys_apx.date_ranges import AxysDateRange
 from ppar.axys_apx.security_identity import (
     SecurityIdConstruction,
     security_id_construction,
     with_constructed_security_id,
+)
+from ppar.axys_apx.source_validation import (
+    diagnostic_columns,
+    normalize_financial_fields,
+    sample_rows,
 )
 import ppar.schema as cols
 from ppar.errors import PparError
@@ -74,14 +79,14 @@ _SHARED_AUDIT_COLUMN_KEYS: Final[dict[PerformanceSourceType, frozenset[str]]] = 
 }
 _PERFORMANCE_COLUMN_ALIASES: Final[dict[PerformanceSourceType, dict[str, tuple[str, ...]]]] = {
     "portfolio_performance_columns": {
-        internal_column: (yaml_key,)
-        for internal_column, yaml_key in _PERFORMANCE_COLUMN_KEYS[
+        internal_column: (configuration_key,)
+        for internal_column, configuration_key in _PERFORMANCE_COLUMN_KEYS[
             "portfolio_performance_columns"
         ].items()
     },
     "security_performance_columns": {
-        internal_column: (yaml_key,)
-        for internal_column, yaml_key in _PERFORMANCE_COLUMN_KEYS[
+        internal_column: (configuration_key,)
+        for internal_column, configuration_key in _PERFORMANCE_COLUMN_KEYS[
             "security_performance_columns"
         ].items()
     },
@@ -117,26 +122,6 @@ _FINANCIAL_COLUMNS: Final[
         (cols.CONTRIBUTION, False),
     ),
 }
-_NORMALIZED_VALUE_COLUMN: Final[str] = "__ppar_normalized_financial_value"
-
-
-def _sample_rows(
-    frame: pl.DataFrame,
-    column_names: list[str],
-) -> list[dict[str, object]]:
-    """Return compact error rows with dates formatted for readability."""
-    sample = frame.select(column_names).head(10)
-    date_columns = [
-        column_name
-        for column_name in cols.DATE_COLUMNS
-        if column_name in sample.columns and sample.schema[column_name] == pl.Date
-    ]
-    if date_columns:
-        sample = sample.with_columns(
-            pl.col(column_name).dt.to_string("%Y-%m-%d")
-            for column_name in date_columns
-        )
-    return sample.to_dicts()
 
 
 class AxysPerformanceSourceLoader:
@@ -145,13 +130,13 @@ class AxysPerformanceSourceLoader:
     Attributes:
         _specification: Parsed Axys source configuration.
         _error_message: Callback used to add facade-level validation context.
-        _date_range: Inclusive date window to retain.
+        _date_range: Inclusive period ``thru_date`` bounds to retain.
     """
 
     def __init__(
         self,
-        specification: AxysSpecification,
-        error_message: ErrorMessage,
+        specification: _AxysSpecification,
+        error_message: _ErrorMessage,
         date_range: AxysDateRange | None = None,
     ) -> None:
         """Initialize a performance source loader.
@@ -160,7 +145,7 @@ class AxysPerformanceSourceLoader:
             specification: Parsed Axys configuration.
             error_message: Callback that adds facade-level source context to
                 validation messages.
-            date_range: Optional inclusive date window to retain.
+            date_range: Optional inclusive period ``thru_date`` bounds to retain.
         """
         self._specification = specification
         self._error_message = error_message
@@ -187,7 +172,8 @@ class AxysPerformanceSourceLoader:
 
         Raises:
             PparError: If the source path does not exist or required mapped
-                columns are missing from the specification or CSV file.
+                columns are missing from the specification or CSV file, or a
+                required textual value is invalid.
         """
         path = self._specification.resolve_path(file_path)
         if not util.file_path_exists(path):
@@ -252,12 +238,13 @@ class AxysPerformanceSourceLoader:
                 source_path=path,
                 error_message=self._error_message,
             )
-        frame = self._validate_identity_columns(frame, dataset_name, path)
-        frame = self._normalize_financial_columns(
+        frame = self._validate_text_columns(frame, dataset_name, path)
+        frame = normalize_financial_fields(
             frame,
-            column_name_mappings_name,
             dataset_name,
-            path,
+            _FINANCIAL_COLUMNS[column_name_mappings_name],
+            self._error_message,
+            source_path=path,
         )
         return frame.select(required_columns)
 
@@ -286,13 +273,13 @@ class AxysPerformanceSourceLoader:
         )
         return overrides
 
-    def _validate_identity_columns(
+    def _validate_text_columns(
         self,
         frame: pl.DataFrame,
         dataset_name: str,
         path: util.PathLike,
     ) -> pl.DataFrame:
-        """Reject null, blank, or whitespace-padded normalized identities.
+        """Reject invalid normalized identities and portfolio display names.
 
         Args:
             frame: Selected and normalized source rows.
@@ -303,111 +290,34 @@ class AxysPerformanceSourceLoader:
             The unchanged validated frame.
 
         Raises:
-            PparError: If a normalized identity is null, blank, or padded.
+            PparError: If a required textual value is null, blank, or padded.
         """
-        identity_columns = [cols.PORTFOLIO_CODE]
-        if dataset_name == "security_performance":
-            identity_columns.append(cols.IDENTIFIER)
-        for column_name in identity_columns:
-            value = pl.col(column_name)
-            stripped_value = value.str.strip_chars()
-            invalid_rows = frame.filter(
-                value.is_null()
-                | stripped_value.eq("")
-                | value.ne(stripped_value)
-            )
+        text_columns = [cols.PORTFOLIO_CODE]
+        text_columns.append(
+            cols.PORTFOLIO_NAME
+            if dataset_name == "portfolio_performance"
+            else cols.IDENTIFIER
+        )
+        for column_name in text_columns:
+            invalid_rows = util.invalid_identity_rows(frame, column_name)
             if invalid_rows.is_empty():
                 continue
-            sample_columns = [
-                name
-                for name in (
-                    cols.PORTFOLIO_CODE,
-                    cols.FROM_DATE,
-                    cols.THRU_DATE,
-                    column_name,
-                )
-                if name in invalid_rows.columns
-            ]
-            sample_rows = _sample_rows(invalid_rows, sample_columns)
+            affected_rows = sample_rows(
+                invalid_rows,
+                diagnostic_columns(invalid_rows, column_name),
+            )
+            field_kind = (
+                "Display-name"
+                if column_name == cols.PORTFOLIO_NAME
+                else "Identity"
+            )
             raise PparError(
                 self._error_message(
-                    f"Identity field {column_name!r} in {str(path)!r} for "
+                    f"{field_kind} field {column_name!r} in {str(path)!r} for "
                     f"{dataset_name} must be non-null, nonblank, and free of "
-                    f"surrounding whitespace. Affected rows: {sample_rows}"
+                    f"surrounding whitespace. Affected rows: {affected_rows}"
                 )
             )
-        return frame
-
-    def _normalize_financial_columns(
-        self,
-        frame: pl.DataFrame,
-        source_type: PerformanceSourceType,
-        dataset_name: str,
-        path: util.PathLike,
-    ) -> pl.DataFrame:
-        """Cast financial fields and reject invalid nonfinite evidence.
-
-        Args:
-            frame: Selected and normalized source rows.
-            source_type: Performance source configuration section.
-            dataset_name: Source kind used in error details.
-            path: Source CSV path used in error details.
-
-        Returns:
-            Frame with normalized ``Float64`` financial columns.
-
-        Raises:
-            PparError: If a required field is null or any non-null financial
-                value cannot be converted to a finite number.
-        """
-        for column_name, required in _FINANCIAL_COLUMNS[source_type]:
-            normalized = frame.with_columns(
-                pl.col(column_name)
-                .cast(pl.Float64, strict=False)
-                .alias(_NORMALIZED_VALUE_COLUMN)
-            )
-            normalized_value = pl.col(_NORMALIZED_VALUE_COLUMN)
-            invalid_value = (
-                normalized_value.is_nan().fill_null(False)
-                | normalized_value.is_infinite().fill_null(False)
-            )
-            if required:
-                invalid_value = invalid_value | normalized_value.is_null()
-            else:
-                invalid_value = invalid_value | (
-                    pl.col(column_name).is_not_null()
-                    & normalized_value.is_null()
-                )
-            invalid_rows = normalized.filter(invalid_value)
-            if not invalid_rows.is_empty():
-                sample_columns = list(
-                    dict.fromkeys(
-                        name
-                        for name in (
-                            cols.PORTFOLIO_CODE,
-                            cols.FROM_DATE,
-                            cols.THRU_DATE,
-                            column_name,
-                        )
-                        if name in invalid_rows.columns
-                    )
-                )
-                sample_rows = _sample_rows(invalid_rows, sample_columns)
-                requirement = (
-                    "a finite numeric value"
-                    if required
-                    else "either null or a finite numeric value"
-                )
-                raise PparError(
-                    self._error_message(
-                        f"Financial field {column_name!r} in {str(path)!r} for "
-                        f"{dataset_name} must contain {requirement}. "
-                        f"Affected rows: {sample_rows}"
-                    )
-                )
-            frame = normalized.with_columns(
-                pl.col(_NORMALIZED_VALUE_COLUMN).alias(column_name)
-            ).drop(_NORMALIZED_VALUE_COLUMN)
         return frame
 
     def _csv_to_internal_mappings(
@@ -485,7 +395,7 @@ class AxysPerformanceSourceLoader:
         """Return configured source columns keyed by internal package column.
 
         Args:
-            column_mappings: Raw YAML column mapping section.
+            column_mappings: Raw source-column mapping section.
             column_name_mappings_name: Specification section being normalized.
 
         Returns:
@@ -494,8 +404,8 @@ class AxysPerformanceSourceLoader:
         """
         canonical_keys = _PERFORMANCE_COLUMN_KEYS[column_name_mappings_name]
         key_to_internal_column = {
-            yaml_key: internal_column
-            for internal_column, yaml_key in canonical_keys.items()
+            configuration_key: internal_column
+            for internal_column, configuration_key in canonical_keys.items()
         }
         if not isinstance(column_mappings, dict):
             raise PparError(
@@ -523,7 +433,7 @@ class AxysPerformanceSourceLoader:
         invalid_values = sorted(
             str(key)
             for key, value in column_mappings.items()
-            if not isinstance(value, str) or not value
+            if not isinstance(value, str) or not value.strip()
         )
         if invalid_values:
             raise PparError(
@@ -549,14 +459,14 @@ class AxysPerformanceSourceLoader:
         available_columns: set[str],
         explicit_column: str | None,
     ) -> str | None:
-        """Resolve a source CSV column from YAML or its exact normalized name.
+        """Resolve a configured source column or its exact normalized name.
 
         Args:
             path: Source CSV path used for error context.
             column_name_mappings_name: Specification section being loaded.
             internal_column: Internal package column to resolve.
             available_columns: CSV header columns.
-            explicit_column: Explicit source column from the YAML, if any.
+            explicit_column: Explicit source column from the settings, if any.
 
         Returns:
             The explicit or exact-default CSV column, or ``None`` when not found.
@@ -565,7 +475,9 @@ class AxysPerformanceSourceLoader:
             PparError: If more than one candidate exists for the same internal
                 column.
         """
-        yaml_key = _PERFORMANCE_COLUMN_KEYS[column_name_mappings_name][internal_column]
+        configuration_key = _PERFORMANCE_COLUMN_KEYS[column_name_mappings_name][
+            internal_column
+        ]
         aliases = _PERFORMANCE_COLUMN_ALIASES[column_name_mappings_name][internal_column]
         resolved_column = resolve_column(
             internal_column,
@@ -575,7 +487,7 @@ class AxysPerformanceSourceLoader:
             explicit_column=explicit_column,
             ambiguous_message=(
                 f"Ambiguous source columns in {str(path)!r}. "
-                f"Configure {yaml_key!r} explicitly"
+                f"Configure {configuration_key!r} explicitly"
             ),
         )
         return resolved_column
@@ -586,5 +498,7 @@ class AxysPerformanceSourceLoader:
         internal_column: str,
     ) -> str:
         """Return an error fragment for a missing performance source column."""
-        yaml_key = _PERFORMANCE_COLUMN_KEYS[column_name_mappings_name][internal_column]
-        return f"{yaml_key!r} for {internal_column!r}"
+        configuration_key = _PERFORMANCE_COLUMN_KEYS[column_name_mappings_name][
+            internal_column
+        ]
+        return f"{configuration_key!r} for {internal_column!r}"

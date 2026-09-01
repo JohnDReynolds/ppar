@@ -1,5 +1,6 @@
 # Axys/APX Analytics fixtures
 
-`axys_column_mappings.yaml` and `snapshots/axys_a/` provide a compact, synthetic
-portfolio/benchmark export used to test explicit source-column mappings,
-classification loading, reconciliation, and actionable validation failures.
+The CSV files in this directory provide a compact, synthetic portfolio/benchmark
+export used to test explicit source-column mappings, security-master classifications,
+reconciliation, and actionable validation failures. The fixtures do not contain
+client data.

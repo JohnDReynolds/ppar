@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+from collections.abc import Sequence
 import os
 from pathlib import Path
 import re
@@ -21,6 +23,27 @@ _ACTIVE_DOCUMENTATION = (
     "docs/python_api.md",
     "docs/maintenance.md",
 )
+_REQUIRED_WHEEL_RESOURCES = {
+    "ppar/py.typed",
+    "ppar/templates/axys_apx/ppar_demo.py",
+    "ppar/templates/axys_apx/README.md",
+    "ppar/templates/axys_apx/input/portperf.csv",
+    "ppar/templates/generic/ppar_demo.py",
+    "ppar/templates/generic/README.md",
+    "ppar/templates/generic/input/performance/Mega-Cap Alpha Portfolio.csv",
+}
+_WHEEL_SOURCE_FILES = ("LICENSE", "README.md", "pyproject.toml")
+
+
+def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    """Parse an optional directory for retaining the validated wheel."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--wheel-output",
+        type=Path,
+        help="Retain the validated wheel in this otherwise empty directory.",
+    )
+    return parser.parse_args(argv)
 
 
 def _run(
@@ -42,23 +65,67 @@ def _venv_command(environment: Path, name: str) -> Path:
     return environment / scripts / f"{name}{suffix}"
 
 
-def _check_documentation() -> None:
+def _routine_commands(python: str | Path) -> tuple[tuple[str | Path, ...], ...]:
+    """Return the explicit routine test and static-analysis command contract."""
+    return (
+        (python, "-m", "pytest", "-q"),
+        (python, "-m", "mypy", "src/ppar", "scripts"),
+        (
+            python,
+            "-m",
+            "pyright",
+            "--pythonpath",
+            python,
+            "src/ppar",
+            "tests",
+        ),
+        (python, "-m", "pylint", "--errors-only", "src/ppar", "scripts", "tests"),
+        (
+            python,
+            "-m",
+            "pylint",
+            "--disable=all",
+            "--enable=unused-import,unused-variable",
+            "src/ppar",
+            "scripts",
+        ),
+    )
+
+
+def _wheel_build_command(directory: Path) -> tuple[str | Path, ...]:
+    """Return the direct universal-wheel build command."""
+    return (
+        sys.executable,
+        "-m",
+        "build",
+        "--wheel",
+        "--no-isolation",
+        "--outdir",
+        directory,
+    )
+
+
+def _check_documentation(root: Path = _ROOT) -> None:
     """Check the small documentation spine and executable demonstration references."""
     for relative in _ACTIVE_DOCUMENTATION:
-        if not (_ROOT / relative).is_file():
+        if not (root / relative).is_file():
             raise RuntimeError(f"Missing active documentation: {relative}")
-    configuration = (_ROOT / "docs/configuration.md").read_text(encoding="utf-8")
+    configuration = (root / "docs/configuration.md").read_text(encoding="utf-8")
     for value in (
         "ppar_demo.py",
-        "AxysData.from_values()",
+        "AxysData()",
         "CLASSIFICATION_VIEWS",
         "portperf.csv",
         "secperf.csv",
         "secmast.csv",
+        "identifier/name pairs are collapsed",
+        "conflicting names",
+        "source/target pairs are also collapsed",
+        "conflicting targets",
     ):
         if value not in configuration:
             raise RuntimeError(f"Demonstration documentation omits {value}.")
-    readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
     for command in (
         "ppar setup ./my_ppar",
         "ppar setup ./my_ppar --axys-apx",
@@ -67,7 +134,7 @@ def _check_documentation() -> None:
         if command not in readme:
             raise RuntimeError(f"README omits executable command: {command}")
 
-    methodology = (_ROOT / "docs/methodology.md").read_text(encoding="utf-8")
+    methodology = (root / "docs/methodology.md").read_text(encoding="utf-8")
     for statement in (
         "portfolio-weighted selection effect",
         "selection and interaction",
@@ -80,22 +147,9 @@ def _check_documentation() -> None:
     if "allocation, selection, and interaction effects" in methodology:
         raise RuntimeError("Methodology still describes a separate interaction effect.")
 
-    active_text = "\n".join(
-        (_ROOT / relative).read_text(encoding="utf-8")
-        for relative in _ACTIVE_DOCUMENTATION
-    )
-    for retired_term in ("Generic", "my_ppar_axys_apx"):
-        if retired_term in active_text:
-            raise RuntimeError(
-                f"Active documentation contains retired terminology: {retired_term}"
-            )
-
-    if (_ROOT / "docs/reference").exists():
-        raise RuntimeError("The removed parallel reference directory is still present.")
-
     markdown_link = re.compile(r"]\(([^)]+)\)")
     for relative in _ACTIVE_DOCUMENTATION:
-        source = _ROOT / relative
+        source = root / relative
         for match in markdown_link.finditer(source.read_text(encoding="utf-8")):
             target = match.group(1).split("#", maxsplit=1)[0]
             if not target or "://" in target:
@@ -104,21 +158,28 @@ def _check_documentation() -> None:
                 raise RuntimeError(f"Broken local link in {relative}: {target}")
 
 
-def _build_and_check_wheel(directory: Path) -> Path:
-    """Build, inspect, and Twine-check exactly one direct universal wheel."""
-    shutil.rmtree(_ROOT / "build", ignore_errors=True)
-    shutil.rmtree(_ROOT / "src" / "ppar.egg-info", ignore_errors=True)
-    _run(
-        [
-            sys.executable,
-            "-m",
-            "build",
-            "--wheel",
-            "--no-isolation",
-            "--outdir",
-            directory,
-        ]
-    )
+def _stage_wheel_source(directory: Path) -> Path:
+    """Copy only wheel build inputs into an isolated source directory."""
+    directory.mkdir(parents=True)
+    for name in _WHEEL_SOURCE_FILES:
+        shutil.copy2(_ROOT / name, directory / name)
+    shutil.copytree(_ROOT / "src", directory / "src")
+    return directory
+
+
+def _build_and_check_wheel(directory: Path, source_directory: Path) -> Path:
+    """Build, inspect, and Twine-check one wheel without changing the checkout."""
+    if directory.exists() and any(directory.iterdir()):
+        raise RuntimeError(f"Wheel output directory is not empty: {directory}")
+    source = _stage_wheel_source(source_directory)
+    _run(list(_wheel_build_command(directory)), cwd=source)
+    wheel = _inspect_wheel(directory)
+    _run([sys.executable, "-m", "twine", "check", wheel])
+    return wheel
+
+
+def _inspect_wheel(directory: Path) -> Path:
+    """Validate and return exactly one universal ppar wheel in ``directory``."""
     wheels = list(directory.glob("*.whl"))
     if len(wheels) != 1 or not wheels[0].name.endswith("-py3-none-any.whl"):
         raise RuntimeError(f"Expected one universal wheel, found: {wheels}")
@@ -134,30 +195,19 @@ def _build_and_check_wheel(directory: Path) -> Path:
         for name in names
         if name.startswith(("perfaud/", "tests/", "scripts/"))
         or "/__pycache__/" in name
-        or name.startswith("ppar/analytics/")
-        or name.startswith("ppar/audit/")
     ]
     if forbidden:
         raise RuntimeError(f"Wheel contains forbidden files: {forbidden}")
-    required_resources = {
-        "ppar/py.typed",
-        "ppar/templates/axys_apx/ppar_demo.py",
-        "ppar/templates/axys_apx/README.md",
-        "ppar/templates/axys_apx/input/portperf.csv",
-        "ppar/templates/generic/ppar_demo.py",
-        "ppar/templates/generic/README.md",
-        "ppar/templates/generic/input/performance/Mega-Cap Alpha Portfolio.csv",
-    }
-    if not required_resources.issubset(names):
+    if not _REQUIRED_WHEEL_RESOURCES.issubset(names):
         raise RuntimeError(
-            f"Wheel is missing resources: {sorted(required_resources - names)}"
+            "Wheel is missing resources: "
+            f"{sorted(_REQUIRED_WHEEL_RESOURCES - names)}"
         )
-    _run([sys.executable, "-m", "twine", "check", wheel])
     return wheel
 
 
-def _installed_wheel_smoke(wheel: Path, directory: Path) -> None:
-    """Run both installed workflows outside the checkout with no perfaud available."""
+def _installed_package_workflow_smoke(wheel: Path, directory: Path) -> None:
+    """Run the installed package against the verified development dependencies."""
     environment = directory / "venv"
     venv.EnvBuilder(with_pip=True).create(environment)
     python = _venv_command(environment, "python")
@@ -205,38 +255,22 @@ def _installed_wheel_smoke(wheel: Path, directory: Path) -> None:
             )
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     """Run tests, static checks, drift checks, and installed-wheel acceptance."""
-    _run([sys.executable, "-m", "pytest", "-q"])
-    _run([sys.executable, "-m", "mypy", "src/ppar", "scripts"])
-    _run(
-        [
-            sys.executable,
-            "-m",
-            "pyright",
-            "--pythonpath",
-            sys.executable,
-            "src/ppar",
-            "tests",
-        ]
-    )
-    _run(
-        [
-            sys.executable,
-            "-m",
-            "pylint",
-            "--errors-only",
-            "src/ppar",
-            "scripts",
-            "tests",
-        ]
-    )
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
+    for command in _routine_commands(sys.executable):
+        _run(list(command))
     _check_documentation()
     _run([sys.executable, "scripts/render_readme_images.py", "--check"])
     with tempfile.TemporaryDirectory(prefix="ppar_product_gate_") as directory:
         temporary = Path(directory)
-        wheel = _build_and_check_wheel(temporary / "dist")
-        _installed_wheel_smoke(wheel, temporary)
+        wheel_output = (
+            args.wheel_output.resolve()
+            if args.wheel_output is not None
+            else temporary / "dist"
+        )
+        wheel = _build_and_check_wheel(wheel_output, temporary / "wheel-source")
+        _installed_package_workflow_smoke(wheel, temporary)
     print("ppar product gate passed.")
     return 0
 

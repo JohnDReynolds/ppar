@@ -1,13 +1,7 @@
 """Define analytics column names, column groups, and column-name helpers.
 
-This module centralizes the string constants used by the analytics and Axys
-loading features for performance, attribution, contribution, classification,
-and output-view column names. It also defines reusable column groupings and
-suffix constants used to translate between related performance columns, such
-as return, weight, and contribution columns.
-
-The public constants are intentionally exported because callers may use them
-when preparing inputs, selecting output columns, or labeling reports.
+Public string constants let callers prepare inputs and select columns from Polars
+results. Tuple groupings and display helpers support package implementation only.
 """
 
 __all__ = [
@@ -51,33 +45,6 @@ __all__ = [
     "TOTAL_EFFECT_SIMPLE",
     "TOTAL_RETURN",
     "WEIGHT",
-    "ACTIVE_COLUMNS_SMOOTHED",
-    "ACTIVE_COLUMNS_SIMPLE",
-    "ATTRIBUTION_COLUMNS_SMOOTHED",
-    "ATTRIBUTION_COLUMNS_SIMPLE",
-    "BENCHMARK_COLUMNS_SMOOTHED",
-    "BENCHMARK_COLUMNS_SIMPLE",
-    "CLASSIFICATION_COLUMNS",
-    "CONTRIBUTION_COLUMNS_SMOOTHED",
-    "CONTRIBUTION_COLUMNS_SIMPLE",
-    "CUMULATIVE_ATTRIBUTION_COLUMNS",
-    "CUMULATIVE_CONTRIBUTION_COLUMNS",
-    "CUMULATIVE_RETURN_COLUMNS",
-    "DATE_COLUMNS",
-    "FROM_TO_COLUMNS",
-    "PERFORMANCE_CLASSIFICATION_COLUMNS",
-    "PORTFOLIO_COLUMNS_SMOOTHED",
-    "PORTFOLIO_COLUMNS_SIMPLE",
-    "RETURN_COLUMNS",
-    "ALL_CUMULATIVE_COLUMNS",
-    "ALL_SIMPLE_COLUMNS",
-    "ALL_SMOOTHED_COLUMNS",
-    "PORTFOLIO_BENCHMARK_CONTRIBUTION_COLUMN_PAIRS",
-    "VIEW_CUMULATIVE_ATTRIBUTION_COLUMNS",
-    "VIEW_OVERALL_ATTRIBUTION_COLUMNS",
-    "VIEW_SUBPERIOD_ATTRIBUTION_COLUMNS",
-    "VIEW_SUBPERIOD_SUMMARY_COLUMNS",
-    "short_column_name",
 ]
 
 # All Column Names

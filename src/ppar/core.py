@@ -2,15 +2,12 @@
 
 This module provides the Analytics class, which reads portfolio and benchmark
 Performance data, aligns both data sets to common subperiods, optionally
-consolidates those subperiods to the requested frequency, and exposes cached
-Attribution and RiskStatistics objects.
+consolidates those subperiods to the requested frequency, and exposes Attribution
+and RiskStatistics objects.
 """
 
 # Python Imports
-from collections.abc import Hashable
-from dataclasses import dataclass
 import datetime as dt
-import hashlib
 from pathlib import Path
 from typing import cast, Protocol, Sequence
 import warnings
@@ -22,13 +19,11 @@ import polars as pl
 from ppar.attribution import Attribution
 from ppar.frequency import (
     Frequency,
-    date_matches_frequency,
+    completed_frequency_bucket_ends,
+    fixed_frequency_coverage_start,
     frequency_bucket,
-    frequency_bucket_end,
-    frequency_bucket_effective_end,
     frequency_bucket_label,
     load_holidays,
-    validate_frequency_coverage,
 )
 from ppar.mapping import Mapping
 from ppar.performance import Performance
@@ -38,81 +33,7 @@ from ppar.errors import PparError
 import ppar.utilities as util
 
 
-_AttributionCacheKey = tuple[
-    str | None,
-    Hashable,
-    tuple[Hashable, Hashable],
-    str | None,
-]
 _FREQUENCY_BUCKET_COLUMN = "_frequency_bucket"
-
-
-@dataclass(frozen=True)
-class _FrequencyTruncation:
-    """Describe the first nonterminal reporting bucket with an invalid endpoint."""
-
-    bucket: int
-    actual_end: dt.date | None
-    expected_end: dt.date
-
-
-def _completed_frequency_bucket_ends(
-    source_periods: pl.DataFrame,
-    frequency: Frequency,
-    holidays: frozenset[dt.date],
-) -> tuple[dict[int, dt.date], _FrequencyTruncation | None, int | None]:
-    """Return the contiguous prefix of complete fixed-frequency buckets.
-
-    Args:
-        source_periods: One row per source period, ordered by thru date.
-        frequency: Fixed reporting frequency.
-        holidays: Dates treated as nonbusiness days.
-
-    Returns:
-        Mapping from consecutive reporting buckets to their actual source thru
-        dates, followed by information about the first invalid nonterminal
-        bucket and the identifier of an incomplete final bucket. An incomplete
-        final bucket is omitted without a truncation notice.
-    """
-    source_dates = list(
-        source_periods.select(cols.DATE_COLUMNS)
-        .unique()
-        .sort(cols.THRU_DATE)
-        .iter_rows()
-    )
-    validate_frequency_coverage(source_dates, frequency)
-
-    latest_thru_date_by_bucket: dict[int, dt.date] = {}
-    for _, thru_date in source_dates:
-        bucket = frequency_bucket(thru_date, frequency)
-        latest_thru_date_by_bucket[bucket] = max(
-            thru_date,
-            latest_thru_date_by_bucket.get(bucket, dt.date.min),
-        )
-
-    first_bucket = min(latest_thru_date_by_bucket)
-    last_bucket = max(latest_thru_date_by_bucket)
-    completed_bucket_ends: dict[int, dt.date] = {}
-    for bucket in range(first_bucket, last_bucket + 1):
-        thru_date = latest_thru_date_by_bucket.get(bucket)
-        if (
-            thru_date is not None
-            and date_matches_frequency(thru_date, frequency, holidays)
-        ):
-            completed_bucket_ends[bucket] = thru_date
-            continue
-        if bucket == last_bucket:
-            return completed_bucket_ends, None, bucket
-        return (
-            completed_bucket_ends,
-            _FrequencyTruncation(
-                bucket,
-                thru_date,
-                frequency_bucket_effective_end(bucket, frequency, holidays),
-            ),
-            None,
-        )
-    return completed_bucket_ends, None, None
 
 
 def _period_tuples(source_periods: pl.DataFrame) -> list[tuple[dt.date, dt.date]]:
@@ -133,113 +54,6 @@ def _formatted_periods(
     return [(from_date.isoformat(), thru_date.isoformat()) for from_date, thru_date in periods]
 
 
-def _fixed_frequency_coverage_start(
-    source_periods: Sequence[tuple[dt.date, dt.date]],
-    bucket: int,
-    endpoint: dt.date,
-    previous_endpoint: dt.date | None,
-    frequency: Frequency,
-    holidays: frozenset[dt.date],
-    source_label: str,
-) -> dt.date:
-    """Validate one source's gapless coverage and return its actual start.
-
-    Args:
-        source_periods: Validated inclusive source-period date pairs.
-        bucket: Reporting bucket being validated.
-        endpoint: Common actual endpoint for the reporting bucket.
-        previous_endpoint: Actual endpoint of the preceding aligned bucket, if
-            one has already been accepted.
-        frequency: Fixed reporting frequency.
-        holidays: Dates treated as nonbusiness days.
-        source_label: Human-readable source name used in errors.
-
-    Returns:
-        First actual source date covered by the reporting bucket.
-
-    Raises:
-        PparError: If source periods are absent, cross the bucket boundary,
-            leave an interior gap, or do not cover a complete first bucket.
-    """
-    label = frequency_bucket_label(bucket, frequency)
-    periods = [
-        period
-        for period in source_periods
-        if frequency_bucket(period[1], frequency) == bucket
-    ]
-    if not periods:
-        raise PparError(f"{source_label} has no source periods for {label}.")
-    if periods[-1][1] != endpoint:
-        raise PparError(
-            f"{source_label} coverage for {label} ends {periods[-1][1].isoformat()}, "
-            f"not the aligned endpoint {endpoint.isoformat()}.",
-        )
-
-    for (_, prior_thru_date), (from_date, _) in zip(periods[:-1], periods[1:]):
-        expected_from_date = prior_thru_date + dt.timedelta(days=1)
-        if from_date != expected_from_date:
-            raise PparError(
-                f"{source_label} coverage for {label} is not gapless: expected "
-                f"{expected_from_date.isoformat()} after {prior_thru_date.isoformat()}, "
-                f"received {from_date.isoformat()}.",
-            )
-
-    actual_start = periods[0][0]
-    if previous_endpoint is not None:
-        earliest_start = previous_endpoint + dt.timedelta(days=1)
-        latest_start = frequency_bucket_end(
-            bucket - 1,
-            frequency,
-        ) + dt.timedelta(days=1)
-        if not earliest_start <= actual_start <= latest_start:
-            raise PparError(
-                f"{source_label} coverage for {label} starts "
-                f"{actual_start.isoformat()}; after the preceding aligned endpoint, "
-                f"the next complete bucket must start between "
-                f"{earliest_start.isoformat()} and {latest_start.isoformat()}.",
-            )
-        return actual_start
-
-    earliest_complete_start = frequency_bucket_effective_end(
-        bucket - 1,
-        frequency,
-        holidays,
-    ) + dt.timedelta(days=1)
-    latest_complete_start = frequency_bucket_end(
-        bucket - 1,
-        frequency,
-    ) + dt.timedelta(days=1)
-    if not earliest_complete_start <= actual_start <= latest_complete_start:
-        raise PparError(
-            f"{source_label} coverage for {label} starts {actual_start.isoformat()}; "
-            "a complete first reporting bucket must start between "
-            f"{earliest_complete_start.isoformat()} and "
-            f"{latest_complete_start.isoformat()}.",
-        )
-    return actual_start
-
-
-def _data_source_cache_token(source: util.AllDataSources | None) -> Hashable:
-    """Return a hashable token that identifies one attribution data source.
-
-    Tokens include source content so mutating an in-memory source or changing a
-    file cannot return an attribution calculated from stale cached inputs.
-    """
-    if source is None:
-        return None
-    if isinstance(source, str | Path):
-        path = Path(source).expanduser().resolve()
-        digest = (
-            hashlib.sha256(path.read_bytes()).digest()
-            if path.is_file()
-            else None
-        )
-        return ("path", str(path), digest)
-    if isinstance(source, pl.DataFrame):
-        return ("polars", source.serialize())
-    raise PparError("Data source must be a CSV path or Polars DataFrame.")
-
-
 class AttributionSources(Protocol):  # pylint: disable=too-few-public-methods
     """Describe bundled classification sources accepted by Analytics."""
 
@@ -249,12 +63,14 @@ class AttributionSources(Protocol):  # pylint: disable=too-few-public-methods
         raise NotImplementedError
 
     @property
-    def classification_data_source(self) -> util.ClassificationDataSource | None:
+    def classification_data_source(self) -> str | Path | pl.DataFrame | None:
         """Return the classification data source."""
         raise NotImplementedError
 
     @property
-    def mapping_data_sources(self) -> Sequence[util.MappingDataSource | None] | None:
+    def mapping_data_sources(
+        self,
+    ) -> Sequence[str | Path | pl.DataFrame | None] | None:
         """Return optional mapping data sources."""
         raise NotImplementedError
 
@@ -270,8 +86,9 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
     def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
         self,
         # Portfolio and Benchmark parameters
-        portfolio_data_source: util.PerformanceDataSource,
-        benchmark_data_source: util.PerformanceDataSource | None = None,
+        portfolio_data_source: str | Path | pl.DataFrame,
+        benchmark_data_source: str | Path | pl.DataFrame | None = None,
+        *,
         portfolio_name: str | None = None,
         benchmark_name: str | None = None,
         portfolio_classification_name: str | None = None,
@@ -280,7 +97,6 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
         from_date: str | dt.date = dt.date.min,
         thru_date: str | dt.date = dt.date.max,
         frequency: Frequency = Frequency.AS_OFTEN_AS_POSSIBLE,
-        default_attribution_sources: AttributionSources | None = None,
         # RiskStatistics parameters
         annual_minimum_acceptable_return: float = util.DEFAULT_ANNUAL_MINIMUM_ACCEPTABLE_RETURN,
         annual_risk_free_rate: float = util.DEFAULT_ANNUAL_RISK_FREE_RATE,
@@ -289,7 +105,7 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
             util.DEFAULT_PORTFOLIO_VALUE,
             util.DEFAULT_CURRENCY_SYMBOL,
         ),
-        holidays: util.PathLike | None = None,
+        holidays: str | Path | None = None,
     ):
         """Initialize an Analytics instance.
 
@@ -310,14 +126,11 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                 portfolio performance data.
             benchmark_classification_name: Classification name associated with the
                 benchmark performance data.
-            from_date: Earliest allowed from date, either as a
+            from_date: Earliest period ``thru_date`` to retain, either as a
                 ``datetime.date`` or a string in ``yyyy-mm-dd`` format.
-            thru_date: Latest allowed thru date, either as a ``datetime.date`` or
-                a string in ``yyyy-mm-dd`` format.
+            thru_date: Latest period ``thru_date`` to retain, either as a
+                ``datetime.date`` or a string in ``yyyy-mm-dd`` format.
             frequency: Reporting frequency used to consolidate subperiods.
-            default_attribution_sources: Optional bundled classification source used
-                when ``attribution()`` is called without explicit attribution
-                source arguments.
             annual_minimum_acceptable_return: Annual minimum acceptable return used in
                 downside-risk calculations.
             annual_risk_free_rate: Annual risk-free rate used in risk statistics that
@@ -347,20 +160,20 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                 for the calculated subperiods, or a nested Performance validation
                 raises ``PparError``.
         """
-        portfolio_name = util.normalize_optional_string(portfolio_name)
-        benchmark_name = util.normalize_optional_string(benchmark_name)
+        portfolio_name = util.normalize_optional_string(portfolio_name, "portfolio_name")
+        benchmark_name = util.normalize_optional_string(benchmark_name, "benchmark_name")
         portfolio_classification_name = util.normalize_optional_string(
-            portfolio_classification_name
+            portfolio_classification_name,
+            "portfolio_classification_name",
         )
         benchmark_classification_name = util.normalize_optional_string(
-            benchmark_classification_name
+            benchmark_classification_name,
+            "benchmark_classification_name",
         )
 
         # Default the benchmark to the portfolio.  This will allow for "portfolio-only" analysis
         # if they do not have a benchmark.
-        if benchmark_data_source is None or (
-            isinstance(benchmark_data_source, str) and not benchmark_data_source.strip()
-        ):
+        if benchmark_data_source is None:
             benchmark_data_source = portfolio_data_source
             benchmark_name = portfolio_name
             benchmark_classification_name = portfolio_classification_name
@@ -373,13 +186,11 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
         self._annual_minimum_acceptable_return = annual_minimum_acceptable_return
         self._annual_risk_free_rate = annual_risk_free_rate
         self._confidence_level = confidence_level
-        self._default_attribution_sources = default_attribution_sources
         self._frequency = frequency
         self._holidays = load_holidays(holidays)
         self._portfolio_value = portfolio_value
 
-        # Initialize the internal data structures.
-        self._attributions: dict[_AttributionCacheKey, Attribution] = {}
+        # Initialize the cached risk calculation.
         self._riskstatistics: RiskStatistics | None = None
 
         # Get a tuple of the two Performance objects. 0 = portfolio, 1 = benchmark.
@@ -429,11 +240,11 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
     def audit(self) -> None:
         """Audit the Analytics instance.
 
-        Audits the original portfolio and benchmark Performance objects, then audits
-        any Attribution objects that have already been created and cached.
+        Audits the aligned portfolio and benchmark Performance objects. Each
+        Attribution audits itself when it is constructed.
 
         Raises:
-            PparError: If any underlying Performance or Attribution audit fails.
+            PparError: If the underlying Performance audit fails.
         """
         # Audit the portfolio/benchmark pair of performances.  These are the performances that
         # were originally read in the constructor. Depending on their classifications, they may
@@ -441,9 +252,6 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
         Performance.audit_performances(
             self._performances, self._from_date(), self._thru_date()
         )
-
-        # Audit the attributions and their associated performances.
-        Attribution.audit_attributions(list(self._attributions.values()))
 
     def _from_date(self) -> dt.date:
         """Return the overall from date.
@@ -484,12 +292,12 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
 
         if self._frequency != Frequency.AS_OFTEN_AS_POSSIBLE:
             bucket_results = [
-                _completed_frequency_bucket_ends(
-                    source_periods,
+                completed_frequency_bucket_ends(
+                    periods,
                     self._frequency,
                     self._holidays,
                 )
-                for source_periods in (df0, df1)
+                for periods in source_periods
             ]
             complete_buckets = [result[0] for result in bucket_results]
             for source_index, result in enumerate(bucket_results):
@@ -537,7 +345,7 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                         f"{frequency_bucket_label(bucket, self._frequency)}.",
                     )
                 coverage_starts = [
-                    _fixed_frequency_coverage_start(
+                    fixed_frequency_coverage_start(
                         periods,
                         bucket,
                         thru_date,
@@ -597,18 +405,6 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
 
         # Return the common from and thru dates that define the subperiods.
         return subperiod_dates, subperiod_buckets
-
-    def classification_names(self) -> tuple[str | None, str | None]:
-        """Return the portfolio and benchmark classification names.
-
-        Returns:
-            A two-item tuple where item 0 is the portfolio classification name and
-            item 1 is the benchmark classification name.
-        """
-        return (
-            self._performances[0].classification_name,
-            self._performances[1].classification_name,
-        )
 
     def _consolidate_all_subperiods(self) -> None:
         """Consolidate portfolio and benchmark data to the aligned subperiods.
@@ -820,17 +616,14 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
     def attribution(
         self,
         classification_name: str | None = None,
-        classification_data_source: util.ClassificationDataSource | None = None,
-        mapping_data_sources: Sequence[util.MappingDataSource | None] | None = None,
+        classification_data_source: str | Path | pl.DataFrame | None = None,
+        mapping_data_sources: Sequence[str | Path | pl.DataFrame | None] | None = None,
         classification_label: str | None = None,
     ) -> Attribution:
         """Return an Attribution instance for the requested classification.
 
-        Returns a cached Attribution object when available. If no attribution source
-        arguments are supplied and the Analytics instance was initialized with default
-        attribution sources, those defaults are used. Otherwise, maps portfolio and/or
-        benchmark Performance objects to the requested classification when needed,
-        creates the Attribution object, stores it in the cache, and returns it.
+        Maps portfolio and/or benchmark Performance objects to the requested
+        classification when needed, then constructs and returns a fresh Attribution.
 
         Args:
             classification_name: Classification name for the requested Attribution.
@@ -843,9 +636,8 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                 source can be a CSV file path or Polars DataFrame; use ``None`` when
                 a performance already uses the target
                 classification.
-            classification_label: Display label used in tables and charts when the
-                classification name is empty and the Performance classification items
-                are used directly.
+            classification_label: Optional label displayed in tables and charts. If
+                supplied, this overrides the classification name for presentation.
 
         Data Parameters:
             Example ``classification_data_source`` for a Security classification::
@@ -867,19 +659,24 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                 classification name is supplied, or if a nested Mapping, Performance,
                 or Attribution operation raises ``PparError``.
         """
-        classification_name = util.normalize_optional_string(classification_name)
-        classification_label = util.normalize_optional_string(classification_label)
-        if isinstance(classification_data_source, str) and not classification_data_source.strip():
-            classification_data_source = None
+        classification_name = util.normalize_optional_string(
+            classification_name,
+            "classification_name",
+        )
+        classification_label = util.normalize_optional_string(
+            classification_label,
+            "classification_label",
+        )
         if (
-            classification_name is None
-            and classification_data_source is None
-            and mapping_data_sources is None
-            and self._default_attribution_sources is not None
+            isinstance(classification_data_source, str)
+            and not classification_data_source.strip()
         ):
-            return self.attribution_for(
-                self._default_attribution_sources,
-                classification_label=classification_label,
+            raise PparError(
+                "classification_data_source path must not be blank; use None to omit it.",
+                context={
+                    "parameter": "classification_data_source",
+                    "value": classification_data_source,
+                },
             )
         if mapping_data_sources is None:
             mapping_data_sources = (None, None)
@@ -887,10 +684,17 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
             mapping_data_sources = util.two_item_tuple(
                 mapping_data_sources, "Analytics mapping_data_sources"
             )
-            mapping_data_sources = tuple(
-                None if isinstance(source, str) and not source.strip() else source
-                for source in mapping_data_sources
-            )
+            for source_index, source in enumerate(mapping_data_sources):
+                if isinstance(source, str) and not source.strip():
+                    raise PparError(
+                        "mapping_data_sources paths must not be blank; use None "
+                        "to omit a mapping.",
+                        context={
+                            "parameter": "mapping_data_sources",
+                            "source_index": source_index,
+                            "value": source,
+                        },
+                    )
 
         # If the classification name is omitted and the portfolio and benchmark share a
         # non-empty classification name, use that common classification.
@@ -913,20 +717,6 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                 "classification_name is required when source classifications differ."
             )
 
-        cache_key: _AttributionCacheKey = (
-            classification_name,
-            _data_source_cache_token(classification_data_source),
-            (
-                _data_source_cache_token(mapping_data_sources[0]),
-                _data_source_cache_token(mapping_data_sources[1]),
-            ),
-            classification_label,
-        )
-
-        # Reuse only an attribution created from the same complete request.
-        if cache_key in self._attributions:
-            return self._attributions[cache_key]
-
         # Get the performances for the common classification_name.
         if classification_name is None:
             attribution_performances = list(self._performances)
@@ -944,16 +734,13 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
 
         # Now that both attribution performances are of the same common Classification,
         # calculate the Attribution.
-        self._attributions[cache_key] = Attribution(
+        return Attribution(
             (attribution_performances[0], attribution_performances[1]),
             classification_name,
             classification_data_source,
             self._frequency,
             classification_label,
         )
-
-        # Return the Attribution corresponding to classification_name.
-        return self._attributions[cache_key]
 
     def attribution_for(
         self,
@@ -966,9 +753,9 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
             sources: Object containing a classification name, classification data
                 source, and optional mapping data sources. Axys classification
                 source bundles implement this shape.
-            classification_label: Display label used in tables and charts when the
-                classification name is empty and the Performance classification items
-                are used directly.
+            classification_label: Optional label displayed in tables and charts. If
+                supplied, this overrides the classification name from ``sources`` for
+                presentation.
 
         Returns:
             Attribution instance associated with ``sources.classification_name``.

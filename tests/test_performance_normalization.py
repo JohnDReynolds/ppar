@@ -12,6 +12,8 @@ import polars as pl
 
 # Project Imports
 import ppar.schema as cols
+from ppar import Analytics
+from ppar.attribution import View
 from ppar.errors import PparError
 from ppar.performance import Performance
 
@@ -87,6 +89,100 @@ class TestPerformanceNormalization(unittest.TestCase):
         )
         self.assertTrue(from_strings.narrow_df.equals(from_typed_dates.narrow_df))
         self.assertTrue(from_strings.narrow_df.equals(from_csv.narrow_df))
+
+    def test_csv_preserves_numeric_looking_identifiers(self) -> None:
+        """CSV inference cannot alter textual security identities."""
+        identifier_pairs = (
+            ("001", "1"),
+            ("99999999999999999999", "2"),
+            ("A01", "B02"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "performance.csv"
+            for identifiers in identifier_pairs:
+                with self.subTest(identifiers=identifiers):
+                    path.write_text(
+                        "from_date,thru_date,identifier,return,weight\n"
+                        f"2024-01-01,2024-01-31,{identifiers[0]},0.01,0.5\n"
+                        f"2024-01-01,2024-01-31,{identifiers[1]},0.02,0.5\n",
+                        encoding="utf-8",
+                    )
+
+                    performance = Performance(path)
+                    detail = (
+                        Analytics(path)
+                        .attribution()
+                        .to_polars(View.SUBPERIOD_ATTRIBUTION)
+                    )
+
+                    self.assertEqual(performance.identifiers, sorted(identifiers))
+                    self.assertEqual(
+                        sorted(detail[cols.CLASSIFICATION_IDENTIFIER].to_list()),
+                        sorted(identifiers),
+                    )
+
+    def test_generic_performance_rejects_invalid_identifiers(self) -> None:
+        """Generic CSV and Polars identities must be complete exact text."""
+        for invalid_identifier in (None, "", " ", " A", "A "):
+            frame = pl.DataFrame(
+                {
+                    cols.FROM_DATE: [dt.date(2024, 1, 1)] * 2,
+                    cols.THRU_DATE: [dt.date(2024, 1, 31)] * 2,
+                    cols.IDENTIFIER: [invalid_identifier, "B"],
+                    cols.RETURN: [0.01, 0.02],
+                    cols.WEIGHT: [0.5, 0.5],
+                }
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "performance.csv"
+                frame.write_csv(path)
+                for data_source in (frame, path):
+                    with self.subTest(
+                        invalid_identifier=invalid_identifier,
+                        source_type=type(data_source).__name__,
+                    ):
+                        with self.assertRaises(PparError) as context:
+                            Performance(data_source)
+
+                        self.assertIn("identifier", str(context.exception))
+                        self.assertIn("non-null, nonblank", str(context.exception))
+                        self.assertEqual(
+                            context.exception.context.get("field"),
+                            cols.IDENTIFIER,
+                        )
+
+    def test_generic_performance_preserves_internal_identifier_spaces(self) -> None:
+        """Internal spaces are identity content rather than surrounding padding."""
+        frame = _narrow_performance_df().with_columns(
+            pl.col(cols.IDENTIFIER).replace({"A": "Alpha Holding"})
+        )
+
+        performance = Performance(frame)
+
+        self.assertEqual(performance.identifiers, ["Alpha Holding", "B"])
+
+    def test_from_date_selects_periods_by_their_thru_date(self) -> None:
+        """A lower bound before, at, or inside a period retains that full period."""
+        frame = _narrow_performance_df()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "performance.csv"
+            frame.write_csv(path)
+            for data_source in (frame, path):
+                for from_date in (
+                    dt.date.min,
+                    dt.date(2023, 12, 31),
+                    dt.date(2024, 1, 31),
+                    dt.date(2024, 1, 15),
+                ):
+                    with self.subTest(
+                        source_type=type(data_source).__name__,
+                        from_date=from_date,
+                    ):
+                        performance = Performance(data_source, from_date=from_date)
+                        self.assertEqual(
+                            performance.period_totals()[cols.THRU_DATE].to_list(),
+                            [period[1] for period in _PERIODS],
+                        )
 
     def test_invalid_in_memory_date_text_raises_ppar_error_with_bounds(self) -> None:
         """Malformed in-memory dates do not leak a raw Polars exception."""
@@ -199,36 +295,9 @@ class TestPerformanceNormalization(unittest.TestCase):
         self.assertAlmostEqual(float(first_period[cols.CONTRIBUTION].sum()), 0.04)
         self.assertAlmostEqual(first_period[cols.TOTAL_RETURN].unique().item(), 0.04)
 
-    def test_calculated_row_replacement_requires_complete_schema(self) -> None:
-        """Calculated-state replacement rejects an incomplete internal table."""
-        performance = Performance(_narrow_performance_df())
-
-        with self.assertRaises(PparError):
-            performance.reset_narrow_df(
-                performance.narrow_df.drop(cols.TOTAL_RETURN)
-            )
-
-    def test_calculated_row_replacement_owns_its_dataframe(self) -> None:
-        """Later caller mutation cannot alter validated calculated state."""
-        performance = Performance(_narrow_performance_df())
-        replacement = performance.narrow_df.clone()
-        performance.reset_narrow_df(replacement)
-        replacement[0, cols.TOTAL_RETURN] = 999.0
-
-        self.assertNotEqual(performance.period_totals()[cols.TOTAL_RETURN].item(0), 999.0)
-
-    def test_calculated_row_replacement_requires_contribution_footing(self) -> None:
-        """Calculated contributions must sum to their stored period return."""
-        performance = Performance(_narrow_performance_df())
-        inconsistent = performance.narrow_df.with_columns(
-            pl.when(pl.col(cols.IDENTIFIER) == "A")
-            .then(pl.col(cols.CONTRIBUTION) + 0.01)
-            .otherwise(pl.col(cols.CONTRIBUTION))
-            .alias(cols.CONTRIBUTION)
-        )
-
-        with self.assertRaises(PparError):
-            performance.reset_narrow_df(inconsistent)
+    def test_calculated_row_replacement_is_not_a_public_api(self) -> None:
+        """Performance does not expose mutable calculated-state replacement."""
+        self.assertFalse(hasattr(Performance(_narrow_performance_df()), "reset_narrow_df"))
 
     def test_overall_rows_are_a_defensive_copy(self) -> None:
         """Mutating an overall result cannot alter its cached calculation."""
@@ -383,7 +452,7 @@ class TestPerformanceNormalization(unittest.TestCase):
         self.assertTrue(math.isclose(overall[cols.TOTAL_RETURN].item(), 0.0, abs_tol=1e-12))
         self.assertTrue(math.isclose(overall[cols.CONTRIBUTION].item(), 0.0, abs_tol=1e-12))
 
-    def test_duplicate_thru_dates_raise_error_102(self) -> None:
+    def test_duplicate_thru_dates_are_rejected(self) -> None:
         """Two different input periods may not share an thru date."""
         duplicate_dates = pl.DataFrame(
             {
@@ -398,19 +467,19 @@ class TestPerformanceNormalization(unittest.TestCase):
         with self.assertRaises(PparError):
             Performance(duplicate_dates)
 
-    def test_empty_filtered_input_raises_error_103(self) -> None:
+    def test_empty_filtered_input_is_rejected(self) -> None:
         """Date filtering that leaves no periods reports an input error."""
         with self.assertRaises(PparError):
             Performance(_narrow_performance_df(), thru_date=dt.date(1900, 1, 31))
 
-    def test_duplicate_narrow_date_identifier_rows_raise_error_112(self) -> None:
+    def test_duplicate_narrow_date_identifier_rows_are_rejected(self) -> None:
         """A duplicate narrow asset row is rejected during validation."""
         duplicate = pl.concat([_narrow_performance_df(), _narrow_performance_df().head(1)])
 
         with self.assertRaises(PparError):
             Performance(duplicate)
 
-    def test_weights_that_do_not_net_to_one_raise_error_108(self) -> None:
+    def test_weights_that_do_not_net_to_one_are_rejected(self) -> None:
         """Input rows whose weights do not sum to one are rejected."""
         invalid_weights = _narrow_performance_df().with_columns(
             pl.when(pl.col(cols.IDENTIFIER) == "B")
@@ -422,7 +491,7 @@ class TestPerformanceNormalization(unittest.TestCase):
         with self.assertRaises(PparError):
             Performance(invalid_weights)
 
-    def test_null_returns_raise_error_104(self) -> None:
+    def test_null_returns_are_rejected(self) -> None:
         """Missing numeric observations are rejected from in-memory inputs."""
         null_returns = _narrow_performance_df().with_columns(
             pl.when(pl.col(cols.IDENTIFIER) == "A")
@@ -434,7 +503,7 @@ class TestPerformanceNormalization(unittest.TestCase):
         with self.assertRaises(PparError):
             Performance(null_returns)
 
-    def test_infinite_returns_and_weights_raise_error_104(self) -> None:
+    def test_infinite_returns_and_weights_are_rejected(self) -> None:
         """Infinite financial values are rejected with other invalid observations."""
         for column_name in (cols.RETURN, cols.WEIGHT):
             with self.subTest(column_name=column_name):
@@ -448,7 +517,7 @@ class TestPerformanceNormalization(unittest.TestCase):
                 with self.assertRaises(PparError):
                     Performance(invalid)
 
-    def test_from_date_after_thru_date_raises_error_105(self) -> None:
+    def test_from_date_after_thru_date_is_rejected(self) -> None:
         """An input row may not start after its reporting date."""
         invalid_period = _narrow_performance_df().head(2).with_columns(
             pl.lit(dt.date(2024, 2, 1)).alias(cols.FROM_DATE)
@@ -457,7 +526,7 @@ class TestPerformanceNormalization(unittest.TestCase):
         with self.assertRaises(PparError):
             Performance(invalid_period)
 
-    def test_overlapping_dates_raise_error_106(self) -> None:
+    def test_overlapping_dates_are_rejected(self) -> None:
         """Overlapping adjacent performance periods are rejected."""
         overlapping = _narrow_performance_df().with_columns(
             pl.Series(
@@ -469,7 +538,7 @@ class TestPerformanceNormalization(unittest.TestCase):
         with self.assertRaises(PparError):
             Performance(overlapping)
 
-    def test_missing_return_and_weight_columns_raise_error_109(self) -> None:
+    def test_missing_return_and_weight_columns_are_rejected(self) -> None:
         """Legacy wide-format performance inputs are no longer accepted."""
         invalid_columns = pl.DataFrame(
             {
@@ -483,7 +552,7 @@ class TestPerformanceNormalization(unittest.TestCase):
         with self.assertRaises(PparError):
             Performance(invalid_columns)
 
-    def test_invalid_numeric_return_raises_error_110(self) -> None:
+    def test_invalid_numeric_return_is_rejected(self) -> None:
         """An unparseable return value reports a numeric input error."""
         invalid_return = pl.DataFrame(
             {
@@ -498,7 +567,7 @@ class TestPerformanceNormalization(unittest.TestCase):
         with self.assertRaises(PparError):
             Performance(invalid_return)
 
-    def test_requested_from_date_after_thru_date_raises_error_111(self) -> None:
+    def test_requested_from_date_after_thru_date_is_rejected(self) -> None:
         """A reversed requested date window is rejected before calculation."""
         with self.assertRaises(PparError):
             Performance(
@@ -507,12 +576,12 @@ class TestPerformanceNormalization(unittest.TestCase):
                 thru_date=dt.date(2024, 1, 1),
             )
 
-    def test_invalid_date_text_raises_error_803(self) -> None:
+    def test_invalid_date_text_is_rejected(self) -> None:
         """A malformed requested date string is rejected during normalization."""
         with self.assertRaises(PparError):
             Performance(_narrow_performance_df(), from_date="2020-aa-bb")
 
-    def test_missing_input_file_raises_error_802(self) -> None:
+    def test_missing_input_file_is_rejected(self) -> None:
         """A missing file data source reports the requested input path."""
         with self.assertRaises(PparError):
             Performance("_does_not_exist_")

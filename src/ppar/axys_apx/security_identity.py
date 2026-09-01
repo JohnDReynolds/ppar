@@ -30,11 +30,8 @@ _DATASET_FIELDS: Final = {
     _SEPARATOR_KEY,
 }
 _SECURITY_DATASETS: Final = {
-    "holdings",
     "security_performance",
     "security_master",
-    "splits",
-    "transactions",
 }
 
 
@@ -68,7 +65,7 @@ def security_id_construction(
     """Return validated security-ID construction for one source dataset.
 
     Args:
-        values: Parsed YAML root mapping.
+        values: Axys/APX source settings.
         dataset_name: Normalized source dataset name.
         error_message: Callback that adds product-specific error context.
         file_name: Optional ``files`` dataset-name override. Analytics uses
@@ -315,7 +312,10 @@ def _validate_components(
                 "at least two normalized field names."
             ),
         )
-    if any(not isinstance(component, str) or not component for component in value):
+    if any(
+        not isinstance(component, str) or not component.strip()
+        for component in value
+    ):
         raise PparError(
             error_message(
                 f"security_id components for {dataset_name} must be nonempty strings."
@@ -359,7 +359,7 @@ def _source_columns(
     source_columns: list[str] = []
     for component in components:
         source_column = section.get(component, component)
-        if not isinstance(source_column, str) or not source_column:
+        if not isinstance(source_column, str) or not source_column.strip():
             raise PparError(
                 error_message(
                     f"files.{file_name}.columns.{component} must be a nonempty "
@@ -403,8 +403,6 @@ def _source_file_columns(
     if not isinstance(files, Mapping):
         raise PparError(error_message("files must be a mapping."))
     definition = files.get(file_name, {})
-    if isinstance(definition, str):
-        return {}
     if not isinstance(definition, Mapping):
         raise PparError(error_message(f"files.{file_name} must be a mapping."))
     columns = definition.get("columns", {})

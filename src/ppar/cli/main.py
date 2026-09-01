@@ -28,8 +28,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
-    if args.command != "setup":
-        parser.error(f"unknown command: {args.command}")
     try:
         directory = setup(args.directory, axys_apx=args.axys_apx)
         print(f"Directory: {directory}")

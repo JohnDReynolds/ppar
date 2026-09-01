@@ -6,7 +6,6 @@
 
 # Python Imports
 import datetime as dt
-import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,7 +14,7 @@ import unittest
 import polars as pl
 
 # Test Imports
-from tests import test_utilities as test_util
+from tests import helpers as test_util
 
 # Project Imports
 from ppar import Analytics
@@ -23,18 +22,6 @@ from ppar.attribution import Chart, View
 import ppar.schema as cols
 from ppar.frequency import Frequency
 import ppar.utilities as util
-
-_EXPECTED_RESULTS_DIRECTORIES = [
-    "tests/expected_results",
-    "../tests/expected_results",
-    "expected_results",
-]
-_CHART_DEPENDENCIES_AVAILABLE = all(
-    importlib.util.find_spec(dependency) is not None
-    for dependency in ("matplotlib", "seaborn")
-)
-_HOLIDAYS_PATH = Path("tests/data/holidays.csv")
-
 
 class TestRegressionResults(unittest.TestCase):
     """Verify fixture-based calculation values and stored CSV baselines."""
@@ -149,7 +136,7 @@ class TestRegressionResults(unittest.TestCase):
             benchmark_classification_name="Security",
             from_date="2024-02-01",
             frequency=Frequency.MONTHLY,
-            holidays=_HOLIDAYS_PATH,
+            holidays=test_util.HOLIDAYS_PATH,
         )
 
         for classification_name in ("Security", "Economic Sector"):
@@ -170,15 +157,10 @@ class TestRegressionResults(unittest.TestCase):
                     output_path = Path(temp_dir) / file_name
                     attribution.write_csv(view, output_path, columns_to_sort, sort_descendings)
                     output = pl.read_csv(output_path)
-                expected_path = test_util.resolve_file_path(
-                    _EXPECTED_RESULTS_DIRECTORIES,
-                    file_name,
-                )
+                expected_path = test_util.expected_results_path(file_name)
                 self.assertTrue(output.equals(pl.read_csv(expected_path)))
 
             if classification_name == "Economic Sector":
-                if not _CHART_DEPENDENCIES_AVAILABLE:
-                    self.skipTest("Chart regression checks require matplotlib and seaborn.")
                 for chart in Chart:
                     columns_to_sort = None
                     sort_descendings = False
@@ -196,7 +178,7 @@ class TestRegressionResults(unittest.TestCase):
             benchmark_classification_name="Security",
             from_date=dt.date(2023, 11, 1),
             frequency=Frequency.MONTHLY,
-            holidays=_HOLIDAYS_PATH,
+            holidays=test_util.HOLIDAYS_PATH,
         )
         economic_sector = test_util.attribution(analytics, "Economic Sector")
         security = test_util.attribution(analytics, "Security")
@@ -268,17 +250,34 @@ class TestRegressionResults(unittest.TestCase):
             output_path = Path(temp_dir) / "riskstatistics.csv"
             risk_statistics.write_csv(output_path)
             output = pl.read_csv(output_path)
-        expected_path = test_util.resolve_file_path(
-            _EXPECTED_RESULTS_DIRECTORIES,
-            "riskstatistics.csv",
-        )
+        expected_path = test_util.expected_results_path("riskstatistics.csv")
 
         self.assertTrue(output.equals(pl.read_csv(expected_path)))
 
     def test_short_positions(self) -> None:
         """Short-position inputs process successfully through attribution."""
+        portfolio = test_util.make_performance_df(
+            (
+                (dt.date(1986, 5, 1), dt.date(1986, 5, 12)),
+                (dt.date(1986, 5, 13), dt.date(1986, 5, 31)),
+                (dt.date(1986, 6, 1), dt.date(1986, 6, 30)),
+                (dt.date(1986, 7, 1), dt.date(1986, 7, 31)),
+                (dt.date(1986, 8, 1), dt.date(1986, 8, 31)),
+                (dt.date(1986, 9, 1), dt.date(1986, 9, 30)),
+            ),
+            {
+                "AAPL": (
+                    [0.01] * 6,
+                    [-0.5, 1.4, 1.5, -0.1, 0.5, 0.5],
+                ),
+                "MSFT": (
+                    [0.02] * 6,
+                    [1.5, -0.4, -0.5, 1.1, 0.5, 0.5],
+                ),
+            },
+        )
         analytics = Analytics(
-            test_util.performance_data_path("case_short"),
+            portfolio,
             test_util.performance_data_path("Big 2"),
             thru_date=dt.date(1986, 9, 30),
             frequency=Frequency.MONTHLY,

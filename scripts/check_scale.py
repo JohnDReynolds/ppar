@@ -45,7 +45,8 @@ _HISTORY_SCALE = 5
 _EXPECTED_HISTORY_SOURCE_PERIODS = 300
 _EXPECTED_HISTORY_REPORTING_PERIODS = 99
 _EXPECTED_HISTORY_REPORTING_END = dt.date(2046, 3, 30)
-_SAMPLES = 3
+_DIAGNOSTIC_STARTUP_SAMPLES = 3
+_LARGE_SITE_PAIRED_SAMPLES = 5
 _TIMEOUT_GRACE_SECONDS = 5.0
 _SCALING_WARNING_MULTIPLIER = 1.05
 _SCALING_FAILURE_MULTIPLIER = 1.10
@@ -57,6 +58,11 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     """Parse the scale multiplier, including the required 500x release gate."""
     parser = argparse.ArgumentParser(description="Run ppar scale checks.")
     parser.add_argument("--scale", type=int, choices=_ALLOWED_SCALES, default=10)
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Print observation-only timing components without changing gate policy.",
+    )
     return parser.parse_args(argv)
 
 
@@ -79,27 +85,56 @@ def _run(command: Sequence[str | Path], *, timeout_seconds: float = 60.0) -> flo
     return time.perf_counter() - started
 
 
-def _run_median_elapsed(
-    command: Sequence[str | Path], *, timeout_seconds: float = 60.0
-) -> float:
-    """Return the median of three command timings."""
-    return statistics.median(
-        _run(command, timeout_seconds=timeout_seconds) for _ in range(_SAMPLES)
+def _run_elapsed_samples(
+    command: Sequence[str | Path],
+    *,
+    sample_count: int = _DIAGNOSTIC_STARTUP_SAMPLES,
+    timeout_seconds: float = 60.0,
+) -> tuple[float, ...]:
+    """Return command timings in execution order."""
+    if sample_count < 1:
+        raise ValueError("Timing sample count must be positive.")
+    return tuple(
+        _run(command, timeout_seconds=timeout_seconds) for _ in range(sample_count)
     )
 
 
-def _analytics_scaling_result(
-    baseline_elapsed: float, scaled_elapsed: float
-) -> tuple[str, float]:
-    """Apply the established 1.05x warning and 1.10x failure boundaries."""
-    if baseline_elapsed <= 0:
-        raise ValueError("Analytics baseline time must be greater than zero.")
-    ratio = scaled_elapsed / baseline_elapsed
+def _run_paired_elapsed_samples(
+    baseline_command: Sequence[str | Path],
+    scaled_command: Sequence[str | Path],
+    *,
+    sample_count: int = _LARGE_SITE_PAIRED_SAMPLES,
+) -> tuple[tuple[float, float], ...]:
+    """Warm both commands, then return paired baseline and scaled timings."""
+    if sample_count < 1:
+        raise ValueError("Paired timing sample count must be positive.")
+
+    _run(baseline_command)
+    _run(scaled_command)
+    samples: list[tuple[float, float]] = []
+    for _ in range(sample_count):
+        baseline_elapsed = _run(baseline_command)
+        scaled_elapsed = _run(
+            scaled_command,
+            timeout_seconds=_scaled_timeout(
+                baseline_elapsed,
+                _LARGE_SITE_FAILURE_RATIO,
+            ),
+        )
+        samples.append((baseline_elapsed, scaled_elapsed))
+    return tuple(samples)
+
+
+def _analytics_scaling_result(paired_ratios: Sequence[float]) -> tuple[str, float]:
+    """Apply established boundaries to the median paired large-site ratio."""
+    if not paired_ratios:
+        raise ValueError("Analytics paired ratios must not be empty.")
+    ratio = statistics.median(paired_ratios)
     if ratio > _LARGE_SITE_FAILURE_RATIO:
+        values = ", ".join(f"{sample:.3f}x" for sample in paired_ratios)
         raise RuntimeError(
             "Analytics large-site scaling exceeded the 1.10x failure threshold: "
-            f"baseline={baseline_elapsed:.2f}s, scaled={scaled_elapsed:.2f}s, "
-            f"ratio={ratio:.2f}x."
+            f"paired ratios=[{values}], median={ratio:.3f}x."
         )
     return ("WARN" if ratio > _LARGE_SITE_WARNING_RATIO else "PASS", ratio)
 
@@ -121,7 +156,7 @@ def _sublinear_scaling_result(
         raise RuntimeError(
             f"{scenario} exceeded the {failure_ratio:.2f}x time-ratio error cap: "
             f"baseline={baseline_elapsed:.2f}s, scaled={scaled_elapsed:.2f}s, "
-            f"ratio={ratio:.2f}x."
+            f"ratio={ratio:.3f}x."
         )
     return (
         "WARN" if ratio > warning_ratio else "PASS",
@@ -446,26 +481,24 @@ def _history_reporting_periods(site: Path) -> pl.DataFrame:
 
 def _selected_tables(site: Path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Calculate security, sector, and risk tables for a scale workspace."""
-    source = AxysData.from_values(site, _AXYS_SOURCE_VALUES)
-    security_portfolio = source.get_portfolio(
-        "MEGA_ALPHA", classification_name="Security"
-    )
-    security_benchmark = source.get_portfolio(
-        "MEGA_BENCH", classification_name="Security"
-    )
+    source = AxysData(site, _AXYS_SOURCE_VALUES)
+    security_portfolio = source.get_portfolio("MEGA_ALPHA")
+    security_benchmark = source.get_portfolio("MEGA_BENCH")
     security_analytics = security_portfolio.to_analytics(
         security_benchmark,
         from_date=_DEMO_FROM_DATE,
         frequency=Frequency.QUARTERLY,
         holidays=site / "input" / "holidays.csv",
     )
-    security = security_analytics.attribution().to_polars(View.OVERALL_ATTRIBUTION)
-    sector_portfolio = source.get_portfolio(
-        "MEGA_ALPHA", classification_name="Economic Sector"
-    )
-    sector_benchmark = source.get_portfolio(
-        "MEGA_BENCH", classification_name="Economic Sector"
-    )
+    security = security_analytics.attribution_for(
+        source.get_classification_sources_for_pair(
+            "Security",
+            security_portfolio,
+            security_benchmark,
+        )
+    ).to_polars(View.OVERALL_ATTRIBUTION)
+    sector_portfolio = source.get_portfolio("MEGA_ALPHA")
+    sector_benchmark = source.get_portfolio("MEGA_BENCH")
     sector_analytics = sector_portfolio.to_analytics(
         sector_benchmark,
         from_date=_DEMO_FROM_DATE,
@@ -474,7 +507,13 @@ def _selected_tables(site: Path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFra
     )
     return (
         security,
-        sector_analytics.attribution().to_polars(View.OVERALL_ATTRIBUTION),
+        sector_analytics.attribution_for(
+            source.get_classification_sources_for_pair(
+                "Economic Sector",
+                sector_portfolio,
+                sector_benchmark,
+            )
+        ).to_polars(View.OVERALL_ATTRIBUTION),
         sector_analytics.risk_statistics().to_polars(),
     )
 
@@ -491,6 +530,7 @@ def _print_result(
     scaled_rows: int,
     baseline_elapsed: float,
     scaled_elapsed: float,
+    measured_ratio: float,
     status: str,
     warning_ratio: float,
     failure_ratio: float,
@@ -503,27 +543,49 @@ def _print_result(
     )
     print(
         f"  time: {baseline_elapsed:.2f}s -> {scaled_elapsed:.2f}s "
-        f"({scaled_elapsed / baseline_elapsed:.2f}x); "
+        f"({measured_ratio:.3f}x); "
         f"warning=>{warning_ratio:.2f}x, failure=>{failure_ratio:.2f}x"
     )
 
 
-def _check_large_site(workspace: Path, scale: int) -> None:
-    """Run the unchanged large-site gate and require identical visible tables."""
+def _print_samples(label: str, samples: Sequence[float]) -> None:
+    """Print raw samples and their median for timing review."""
+    values = ", ".join(f"{sample:.3f}s" for sample in samples)
+    print(f"  {label} samples: [{values}]; median={statistics.median(samples):.3f}s")
+
+
+def _print_ratios(label: str, ratios: Sequence[float]) -> None:
+    """Print raw ratios and their median for timing review."""
+    values = ", ".join(f"{ratio:.3f}x" for ratio in ratios)
+    print(f"  {label}: [{values}]; median={statistics.median(ratios):.3f}x")
+
+
+def _check_large_site(workspace: Path, scale: int, *, diagnostics: bool = False) -> None:
+    """Run the paired large-site gate and require identical visible tables."""
+    preparation_started = time.perf_counter()
     baseline, baseline_rows = _prepare_large_site(workspace / "baseline", 1)
     scaled, scaled_rows = _prepare_large_site(workspace / "scaled", scale)
+    preparation_elapsed = time.perf_counter() - preparation_started
     baseline_command: list[str | Path] = [sys.executable, baseline / "ppar_demo.py"]
     scaled_command: list[str | Path] = [sys.executable, scaled / "ppar_demo.py"]
-    baseline_elapsed = _run_median_elapsed(baseline_command)
-    scaled_elapsed = _run_median_elapsed(
+    paired_samples = _run_paired_elapsed_samples(
+        baseline_command,
         scaled_command,
-        timeout_seconds=_scaled_timeout(
-            baseline_elapsed, _LARGE_SITE_FAILURE_RATIO
-        ),
     )
+    baseline_samples = tuple(sample[0] for sample in paired_samples)
+    scaled_samples = tuple(sample[1] for sample in paired_samples)
+    paired_ratios = tuple(
+        scaled_sample / baseline_sample
+        for baseline_sample, scaled_sample in paired_samples
+    )
+    baseline_elapsed = statistics.median(baseline_samples)
+    scaled_elapsed = statistics.median(scaled_samples)
     if _html_outputs(baseline / "output") != _html_outputs(scaled / "output"):
         raise RuntimeError("Scaled Analytics HTML differs from the 1x baseline.")
-    status, _ = _analytics_scaling_result(baseline_elapsed, scaled_elapsed)
+    _print_samples("baseline end-to-end", baseline_samples)
+    _print_samples("scaled end-to-end", scaled_samples)
+    _print_ratios("paired scaled/baseline ratios", paired_ratios)
+    status, measured_ratio = _analytics_scaling_result(paired_ratios)
     _print_result(
         "Analytics large-site",
         scale,
@@ -531,10 +593,31 @@ def _check_large_site(workspace: Path, scale: int) -> None:
         scaled_rows,
         baseline_elapsed,
         scaled_elapsed,
+        measured_ratio,
         status,
         _LARGE_SITE_WARNING_RATIO,
         _LARGE_SITE_FAILURE_RATIO,
     )
+
+    if diagnostics:
+        startup_samples = _run_elapsed_samples((sys.executable, "-c", "pass"))
+        calculation_started = time.perf_counter()
+        _selected_tables(baseline)
+        baseline_calculation = time.perf_counter() - calculation_started
+        calculation_started = time.perf_counter()
+        _selected_tables(scaled)
+        scaled_calculation = time.perf_counter() - calculation_started
+        print("  observation-only components (not threshold inputs):")
+        print(f"    fixture preparation: {preparation_elapsed:.3f}s")
+        _print_samples("  Python startup", startup_samples)
+        print(
+            "    calculation-only: "
+            f"{baseline_calculation:.3f}s -> {scaled_calculation:.3f}s"
+        )
+        print(
+            "    report rendering and publication remain inside the end-to-end "
+            "samples above."
+        )
 
 
 def _check_selected(workspace: Path) -> None:
@@ -574,7 +657,7 @@ def _check_selected(workspace: Path) -> None:
         rel_tol=1e-12,
         abs_tol=1e-12,
     )
-    status, _, warning, failure = _sublinear_scaling_result(
+    status, measured_ratio, warning, failure = _sublinear_scaling_result(
         "Analytics selected-workload",
         _SELECTED_SCALE,
         baseline_elapsed,
@@ -587,6 +670,7 @@ def _check_selected(workspace: Path) -> None:
         scaled_rows,
         baseline_elapsed,
         scaled_elapsed,
+        measured_ratio,
         status,
         warning,
         failure,
@@ -635,7 +719,7 @@ def _check_history(workspace: Path) -> None:
     baseline_rows = baseline_security_rows + pl.read_csv(
         baseline / "input" / "portperf.csv"
     ).height
-    status, _, warning, failure = _sublinear_scaling_result(
+    status, measured_ratio, warning, failure = _sublinear_scaling_result(
         "Analytics long-history",
         _HISTORY_SCALE,
         baseline_elapsed,
@@ -648,6 +732,7 @@ def _check_history(workspace: Path) -> None:
         scaled_rows,
         baseline_elapsed,
         scaled_elapsed,
+        measured_ratio,
         status,
         warning,
         failure,
@@ -660,7 +745,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="ppar_scale_") as directory:
             workspace = Path(directory)
-            _check_large_site(workspace, args.scale)
+            _check_large_site(workspace, args.scale, diagnostics=args.diagnostics)
             _check_selected(workspace)
             _check_history(workspace)
     except (RuntimeError, subprocess.SubprocessError) as error:

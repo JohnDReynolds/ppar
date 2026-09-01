@@ -28,6 +28,8 @@ from ppar.performance import Performance
 from ppar.errors import PparError
 import ppar.utilities as util
 
+__all__ = ["RiskStatistics"]
+
 # Constants
 _DEFAULT_OUTPUT_PRECISION = 8
 
@@ -61,14 +63,14 @@ class _Statistic(Enum):
     SORTINO_RATIO = "Sortino Ratio"
     SORTINO_RATIO_ANNUALIZED = "Annualized Sortino Ratio"
     INFORMATION_RATIO = "Information Ratio"
-    M_SQUARED = "M_Squared"  # aka "Modigliani-Modigliani"
+    M_SQUARED = "M-Squared"  # aka "Modigliani-Modigliani"
     TREYNOR_RATIO = "Treynor Ratio"
     # Regression
     BETA = "Beta"  # slope
     ALPHA = "Alpha"  # intercept
     ALPHA_ANNUALIZED = "Annualized Alpha"
-    JENSENS_ALPHA = "Jensens Alpha"
-    JENSENS_ALPHA_ANNUALIZED = "Annualized Jensens Alpha"
+    JENSENS_ALPHA = "Jensen's Alpha"
+    JENSENS_ALPHA_ANNUALIZED = "Annualized Jensen's Alpha"
 
 
 # View categories.
@@ -89,8 +91,10 @@ class RiskStatistics:
     """Calculate ex-post risk statistics for portfolio and benchmark returns.
 
     The class accepts either two ``Performance`` instances or two NumPy arrays
-    of periodic returns. It calculates the statistics enumerated by
-    ``_Statistic`` and stores the formatted results in a Polars DataFrame.
+    of periodic returns. Direct arrays contain no dates or display names, so
+    their output uses ``Portfolio`` and ``Benchmark`` and omits a date range.
+    It calculates the statistics enumerated by ``_Statistic`` and stores the
+    formatted results in a Polars DataFrame.
 
     Notes:
         Accepted NumPy integer and floating return arrays are normalized to
@@ -98,9 +102,16 @@ class RiskStatistics:
         returns must be finite and strictly greater than -100% because the
         reported annualized values use geometric compounding.
 
-        Results can be retrieved using ``to_html()``,
-        ``to_polars()``, or ``to_table()``, and
-        written using ``write_csv()``.
+        Ratio calculations retain small risk magnitudes supported by the
+        floating-point resolution of their source returns. Exact or
+        resolution-limited zero risk produces an undefined ratio for a zero
+        numerator and signed infinity for a nonzero numerator. Every finite,
+        nonzero beta remains a signed Treynor divisor.
+
+        At least two observations are required. Annualized statistics require at
+        least one full year of observations: 12 monthly, 4 quarterly, or 1 yearly.
+        Results can be retrieved using ``to_html()`` or ``to_polars()`` and written
+        using ``write_csv()``.
     """
 
     def __init__(
@@ -188,6 +199,8 @@ class RiskStatistics:
         # Set the validated frequency and currency symbol.
         self._frequency = frequency
         self._currency_symbol = currency_symbol
+        self._from_date: dt.date | None
+        self._thru_date: dt.date | None
 
         # Set dates, names, and returns from the input parameters.
         if isinstance(return_pair[0], Performance) and isinstance(return_pair[1], Performance):
@@ -224,8 +237,8 @@ class RiskStatistics:
                             "dtype": str(values.dtype),
                         },
                     )
-            self._from_date = dt.date.min
-            self._thru_date = dt.date.max
+            self._from_date = None
+            self._thru_date = None
             self._portfolio_name = "Portfolio"
             self._benchmark_name = "Benchmark"
             # Normalize before subtraction and every other calculation. In
@@ -375,7 +388,9 @@ class RiskStatistics:
             PparError: Raised by ``Performance.audit_performances()`` if the
                 source portfolio and benchmark performances fail validation.
         """
-        # Audit the portfolio/benchmark pair of performances.
+        # Only Performance-backed inputs reach this method, so their dates are known.
+        assert self._from_date is not None
+        assert self._thru_date is not None
         Performance.audit_performances(
             self._performances_to_audit, self._from_date, self._thru_date
         )
@@ -394,12 +409,42 @@ class RiskStatistics:
             deviation is no larger than one floating-point resolution unit at
             the scale of the input values.
         """
+        # Checking source equality first avoids a nonzero NumPy variance caused
+        # solely by rounding the mean of repeated, exactly equal float values.
+        if np.all(returns == returns[0]):
+            return True
         variance = float(np.var(returns, ddof=1))
         if variance == 0.0:
             return True
         input_scale = float(np.max(np.abs(returns)))
         resolution = math.ulp(input_scale)
         return math.sqrt(variance) <= resolution
+
+    @staticmethod
+    def _magnitude_is_effectively_zero(
+        magnitude: float,
+        source_values: npt.NDArray[np.float64],
+        reference_value: float = 0.0,
+    ) -> bool:
+        """Return whether a nonnegative magnitude is below source precision.
+
+        Args:
+            magnitude: Calculated nonnegative risk magnitude.
+            source_values: Finite observations from which it was calculated.
+            reference_value: Finite comparison value used to form the risk
+                observations, such as the minimum acceptable return.
+
+        Returns:
+            ``True`` when the magnitude is exactly zero or no larger than one
+            floating-point resolution unit at the scale of its source values.
+        """
+        if magnitude == 0.0:
+            return True
+        input_scale = max(
+            float(np.max(np.abs(source_values))),
+            abs(reference_value),
+        )
+        return magnitude <= math.ulp(input_scale)
 
     @staticmethod
     def _beta(
@@ -417,10 +462,23 @@ class RiskStatistics:
         # Use a consistent degrees-of-freedom (sample ddof=1) for both covariance
         # and variance so the beta calculation is not biased by mismatched normalizations.
         covariance_matrix = np.cov(portfolio_returns, benchmark_returns, ddof=1)
-        covariance = covariance_matrix[0, 1]
+        covariance = float(covariance_matrix[0, 1])
         benchmark_variance = np.var(benchmark_returns, ddof=1)
         if RiskStatistics._variance_is_effectively_zero(benchmark_returns):
             return math.nan
+
+        # An exact zero covariance can acquire a rounding residue when positive
+        # and negative cross-products cancel. Compare that residue with one ULP
+        # at the scale of the centered source cross-products. This still retains
+        # any small beta supported by observable co-variation in the inputs.
+        centered_portfolio = portfolio_returns - np.mean(portfolio_returns)
+        centered_benchmark = benchmark_returns - np.mean(benchmark_returns)
+        cross_product_scale = float(
+            np.max(np.abs(centered_portfolio))
+            * np.max(np.abs(centered_benchmark))
+        )
+        if covariance == 0.0 or abs(covariance) <= math.ulp(cross_product_scale):
+            return 0.0
         return cast(float, covariance / benchmark_variance)  # cast for mypy
 
     def _calculate_all_statistics(
@@ -501,6 +559,11 @@ class RiskStatistics:
             sortino_ratio = RiskStatistics._ratio_with_zero_denominator(
                 mean - frequency_mar,
                 downside_deviation,
+                denominator_is_effectively_zero=RiskStatistics._magnitude_is_effectively_zero(
+                    downside_deviation,
+                    rets,
+                    frequency_mar,
+                ),
             )
 
             if idx == 0:  # Portfolio
@@ -513,7 +576,6 @@ class RiskStatistics:
                 # Regression alpha here is the intercept implied by mean returns:
                 # alpha = portfolio_mean - beta * benchmark_mean.
                 alpha = mean - (beta * benchmark_mean)
-                benchmark_stddev = float(np.std(self._benchmark_returns))
                 correlation_coefficient = (
                     math.nan
                     if RiskStatistics._variance_is_effectively_zero(
@@ -577,6 +639,9 @@ class RiskStatistics:
                             value = RiskStatistics._ratio_with_zero_denominator(
                                 float(np.mean(active_returns)),
                                 active_returns_stddev,
+                                denominator_is_effectively_zero=(
+                                    RiskStatistics._variance_is_effectively_zero(active_returns)
+                                ),
                             )
                         else:
                             value = math.nan
@@ -628,8 +693,9 @@ class RiskStatistics:
                     case _Statistic.TREYNOR_RATIO:
                         if idx == 0:
                             # Treynor uses beta, not volatility, as the risk unit.
-                            # Preserve the excess-return sign when finite beta is
-                            # effectively zero. Nonfinite beta remains undefined.
+                            # Exact zero beta preserves the excess-return sign;
+                            # every finite nonzero signed beta is a valid divisor.
+                            # Nonfinite beta remains undefined.
                             value = (
                                 math.nan
                                 if not np.isfinite(beta)
@@ -676,26 +742,36 @@ class RiskStatistics:
         sharpe_ratio = RiskStatistics._ratio_with_zero_denominator(
             float(excess_returns_mean),
             float(denom),
+            denominator_is_effectively_zero=RiskStatistics._variance_is_effectively_zero(
+                returns
+            ),
         )
         return float(excess_returns_mean), sharpe_ratio
 
     @staticmethod
-    def _ratio_with_zero_denominator(numerator: float, denominator: float) -> float:
-        """Divide while preserving sign for a finite zero denominator.
+    def _ratio_with_zero_denominator(
+        numerator: float,
+        denominator: float,
+        *,
+        denominator_is_effectively_zero: bool = False,
+    ) -> float:
+        """Divide while preserving sign for a finite zero-risk denominator.
 
         Args:
             numerator: Ratio numerator.
             denominator: Ratio denominator.
+            denominator_is_effectively_zero: Whether the denominator's source
+                data cannot resolve its calculated risk magnitude from zero.
 
         Returns:
             The ordinary quotient, signed infinity for a nonzero numerator over
-            an effectively zero denominator, or ``NaN`` when the ratio is
+            zero risk, or ``NaN`` when the ratio is
             indeterminate or either input is nonfinite.
         """
         if not math.isfinite(numerator) or not math.isfinite(denominator):
             return math.nan
-        if np.isclose(denominator, 0.0):
-            if np.isclose(numerator, 0.0):
+        if denominator == 0.0 or denominator_is_effectively_zero:
+            if numerator == 0.0:
                 return math.nan
             return math.copysign(math.inf, numerator)
         return numerator / denominator
@@ -791,30 +867,20 @@ class RiskStatistics:
         """
         return self._df.clone()
 
-    def to_table(self) -> html_table.HtmlTable:
-        """Return the statistics as a lightweight HTML table object.
-
-        Returns:
-            HtmlTable object containing the formatted risk-statistics table.
-        """
-        title, subtitle = self._title_and_subtitle()
-        return html_table.riskstatistics_table(
-            self._df,
-            title,
-            subtitle,
-            self._currency_symbol,
-        )
-
     def _title_and_subtitle(self) -> tuple[str, str]:
         """Return title and subtitle text for risk-statistics output."""
+        portfolio_name = self._portfolio_name or "Portfolio"
+        benchmark_name = self._benchmark_name or "Benchmark"
+        subtitle = f"Ex-Post Risk Statistics: {self._frequency.value}"
+        if self._from_date is not None and self._thru_date is not None:
+            subtitle += f" from {self._from_date} to {self._thru_date}"
         return (
-            f"{self._portfolio_name or ''} vs {self._benchmark_name or ''}",
-            f"Ex-Post Risk Statistics: {self._frequency.value} from {self._from_date} to "
-            f"{self._thru_date}",
+            f"{portfolio_name} vs {benchmark_name}",
+            subtitle,
         )
 
     def write_csv(
-        self, file_path: util.PathLike, float_precision: int = _DEFAULT_OUTPUT_PRECISION
+        self, file_path: str | Path, float_precision: int = _DEFAULT_OUTPUT_PRECISION
     ) -> None:
         """Write the statistics to a CSV file.
 

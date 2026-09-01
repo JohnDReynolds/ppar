@@ -50,13 +50,13 @@ class Classification:
             data_source: Classification data source supplied as a CSV path or
                 Polars DataFrame. The
                 data must contain exactly two columns: classification identifier
-                and classification display name. If this value is empty, the
+                and classification display name. If this value is omitted, the
                 classification is inferred from ``performances``.
             performances: Optional sequence containing the portfolio Performance at
                 index 0 and the benchmark Performance at index 1. Required when
                 ``data_source`` is supplied because the data source is filtered
                 to identifiers used by those performances. Also used as the
-                fallback source when ``data_source`` is empty.
+                fallback source when ``data_source`` is omitted.
 
         Data Parameters:
             Example classification data for an Economic Sector classification,
@@ -79,7 +79,7 @@ class Classification:
             )
 
         # Get the 2-column dataframe [cols.CLASSIFICATION_IDENTIFIER, cols.CLASSIFICATION_NAME]
-        if data_source is None or (isinstance(data_source, str) and not data_source.strip()):
+        if data_source is None:
             # Use the performances.classification_items.
             self.name, self._df = Classification._load_from_performances(performances)
         else:
@@ -95,6 +95,7 @@ class Classification:
                 column_names=cols.CLASSIFICATION_COLUMNS,
                 needed_items=needed_items,
                 error_message="Classification data must contain exactly two columns.",
+                source_description="Classification data",
             )
 
     @property
@@ -111,8 +112,8 @@ class Classification:
         Uses the ``classification_items`` DataFrames already stored on the
         supplied portfolio and benchmark ``Performance`` instances. If both
         performances share the same classification name, their classification
-        items are combined and duplicate identifiers are removed, keeping the
-        portfolio item when both performances contain the same identifier.
+        items are combined. Exact duplicate identifier/name pairs are collapsed;
+        conflicting names are rejected.
 
         Args:
             performances: Sequence containing the portfolio Performance at index 0
@@ -134,12 +135,9 @@ class Classification:
             return None, _EMPTY_DF
 
         # Get the classification items from the portfolio and benchmark Performance objects.
-        # Reversing the sequence processes the portfolio after the benchmark so duplicate
-        # identifiers keep the portfolio item. That favors the user's accounting-system data over
-        # benchmark metadata when both sources provide a display name.
         dfs = [
             performance.classification_items
-            for performance in reversed(performances)
+            for performance in performances
             if not performance.classification_items.is_empty()
         ]
 
@@ -147,9 +145,13 @@ class Classification:
         if not dfs:
             return None, _EMPTY_DF
 
-        # Concatenate the portfolio and benchmark classification items, and remove duplicates.
+        # Concatenate the portfolio and benchmark classification items. Exact duplicate
+        # pairs are harmless; different names for one identifier are ambiguous.
         df = pl.concat(dfs, how="vertical")
-        df = df.unique(subset=[df.columns[0]], keep="last")
+        df = util._deduplicate_identifier_pairs(  # pylint: disable=protected-access
+            df,
+            "Inferred classification data",
+        )
 
         # Return the classification name common to both streams and the combined items.
         return performances[0].classification_name, df

@@ -25,13 +25,73 @@ class TestScaleCheck(unittest.TestCase):
         for scale in (0, 1, 9, 11, 101, 499, 501, 1000):
             with self.subTest(scale=scale), self.assertRaises(SystemExit):
                 check_scale._parse_args(["--scale", str(scale)])
+        self.assertFalse(check_scale._parse_args(["--scale", "500"]).diagnostics)
+        self.assertTrue(
+            check_scale._parse_args(["--scale", "500", "--diagnostics"]).diagnostics
+        )
+
+    def test_timing_samples_retain_each_observation(self) -> None:
+        """The scale report retains raw samples instead of only their median."""
+        with mock.patch.object(
+            check_scale,
+            "_run",
+            side_effect=(1.2, 1.0, 1.1),
+        ):
+            samples = check_scale._run_elapsed_samples(("python", "demo.py"))
+
+        self.assertEqual(samples, (1.2, 1.0, 1.1))
+
+    def test_large_site_samples_warm_then_pair_commands(self) -> None:
+        """Large-site timing warms both sites and alternates timed observations."""
+        baseline_command = ("python", "baseline.py")
+        scaled_command = ("python", "scaled.py")
+        with mock.patch.object(
+            check_scale,
+            "_run",
+            side_effect=(
+                9.0,
+                9.1,
+                1.0,
+                1.08,
+                1.1,
+                1.16,
+                1.2,
+                1.29,
+                1.3,
+                1.41,
+                1.4,
+                1.53,
+            ),
+        ) as run:
+            samples = check_scale._run_paired_elapsed_samples(
+                baseline_command,
+                scaled_command,
+            )
+
+        self.assertEqual(
+            samples,
+            ((1.0, 1.08), (1.1, 1.16), (1.2, 1.29), (1.3, 1.41), (1.4, 1.53)),
+        )
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [baseline_command, scaled_command] * 6,
+        )
 
     def test_large_site_caps_are_unchanged(self) -> None:
         """Large-site timing warns above 1.05x and fails above 1.10x."""
-        self.assertEqual(check_scale._analytics_scaling_result(2.0, 2.10)[0], "PASS")
-        self.assertEqual(check_scale._analytics_scaling_result(2.0, 2.16)[0], "WARN")
+        self.assertEqual(check_scale._analytics_scaling_result((1.05,) * 5)[0], "PASS")
+        self.assertEqual(check_scale._analytics_scaling_result((1.08,) * 5)[0], "WARN")
         with self.assertRaisesRegex(RuntimeError, "1.10x failure threshold"):
-            check_scale._analytics_scaling_result(2.0, 2.21)
+            check_scale._analytics_scaling_result((1.11,) * 5)
+
+    def test_large_site_uses_median_paired_ratio(self) -> None:
+        """A single timing outlier does not determine the large-site result."""
+        status, ratio = check_scale._analytics_scaling_result(
+            (1.30, 1.06, 1.08, 1.07, 1.09)
+        )
+
+        self.assertEqual(status, "WARN")
+        self.assertEqual(ratio, 1.08)
 
     def test_selected_and_history_caps_are_unchanged(self) -> None:
         """10x selected and 5x history thresholds retain their observed shape."""

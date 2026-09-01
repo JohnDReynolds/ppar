@@ -149,6 +149,215 @@ class TestRiskStatisticsInvariants(unittest.TestCase):
 
         self.assertTrue(math.isclose(beta, 2.0, abs_tol=1e-12))
 
+    def test_sharpe_ratio_is_invariant_to_representable_return_scale(self) -> None:
+        """Sharpe and its derivatives retain low-volatility information."""
+        pattern = np.array([1.0, 2.0, 3.0, 4.0] * 3)
+        expected_sharpe = float(np.mean(pattern) / np.std(pattern))
+
+        for scale in (1.0e-10, 1.0e-6, 1.0e-2):
+            with self.subTest(scale=scale):
+                returns = pattern * scale
+                risk_statistics = RiskStatistics(
+                    (returns, returns.copy()),
+                    Frequency.MONTHLY,
+                    annual_risk_free_rate=0.0,
+                )
+
+                sharpe = _portfolio_value(
+                    risk_statistics,
+                    "Monthly Sharpe Ratio",
+                )
+                annualized_sharpe = _portfolio_value(
+                    risk_statistics,
+                    "Annualized Sharpe Ratio",
+                )
+                m_squared = _portfolio_value(
+                    risk_statistics,
+                    "Monthly M-Squared",
+                )
+
+                self.assertTrue(
+                    math.isclose(sharpe, expected_sharpe, rel_tol=1e-12)
+                )
+                self.assertTrue(
+                    math.isclose(
+                        annualized_sharpe,
+                        math.sqrt(12) * expected_sharpe,
+                        rel_tol=1e-12,
+                    )
+                )
+                self.assertTrue(
+                    math.isclose(m_squared, float(np.mean(returns)), rel_tol=1e-12)
+                )
+
+    def test_sortino_ratio_is_invariant_to_representable_return_scale(self) -> None:
+        """Sortino recognizes small downside deviations supported by the data."""
+        pattern = np.array([-2.0, -1.0, 1.0, 4.0] * 3)
+        downside_returns = np.minimum(pattern, 0.0)
+        expected_sortino = float(
+            np.mean(pattern) / np.sqrt(np.mean(downside_returns**2))
+        )
+
+        for scale in (1.0e-10, 1.0e-6, 1.0e-2):
+            with self.subTest(scale=scale):
+                returns = pattern * scale
+                risk_statistics = RiskStatistics(
+                    (returns, returns.copy()),
+                    Frequency.MONTHLY,
+                    annual_minimum_acceptable_return=0.0,
+                )
+
+                sortino = _portfolio_value(
+                    risk_statistics,
+                    "Monthly Sortino Ratio",
+                )
+                annualized_sortino = _portfolio_value(
+                    risk_statistics,
+                    "Annualized Sortino Ratio",
+                )
+
+                self.assertTrue(
+                    math.isclose(sortino, expected_sortino, rel_tol=1e-12)
+                )
+                self.assertTrue(
+                    math.isclose(
+                        annualized_sortino,
+                        math.sqrt(12) * expected_sortino,
+                        rel_tol=1e-12,
+                    )
+                )
+
+    def test_information_ratio_is_invariant_to_representable_active_scale(self) -> None:
+        """Information ratio uses small but observable active-return dispersion."""
+        active_pattern = np.array([1.0, 2.0, 3.0, 4.0] * 3)
+        benchmark = np.zeros_like(active_pattern)
+        expected_information_ratio = float(
+            np.mean(active_pattern) / np.std(active_pattern)
+        )
+
+        for scale in (1.0e-10, 1.0e-6, 1.0e-2):
+            with self.subTest(scale=scale):
+                active_returns = active_pattern * scale
+                risk_statistics = RiskStatistics(
+                    (benchmark + active_returns, benchmark),
+                    Frequency.MONTHLY,
+                )
+
+                information_ratio = _portfolio_value(
+                    risk_statistics,
+                    "Monthly Information Ratio",
+                )
+
+                self.assertTrue(
+                    math.isclose(
+                        information_ratio,
+                        expected_information_ratio,
+                        rel_tol=1e-12,
+                    )
+                )
+
+    def test_small_negative_beta_produces_finite_negative_treynor_ratio(self) -> None:
+        """A representable negative beta remains a signed Treynor divisor."""
+        benchmark = np.array([-0.02, -0.01, 0.01, 0.02] * 3)
+        portfolio = 0.01 - (1.0e-9 * benchmark)
+        expected_beta = float(
+            np.cov(portfolio, benchmark, ddof=1)[0, 1]
+            / np.var(benchmark, ddof=1)
+        )
+        expected_treynor = float(np.mean(portfolio) / expected_beta)
+        risk_statistics = RiskStatistics(
+            (portfolio, benchmark),
+            Frequency.MONTHLY,
+            annual_risk_free_rate=0.0,
+        )
+
+        beta = _portfolio_value(risk_statistics, "Monthly Beta")
+        treynor = _portfolio_value(risk_statistics, "Monthly Treynor Ratio")
+
+        self.assertLess(expected_beta, 0.0)
+        self.assertTrue(math.isclose(beta, expected_beta, rel_tol=1e-12))
+        self.assertTrue(math.isfinite(treynor))
+        self.assertLess(treynor, 0.0)
+        self.assertTrue(math.isclose(treynor, expected_treynor, rel_tol=1e-12))
+
+    def test_unresolvable_volatility_is_treated_as_zero_risk(self) -> None:
+        """Variation no larger than source precision remains zero-risk behavior."""
+        base_return = 0.5
+        adjacent_return = np.nextafter(base_return, math.inf)
+        returns = np.array([base_return, adjacent_return] * 6)
+        self.assertGreater(float(np.std(returns)), 0.0)
+        self.assertLessEqual(float(np.std(returns)), math.ulp(base_return))
+
+        risk_statistics = RiskStatistics(
+            (returns, returns.copy()),
+            Frequency.MONTHLY,
+            annual_risk_free_rate=0.0,
+        )
+
+        sharpe = _portfolio_value(risk_statistics, "Monthly Sharpe Ratio")
+
+        self.assertTrue(math.isinf(sharpe))
+        self.assertGreater(sharpe, 0.0)
+
+    def test_unresolvable_downside_deviation_is_treated_as_zero_risk(self) -> None:
+        """A shortfall of one source ULP cannot define finite downside risk."""
+        target_periodic_mar = 0.01
+        annual_mar = (1.0 + target_periodic_mar) ** 12 - 1.0
+        periodic_mar = (1.0 + annual_mar) ** (1 / 12) - 1.0
+        returns = np.full(12, np.nextafter(periodic_mar, -math.inf))
+        shortfall = periodic_mar - float(returns[0])
+        self.assertGreater(shortfall, 0.0)
+        self.assertLessEqual(shortfall, math.ulp(periodic_mar))
+
+        risk_statistics = RiskStatistics(
+            (returns, returns.copy()),
+            Frequency.MONTHLY,
+            annual_minimum_acceptable_return=annual_mar,
+        )
+
+        sortino = _portfolio_value(risk_statistics, "Monthly Sortino Ratio")
+
+        self.assertTrue(math.isinf(sortino))
+        self.assertLess(sortino, 0.0)
+
+    def test_exact_zero_over_zero_ratios_are_undefined(self) -> None:
+        """No excess return and no risk remains an indeterminate ratio."""
+        returns = np.zeros(12)
+        risk_statistics = RiskStatistics(
+            (returns, returns.copy()),
+            Frequency.MONTHLY,
+            annual_minimum_acceptable_return=0.0,
+            annual_risk_free_rate=0.0,
+        )
+
+        for statistic_name in (
+            "Monthly Sharpe Ratio",
+            "Annualized Sharpe Ratio",
+            "Monthly Sortino Ratio",
+            "Annualized Sortino Ratio",
+            "Monthly Information Ratio",
+            "Monthly M-Squared",
+            "Monthly Treynor Ratio",
+        ):
+            with self.subTest(statistic_name=statistic_name):
+                self.assertTrue(
+                    math.isnan(_portfolio_value(risk_statistics, statistic_name))
+                )
+
+    def test_two_observations_define_a_small_finite_sharpe_ratio(self) -> None:
+        """The minimum supported sample can retain representable low volatility."""
+        returns = np.array([1.0e-10, 2.0e-10])
+        expected_sharpe = float(np.mean(returns) / np.std(returns))
+        risk_statistics = RiskStatistics(
+            (returns, returns.copy()),
+            Frequency.MONTHLY,
+            annual_risk_free_rate=0.0,
+        )
+
+        sharpe = _portfolio_value(risk_statistics, "Monthly Sharpe Ratio")
+
+        self.assertTrue(math.isclose(sharpe, expected_sharpe, rel_tol=1e-12))
+
     def test_identical_returns_have_zero_alpha_when_risk_free_rate_is_zero(self) -> None:
         """A series regressed against itself has no intercept at a zero cash rate."""
         returns = [0.01, -0.02, 0.04, 0.03]
@@ -231,10 +440,26 @@ class TestRiskStatisticsInvariants(unittest.TestCase):
             annual_risk_free_rate=0.03,
         )
 
+        beta = _portfolio_value(risk_statistics, "Monthly Beta")
         treynor = _portfolio_value(risk_statistics, "Monthly Treynor Ratio")
 
+        self.assertEqual(beta, 0.0)
         self.assertTrue(math.isinf(treynor))
         self.assertLess(treynor, 0.0)
+
+    def test_undefined_beta_keeps_treynor_ratio_undefined(self) -> None:
+        """A constant benchmark cannot support a Treynor result."""
+        risk_statistics = _monthly_risk_statistics(
+            [0.01] * 12,
+            [0.02] * 12,
+            annual_risk_free_rate=0.0,
+        )
+
+        beta = _portfolio_value(risk_statistics, "Monthly Beta")
+        treynor = _portfolio_value(risk_statistics, "Monthly Treynor Ratio")
+
+        self.assertTrue(math.isnan(beta))
+        self.assertTrue(math.isnan(treynor))
 
     def test_value_at_risk_increases_with_confidence_level(self) -> None:
         """A more adverse lower-tail confidence level increases reported loss."""

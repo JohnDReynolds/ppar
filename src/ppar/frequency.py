@@ -4,6 +4,7 @@
 import calendar
 from collections.abc import Collection
 import csv
+from dataclasses import dataclass
 import datetime as dt
 from enum import Enum
 from pathlib import Path
@@ -11,6 +12,8 @@ from typing import Sequence
 
 # Project imports
 from ppar.errors import PparError
+
+__all__ = ["Frequency"]
 
 
 class Frequency(Enum):
@@ -31,6 +34,22 @@ class Frequency(Enum):
     MONTHLY = "Monthly"  # Calendar months with conservative weekend-end support.
     QUARTERLY = "Quarterly"  # Calendar quarters.
     YEARLY = "Yearly"  # Calendar years.
+
+
+@dataclass(frozen=True)
+class _FrequencyTruncation:
+    """Describe the first nonterminal reporting bucket with an invalid endpoint.
+
+    Attributes:
+        bucket: Ordered identifier of the invalid reporting bucket.
+        actual_end: Latest observed source endpoint, or ``None`` when the bucket
+            has no source period.
+        expected_end: Effective business endpoint required for completion.
+    """
+
+    bucket: int
+    actual_end: dt.date | None
+    expected_end: dt.date
 
 
 def load_holidays(data_source: str | Path | None) -> frozenset[dt.date]:
@@ -295,3 +314,142 @@ def validate_frequency_coverage(
                 "missing_periods": missing_labels,
             },
         )
+
+
+def completed_frequency_bucket_ends(
+    source_periods: Sequence[tuple[dt.date, dt.date]],
+    frequency: Frequency,
+    holidays: frozenset[dt.date],
+) -> tuple[dict[int, dt.date], _FrequencyTruncation | None, int | None]:
+    """Return the contiguous prefix of complete fixed-frequency buckets.
+
+    Args:
+        source_periods: Validated inclusive source-period date pairs.
+        frequency: Fixed reporting frequency.
+        holidays: Dates treated as nonbusiness days.
+
+    Returns:
+        Mapping from consecutive reporting buckets to their actual source thru
+        dates, followed by information about the first invalid nonterminal
+        bucket and the identifier of an incomplete final bucket. An incomplete
+        final bucket is omitted without a truncation notice.
+    """
+    validate_frequency_coverage(source_periods, frequency)
+
+    latest_thru_date_by_bucket: dict[int, dt.date] = {}
+    for _, thru_date in source_periods:
+        bucket = frequency_bucket(thru_date, frequency)
+        latest_thru_date_by_bucket[bucket] = max(
+            thru_date,
+            latest_thru_date_by_bucket.get(bucket, dt.date.min),
+        )
+
+    first_bucket = min(latest_thru_date_by_bucket)
+    last_bucket = max(latest_thru_date_by_bucket)
+    completed_bucket_ends: dict[int, dt.date] = {}
+    for bucket in range(first_bucket, last_bucket + 1):
+        bucket_thru_date = latest_thru_date_by_bucket.get(bucket)
+        if (
+            bucket_thru_date is not None
+            and date_matches_frequency(bucket_thru_date, frequency, holidays)
+        ):
+            completed_bucket_ends[bucket] = bucket_thru_date
+            continue
+        if bucket == last_bucket:
+            return completed_bucket_ends, None, bucket
+        return (
+            completed_bucket_ends,
+            _FrequencyTruncation(
+                bucket,
+                bucket_thru_date,
+                frequency_bucket_effective_end(bucket, frequency, holidays),
+            ),
+            None,
+        )
+    return completed_bucket_ends, None, None
+
+
+def fixed_frequency_coverage_start(
+    source_periods: Sequence[tuple[dt.date, dt.date]],
+    bucket: int,
+    endpoint: dt.date,
+    previous_endpoint: dt.date | None,
+    frequency: Frequency,
+    holidays: frozenset[dt.date],
+    source_label: str,
+) -> dt.date:
+    """Validate one source's gapless coverage and return its actual start.
+
+    Args:
+        source_periods: Validated inclusive source-period date pairs.
+        bucket: Reporting bucket being validated.
+        endpoint: Common actual endpoint for the reporting bucket.
+        previous_endpoint: Actual endpoint of the preceding aligned bucket, if
+            one has already been accepted.
+        frequency: Fixed reporting frequency.
+        holidays: Dates treated as nonbusiness days.
+        source_label: Human-readable source name used in errors.
+
+    Returns:
+        First actual source date covered by the reporting bucket.
+
+    Raises:
+        PparError: If source periods are absent, cross the bucket boundary,
+            leave an interior gap, or do not cover a complete first bucket.
+    """
+    label = frequency_bucket_label(bucket, frequency)
+    periods = [
+        period
+        for period in source_periods
+        if frequency_bucket(period[1], frequency) == bucket
+    ]
+    if not periods:
+        raise PparError(f"{source_label} has no source periods for {label}.")
+    if periods[-1][1] != endpoint:
+        raise PparError(
+            f"{source_label} coverage for {label} ends {periods[-1][1].isoformat()}, "
+            f"not the aligned endpoint {endpoint.isoformat()}.",
+        )
+
+    for (_, prior_thru_date), (from_date, _) in zip(periods[:-1], periods[1:]):
+        expected_from_date = prior_thru_date + dt.timedelta(days=1)
+        if from_date != expected_from_date:
+            raise PparError(
+                f"{source_label} coverage for {label} is not gapless: expected "
+                f"{expected_from_date.isoformat()} after "
+                f"{prior_thru_date.isoformat()}, received {from_date.isoformat()}.",
+            )
+
+    actual_start = periods[0][0]
+    if previous_endpoint is not None:
+        earliest_start = previous_endpoint + dt.timedelta(days=1)
+        latest_start = frequency_bucket_end(
+            bucket - 1,
+            frequency,
+        ) + dt.timedelta(days=1)
+        if not earliest_start <= actual_start <= latest_start:
+            raise PparError(
+                f"{source_label} coverage for {label} starts "
+                f"{actual_start.isoformat()}; after the preceding aligned endpoint, "
+                "the next complete bucket must start between "
+                f"{earliest_start.isoformat()} and {latest_start.isoformat()}.",
+            )
+        return actual_start
+
+    earliest_complete_start = frequency_bucket_effective_end(
+        bucket - 1,
+        frequency,
+        holidays,
+    ) + dt.timedelta(days=1)
+    latest_complete_start = frequency_bucket_end(
+        bucket - 1,
+        frequency,
+    ) + dt.timedelta(days=1)
+    if not earliest_complete_start <= actual_start <= latest_complete_start:
+        raise PparError(
+            f"{source_label} coverage for {label} starts {actual_start.isoformat()}; "
+            "a complete first reporting bucket must start between "
+            f"{earliest_complete_start.isoformat()} and "
+            f"{latest_complete_start.isoformat()}.",
+        )
+    return actual_start

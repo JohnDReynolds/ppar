@@ -74,20 +74,13 @@ class ClassificationTests(unittest.TestCase):
             },
         )
 
-    def test_inferred_classification_prefers_portfolio_name_on_overlap(self) -> None:
-        """Portfolio names take precedence for identifiers present in both inputs."""
+    def test_inferred_classification_rejects_conflicting_names(self) -> None:
+        """Portfolio and benchmark cannot assign different names to one identifier."""
         portfolio = _named_performance(a_name="Portfolio Alpha")
         benchmark = _named_performance(a_name="Benchmark Alpha")
 
-        classification = Classification("", None, (portfolio, benchmark))
-
-        names = dict(
-            zip(
-                classification.df[cols.CLASSIFICATION_IDENTIFIER].to_list(),
-                classification.df[cols.CLASSIFICATION_NAME].to_list(),
-            )
-        )
-        self.assertEqual(names["A"], "Portfolio Alpha")
+        with self.assertRaisesRegex(PparError, "conflicting values.*A"):
+            Classification("", None, (portfolio, benchmark))
 
     def test_inferred_classification_is_empty_when_names_differ(self) -> None:
         """Different input classification names prevent implicit classification."""
@@ -100,12 +93,12 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(classification.df.columns, list(cols.CLASSIFICATION_COLUMNS))
         self.assertTrue(classification.df.is_empty())
 
-    def test_explicit_classification_filters_and_keeps_last_duplicate(self) -> None:
-        """Explicit sources filter unused items and use the last duplicate name."""
+    def test_explicit_classification_accepts_exact_duplicate_pairs(self) -> None:
+        """Exact duplicate names collapse deterministically after filtering."""
         source = pl.DataFrame(
             {
                 "identifier": ["A", "A", "B", "UNUSED"],
-                "name": ["Old Alpha", "Alpha", "Beta", "Unused"],
+                "name": ["Alpha", "Alpha", "Beta", "Unused"],
             }
         )
 
@@ -122,6 +115,28 @@ class ClassificationTests(unittest.TestCase):
                 cols.CLASSIFICATION_NAME: ["Alpha", "Beta"],
             },
         )
+
+    def test_explicit_classification_rejects_conflicts_for_dataframe_and_csv(
+        self,
+    ) -> None:
+        """Conflicting names fail identically for Polars and headerless CSV sources."""
+        source = pl.DataFrame(
+            {
+                "identifier": ["A", "A", "B"],
+                "name": ["Alpha", "Alternate Alpha", "Beta"],
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "classification.csv"
+            source.write_csv(path, include_header=False)
+            for data_source in (source, source.reverse(), path):
+                with self.subTest(source_type=type(data_source).__name__):
+                    with self.assertRaisesRegex(PparError, "conflicting values.*A"):
+                        Classification(
+                            "Security",
+                            data_source,
+                            (_named_performance(), _named_performance()),
+                        )
 
     def test_classification_dataframe_is_a_defensive_copy(self) -> None:
         """Mutating a returned classification table cannot alter stored metadata."""
@@ -140,7 +155,7 @@ class ClassificationTests(unittest.TestCase):
             ["Alpha", "Beta"],
         )
 
-    def test_one_column_classification_source_raises_error_302(self) -> None:
+    def test_one_column_classification_source_is_rejected(self) -> None:
         """Explicit classification sources must supply identifier and name columns."""
         source = pl.DataFrame({"identifier": ["A", "B"]})
 
@@ -178,14 +193,74 @@ class MappingTests(unittest.TestCase):
             {"TECH": ["A"], "FIN": ["B"]},
         )
 
-    def test_mapping_duplicate_source_item_uses_last_value(self) -> None:
-        """Duplicate mapping rows resolve to the final target value."""
+    def test_mapping_accepts_exact_duplicate_pairs(self) -> None:
+        """Exact duplicate mapping rows collapse to one source-to-target pair."""
         mapping = Mapping(
             ("A",),
-            pl.DataFrame({"from": ["A", "A"], "to": ["TECH", "HEALTH"]}),
+            pl.DataFrame({"from": ["A", "A"], "to": ["TECH", "TECH"]}),
         )
 
-        self.assertEqual(dict(mapping.to_froms), {"HEALTH": ["A"]})
+        self.assertEqual(dict(mapping.to_froms), {"TECH": ["A"]})
+
+    def test_mapping_rejects_conflicts_for_dataframe_and_csv(self) -> None:
+        """Conflicting destinations fail identically for Polars and CSV sources."""
+        source = pl.DataFrame(
+            {"from": ["A", "A"], "to": ["TECH", "HEALTH"]}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mapping.csv"
+            source.write_csv(path, include_header=False)
+            for data_source in (source, source.reverse(), path):
+                with self.subTest(source_type=type(data_source).__name__):
+                    with self.assertRaisesRegex(PparError, "conflicting values.*A"):
+                        Mapping(("A",), data_source)
+
+    def test_mapping_rejects_invalid_source_and_destination_identities(self) -> None:
+        """Mapping identifiers must be nonblank exact text before filtering."""
+        for invalid_value in (None, "", " ", " A", "A "):
+            for invalid_column in ("from", "to"):
+                values = {
+                    "from": [invalid_value if invalid_column == "from" else "A"],
+                    "to": [invalid_value if invalid_column == "to" else "TECH"],
+                }
+                source = pl.DataFrame(values)
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "mapping.csv"
+                    source.write_csv(path, include_header=False)
+                    for data_source in (source, path):
+                        with self.subTest(
+                            invalid_value=invalid_value,
+                            invalid_column=invalid_column,
+                            source_type=type(data_source).__name__,
+                        ):
+                            with self.assertRaises(PparError) as context:
+                                Mapping(("A",), data_source)
+
+                            self.assertIn("Mapping data", str(context.exception))
+                            self.assertIn(
+                                "non-null, nonblank",
+                                str(context.exception),
+                            )
+                            self.assertEqual(
+                                context.exception.context.get("field"),
+                                cols.FROM_TO_COLUMNS[
+                                    0 if invalid_column == "from" else 1
+                                ],
+                            )
+
+    def test_mapping_preserves_internal_identifier_spaces(self) -> None:
+        """Mapping identities may contain meaningful internal spaces."""
+        mapping = Mapping(
+            ("Alpha Holding",),
+            pl.DataFrame(
+                {
+                    "from": ["Alpha Holding"],
+                    "to": ["Core Strategy"],
+                }
+            ),
+        )
+
+        self.assertEqual(mapping.to_froms, {"Core Strategy": ["Alpha Holding"]})
 
     def test_mapping_dictionary_is_a_defensive_copy(self) -> None:
         """Mutating a returned reverse mapping cannot alter stored mappings."""
@@ -195,7 +270,7 @@ class MappingTests(unittest.TestCase):
 
         self.assertEqual(dict(mapping.to_froms), {"TECH": ["A", "B"]})
 
-    def test_one_column_mapping_source_raises_error_353(self) -> None:
+    def test_one_column_mapping_source_is_rejected(self) -> None:
         """Mapping sources must supply both from and to identifier columns."""
         with self.assertRaises(PparError):
             Mapping(("A", "B"), pl.DataFrame({"from": ["A", "B"]}))
@@ -399,8 +474,8 @@ class MappingTests(unittest.TestCase):
         self.assertIsNotNone(hedge[cols.PORTFOLIO_RETURN].item())
         self.assertGreater(abs(hedge[cols.PORTFOLIO_RETURN].item()), 1e6)
 
-    def test_attribution_cache_distinguishes_mapping_sources(self) -> None:
-        """A classification label alone cannot identify a mapped calculation."""
+    def test_attribution_requests_use_current_mapping_source_contents(self) -> None:
+        """Each attribution reflects the mapping contents supplied to that call."""
         analytics = Analytics(
             _narrow_performance(),
             _narrow_performance(),
@@ -437,7 +512,7 @@ class MappingTests(unittest.TestCase):
             {"TECH", "FIN"},
         )
 
-    def test_missing_required_mapping_source_raises_error_804(self) -> None:
+    def test_missing_required_mapping_source_is_rejected(self) -> None:
         """A requested roll-up still requires an actual mapping source."""
         analytics = Analytics(
             _narrow_performance(),

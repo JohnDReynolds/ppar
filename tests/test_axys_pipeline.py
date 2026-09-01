@@ -2,6 +2,7 @@
 
 # Python Imports
 import datetime as dt
+import inspect
 import math
 from pathlib import Path
 import tempfile
@@ -10,19 +11,18 @@ from unittest import mock
 
 # Third-Party Imports
 import polars as pl
-import yaml
 
 # Project Imports
-from ppar import Analytics
 from ppar.attribution import View
-from ppar.axys_apx import AxysData
+from ppar.axys_apx import AxysClassificationSources, AxysData, AxysPortfolio
+from ppar.axys_apx.supporting_sources import combine_classification_sources
 import ppar.schema as cols
 from ppar.errors import PparError
 from ppar.frequency import Frequency
 
 
-def _write_axys_inputs(directory: Path) -> Path:
-    """Write minimal Axys-like sources into a temporary test directory."""
+def _write_axys_inputs(directory: Path) -> dict[str, object]:
+    """Write minimal Axys-like sources and return their Python settings."""
     pl.DataFrame(
         {
             "FROM_DATE": ["2024-01-01", "2024-02-01", "2024-01-01"],
@@ -65,13 +65,6 @@ def _write_axys_inputs(directory: Path) -> Path:
             "COUNTRY_DESC": ["United States", "United Kingdom", "United States", "Canada"],
         }
     ).write_csv(directory / "security_master.csv")
-    pl.DataFrame(
-        {
-            "CODE": ["TECH", "DEF", "CASH", "OTHER"],
-            "DESCRIPTION": ["Technology", "Defensive", "Cash", "Other"],
-            "TYPE": ["SECTOR", "SECTOR", "SECTOR", "SECTOR"],
-        }
-    ).write_csv(directory / "classifications.csv")
     specification: dict[str, object] = {
         "files": {
             "portfolio_performance": {
@@ -104,17 +97,6 @@ def _write_axys_inputs(directory: Path) -> Path:
                 },
             },
         },
-        "classifications": {
-            "SectorLookup": {
-                "file_path": "classifications.csv",
-                "display_name": "Sector",
-                "identifier_column": "CODE",
-                "name_column": "DESCRIPTION",
-                "filter_column": "TYPE",
-                "filter_value": "SECTOR",
-                "mapping": "Sector",
-            },
-        },
         "mappings": {
             "Country": {
                 "classification_column": "COUNTRY_CODE",
@@ -126,9 +108,16 @@ def _write_axys_inputs(directory: Path) -> Path:
             }
         },
     }
-    specification_path = directory / "ppar.yaml"
-    specification_path.write_text(yaml.safe_dump(specification), encoding="utf-8")
-    return specification_path
+    return specification
+
+
+def _axys_data(
+    directory: Path,
+    values: dict[str, object] | None = None,
+) -> AxysData:
+    """Return an Axys loader for temporary test inputs."""
+    source_values = _write_axys_inputs(directory) if values is None else values
+    return AxysData(directory, source_values)
 
 
 def _file_definition(
@@ -156,10 +145,22 @@ def _file_columns(
 class TestAxysPipeline(unittest.TestCase):
     """Verify successful Axys loading and downstream attribution behavior."""
 
+    def test_axys_data_constructor_has_focused_source_options(self) -> None:
+        """AxysData exposes performance overrides but no lookup-file override map."""
+        self.assertEqual(
+            tuple(inspect.signature(AxysData).parameters),
+            (
+                "base_directory",
+                "values",
+                "portfolio_performance_path",
+                "security_performance_path",
+            ),
+        )
+
     def test_load_reconciles_weights_and_filters_security_sources(self) -> None:
         """Selected security sources and performance are ready for Analytics."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
 
             portfolio = data.get_portfolio("P1")
             performance = portfolio.security_performance
@@ -188,7 +189,7 @@ class TestAxysPipeline(unittest.TestCase):
         for missing_file in ("portperf.csv", "secperf.csv"):
             with self.subTest(missing_file=missing_file), tempfile.TemporaryDirectory() as tmp:
                 directory = Path(tmp)
-                specification_path = _write_axys_inputs(directory)
+                specification = _write_axys_inputs(directory)
                 portfolio_path = directory / "portperf.csv"
                 security_path = directory / "secperf.csv"
                 pl.concat(
@@ -232,7 +233,7 @@ class TestAxysPipeline(unittest.TestCase):
                 ).write_csv(missing_path)
 
                 with self.assertRaises(PparError) as context:
-                    portfolio = AxysData(specification_path).get_portfolio("P1")
+                    portfolio = _axys_data(directory, specification).get_portfolio("P1")
                     portfolio.to_analytics(frequency=Frequency.QUARTERLY)
 
                 message = str(context.exception)
@@ -243,7 +244,7 @@ class TestAxysPipeline(unittest.TestCase):
     def test_constructor_does_not_load_portfolios(self) -> None:
         """Constructing AxysData leaves portfolio loading to get_portfolio."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
 
             self.assertFalse(hasattr(data, "portfolios"))
             self.assertFalse(hasattr(data, "classification_data_sources"))
@@ -252,7 +253,7 @@ class TestAxysPipeline(unittest.TestCase):
     def test_get_portfolio_loads_requested_portfolio(self) -> None:
         """Portfolio loading returns reconciled output for a requested code."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
             portfolio = data.get_portfolio("P2")
 
             self.assertEqual(portfolio.portfolio_code, "P2")
@@ -261,7 +262,7 @@ class TestAxysPipeline(unittest.TestCase):
     def test_get_portfolios_scans_each_performance_source_once(self) -> None:
         """A portfolio and benchmark share one scan of each performance CSV."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
             with mock.patch(
                 "ppar.axys_apx.performance_sources.pl.scan_csv",
                 wraps=pl.scan_csv,
@@ -276,7 +277,7 @@ class TestAxysPipeline(unittest.TestCase):
     def test_classification_pair_combines_security_display_names(self) -> None:
         """Paired security sources cover holdings from both accounts."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
             portfolios = data.get_portfolios(("P1", "P2"))
             portfolio = portfolios["P1"]
             benchmark = portfolios["P2"]
@@ -304,7 +305,7 @@ class TestAxysPipeline(unittest.TestCase):
     def test_classification_pair_preserves_mapping_side_order(self) -> None:
         """Paired mappings remain aligned to portfolio and benchmark inputs."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
             portfolios = data.get_portfolios(("P1", "P2"))
 
             sources = data.get_classification_sources_for_pair(
@@ -329,7 +330,7 @@ class TestAxysPipeline(unittest.TestCase):
         """Performance mappings may be omitted for exact normalized headers."""
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
-            specification_path = _write_axys_inputs(directory)
+            specification = _write_axys_inputs(directory)
             pl.read_csv(directory / "portperf.csv").rename(
                 {
                     "FROM_DATE": "from_date",
@@ -350,16 +351,10 @@ class TestAxysPipeline(unittest.TestCase):
                     "CONTRIBUTION": "contribution",
                 }
             ).write_csv(directory / "secperf.csv")
-            specification = yaml.safe_load(specification_path.read_text(encoding="utf-8"))
-            assert isinstance(specification, dict)
             del _file_definition(specification, "portfolio_performance")["columns"]
             del _file_definition(specification, "security_performance")["columns"]
-            specification_path.write_text(
-                yaml.safe_dump(specification),
-                encoding="utf-8",
-            )
 
-            data = AxysData(specification_path)
+            data = _axys_data(directory, specification)
             portfolio = data.get_portfolio("P1")
 
             self.assertEqual(portfolio.portfolio_name, "P1 - Growth")
@@ -369,7 +364,7 @@ class TestAxysPipeline(unittest.TestCase):
         """Analytics shares type-first composite identity across its sources."""
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
-            specification_path = _write_axys_inputs(directory)
+            specification = _write_axys_inputs(directory)
             security_types = {"A": "csus", "B": "csus", "C": "caus", "UNUSED": "csus"}
             for file_name in ("secperf.csv", "security_master.csv"):
                 path = directory / file_name
@@ -381,10 +376,6 @@ class TestAxysPipeline(unittest.TestCase):
                 )
                 frame.write_csv(path)
 
-            specification = yaml.safe_load(
-                specification_path.read_text(encoding="utf-8")
-            )
-            assert isinstance(specification, dict)
             specification["security_id"] = {
                 "components": ["security_type", "security_symbol"],
                 "separator": "_",
@@ -403,12 +394,8 @@ class TestAxysPipeline(unittest.TestCase):
             )
             del _file_columns(specification, "security_performance")[cols.IDENTIFIER]
             del _file_columns(specification, "security_master")["identifier_column"]
-            specification_path.write_text(
-                yaml.safe_dump(specification),
-                encoding="utf-8",
-            )
 
-            data = AxysData(specification_path)
+            data = _axys_data(directory, specification)
             portfolio = data.get_portfolio("P1")
             sources = data.get_classification_sources("Security", portfolio)
 
@@ -422,10 +409,10 @@ class TestAxysPipeline(unittest.TestCase):
             )
 
     def test_explicit_performance_mapping_ignores_unconfigured_columns(self) -> None:
-        """Configured performance columns ignore unrelated legacy headings."""
+        """Configured performance columns ignore unrelated headings."""
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
-            specification_path = _write_axys_inputs(directory)
+            specification = _write_axys_inputs(directory)
             portperf_path = directory / "portperf.csv"
             (
                 pl.read_csv(portperf_path)
@@ -436,7 +423,7 @@ class TestAxysPipeline(unittest.TestCase):
                 .write_csv(portperf_path)
             )
 
-            data = AxysData(specification_path)
+            data = _axys_data(directory, specification)
             portfolio = data.get_portfolio("P1")
 
             self.assertEqual(portfolio.portfolio_name, "P1 - Growth")
@@ -446,22 +433,16 @@ class TestAxysPipeline(unittest.TestCase):
         """Security-master mappings may be omitted for normalized headers."""
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
-            specification_path = _write_axys_inputs(directory)
+            specification = _write_axys_inputs(directory)
             pl.read_csv(directory / "security_master.csv").rename(
                 {
                     "SECURITY_ID": "security_id",
                     "SECURITY_NAME": "security_name",
                 }
             ).write_csv(directory / "security_master.csv")
-            specification = yaml.safe_load(specification_path.read_text(encoding="utf-8"))
-            assert isinstance(specification, dict)
             del _file_definition(specification, "security_master")["columns"]
-            specification_path.write_text(
-                yaml.safe_dump(specification),
-                encoding="utf-8",
-            )
 
-            data = AxysData(specification_path)
+            data = _axys_data(directory, specification)
             portfolio = data.get_portfolio("P1")
             security_sources = data.get_classification_sources("Security", portfolio)
             sector_sources = data.get_classification_sources("Sector", portfolio)
@@ -478,17 +459,11 @@ class TestAxysPipeline(unittest.TestCase):
         """Analytics resolves an omitted security-master path conventionally."""
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
-            specification_path = _write_axys_inputs(directory)
+            specification = _write_axys_inputs(directory)
             (directory / "security_master.csv").rename(directory / "secmast.csv")
-            specification = yaml.safe_load(specification_path.read_text(encoding="utf-8"))
-            assert isinstance(specification, dict)
             del _file_definition(specification, "security_master")["path"]
-            specification_path.write_text(
-                yaml.safe_dump(specification),
-                encoding="utf-8",
-            )
 
-            data = AxysData(specification_path)
+            data = _axys_data(directory, specification)
             portfolio = data.get_portfolio("P1")
             sources = data.get_classification_sources("Security", portfolio)
 
@@ -498,7 +473,7 @@ class TestAxysPipeline(unittest.TestCase):
         """Configured security-master columns ignore unrelated headings."""
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
-            specification_path = _write_axys_inputs(directory)
+            specification = _write_axys_inputs(directory)
             security_master_path = directory / "security_master.csv"
             (
                 pl.read_csv(security_master_path)
@@ -506,7 +481,7 @@ class TestAxysPipeline(unittest.TestCase):
                 .write_csv(security_master_path)
             )
 
-            data = AxysData(specification_path)
+            data = _axys_data(directory, specification)
             portfolio = data.get_portfolio("P1")
             sources = data.get_classification_sources("Security", portfolio)
 
@@ -516,27 +491,28 @@ class TestAxysPipeline(unittest.TestCase):
             )
 
     def test_date_filters_apply_before_returning_portfolio_performance(self) -> None:
-        """Axys date arguments restrict the periods retained for a portfolio."""
+        """Axys lower bounds before, at, and inside a period use its thru date."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
-            portfolio = data.get_portfolio(
-                "P1",
-                from_date=dt.date(2024, 2, 1),
-                thru_date=dt.date(2024, 2, 29),
-            )
-
-            performance = portfolio.security_performance
-
-            self.assertEqual(performance.height, 2)
-            self.assertEqual(
-                performance[cols.THRU_DATE].unique().to_list(),
-                [dt.date(2024, 2, 29)],
-            )
+            data = _axys_data(Path(temp_dir))
+            for from_date in (
+                dt.date(2023, 12, 31),
+                dt.date(2024, 1, 31),
+                dt.date(2024, 1, 15),
+            ):
+                with self.subTest(from_date=from_date):
+                    portfolio = data.get_portfolio("P1", from_date=from_date)
+                    self.assertEqual(
+                        portfolio.security_performance[cols.THRU_DATE]
+                        .unique()
+                        .sort()
+                        .to_list(),
+                        [dt.date(2024, 1, 31), dt.date(2024, 2, 29)],
+                    )
 
     def test_get_portfolio_loads_one_requested_portfolio(self) -> None:
         """Lazy portfolio loading returns one reconciled portfolio by code."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
 
             portfolio = data.get_portfolio("P1")
 
@@ -547,7 +523,7 @@ class TestAxysPipeline(unittest.TestCase):
     def test_get_portfolio_applies_date_filters(self) -> None:
         """Lazy portfolio loading accepts its own date window."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
 
             portfolio = data.get_portfolio(
                 "P1",
@@ -561,58 +537,97 @@ class TestAxysPipeline(unittest.TestCase):
                 [dt.date(2024, 2, 29)],
             )
 
-    def test_get_portfolio_uses_configured_selection(self) -> None:
-        """Root settings supply omitted date filters and classification."""
+    def test_latest_portfolio_name_is_independent_of_source_row_order(self) -> None:
+        """A chronological rename determines portfolio and report display names."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            specification_path = _write_axys_inputs(Path(temp_dir))
-            specification = yaml.safe_load(specification_path.read_text(encoding="utf-8"))
-            assert isinstance(specification, dict)
-            specification.update(
-                from_date=dt.date(2024, 2, 1),
-                thru_date=dt.date(2024, 2, 29),
-                classification="Country",
+            directory = Path(temp_dir)
+            specification = _write_axys_inputs(directory)
+            portfolio_path = directory / "portperf.csv"
+            source = pl.read_csv(portfolio_path).with_columns(
+                pl.when(
+                    (pl.col("PORTFOLIO_CODE") == "P1")
+                    & (pl.col("THRU_DATE") == "2024-01-31")
+                )
+                .then(pl.lit("Growth Legacy"))
+                .when(
+                    (pl.col("PORTFOLIO_CODE") == "P1")
+                    & (pl.col("THRU_DATE") == "2024-02-29")
+                )
+                .then(pl.lit("Growth Current"))
+                .otherwise(pl.col("PORTFOLIO_NAME"))
+                .alias("PORTFOLIO_NAME")
             )
-            specification_path.write_text(
-                yaml.safe_dump(specification),
-                encoding="utf-8",
-            )
-            data = AxysData(specification_path)
+            loaded_outputs: list[pl.DataFrame] = []
 
-            portfolio = data.get_portfolio("P1")
+            for reversed_rows, source_rows in (
+                (False, source),
+                (True, source.reverse()),
+            ):
+                with self.subTest(reversed=reversed_rows):
+                    source_rows.write_csv(portfolio_path)
+                    data = _axys_data(directory, specification)
+                    portfolio = data.get_portfolio("P1")
+                    attribution = portfolio.to_analytics().attribution_for(
+                        data.get_classification_sources("Sector", portfolio)
+                    )
+                    output = attribution.to_polars(View.OVERALL_ATTRIBUTION)
+                    html = attribution.to_html(View.OVERALL_ATTRIBUTION)
 
-            sources = portfolio.required_classification_sources
-            self.assertEqual(portfolio.security_performance.height, 2)
-            self.assertEqual(sources.classification_name, "Country")
-            self.assertEqual(
-                sources.classification_data_source[cols.NAME].sort().to_list(),
-                ["Canada", "United Kingdom", "United States"],
-            )
+                    self.assertEqual(portfolio.portfolio_name, "P1 - Growth Current")
+                    self.assertIn("P1 - Growth Current", html)
+                    loaded_outputs.append(output)
 
-    def test_get_portfolio_arguments_override_configured_selection(self) -> None:
-        """Explicit arguments override the configured root selection."""
+            self.assertTrue(loaded_outputs[0].equals(loaded_outputs[1]))
+
+    def test_portfolio_name_uses_latest_retained_period_for_each_code(self) -> None:
+        """Date filtering and account selection independently determine names."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            specification_path = _write_axys_inputs(Path(temp_dir))
-            specification = yaml.safe_load(specification_path.read_text(encoding="utf-8"))
-            assert isinstance(specification, dict)
-            specification.update(
-                from_date="2024-02-01",
-                thru_date="2024-02-29",
-                classification="Country",
+            directory = Path(temp_dir)
+            specification = _write_axys_inputs(directory)
+            portfolio_path = directory / "portperf.csv"
+            source = pl.read_csv(portfolio_path).with_columns(
+                pl.when(
+                    (pl.col("PORTFOLIO_CODE") == "P1")
+                    & (pl.col("THRU_DATE") == "2024-01-31")
+                )
+                .then(pl.lit("Growth Legacy"))
+                .when(
+                    (pl.col("PORTFOLIO_CODE") == "P1")
+                    & (pl.col("THRU_DATE") == "2024-02-29")
+                )
+                .then(pl.lit("Growth Current"))
+                .otherwise(pl.col("PORTFOLIO_NAME"))
+                .alias("PORTFOLIO_NAME")
             )
-            specification_path.write_text(
-                yaml.safe_dump(specification),
-                encoding="utf-8",
+            source.reverse().write_csv(portfolio_path)
+            data = _axys_data(directory, specification)
+
+            full_portfolios = data.get_portfolios(("P1", "P2"))
+            january_portfolio = data.get_portfolio(
+                "P1",
+                thru_date=dt.date(2024, 1, 31),
             )
-            data = AxysData(specification_path)
+
+            self.assertEqual(full_portfolios["P1"].portfolio_name, "P1 - Growth Current")
+            self.assertEqual(full_portfolios["P2"].portfolio_name, "P2 - Income")
+            self.assertEqual(january_portfolio.portfolio_name, "P1 - Growth Legacy")
+
+    def test_portfolio_dates_and_classification_sources_are_selected_explicitly(
+        self,
+    ) -> None:
+        """Date filtering and classification loading remain separate choices."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            specification = _write_axys_inputs(directory)
+            data = _axys_data(directory, specification)
 
             portfolio = data.get_portfolio(
                 "P1",
                 from_date=dt.date(2024, 1, 1),
                 thru_date=dt.date(2024, 1, 31),
-                classification_name="Sector",
             )
 
-            sources = portfolio.required_classification_sources
+            sources = data.get_classification_sources("Sector", portfolio)
             self.assertEqual(portfolio.security_performance.height, 2)
             self.assertEqual(
                 portfolio.security_performance[cols.THRU_DATE].unique().to_list(),
@@ -623,11 +638,13 @@ class TestAxysPipeline(unittest.TestCase):
     def test_axys_sources_roll_up_through_analytics_to_sector_attribution(self) -> None:
         """Generated classification and mapping sources drive public attribution."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
-            portfolio = data.get_portfolio("P1", classification_name="Sector")
+            data = _axys_data(Path(temp_dir))
+            portfolio = data.get_portfolio("P1")
 
             analytics = portfolio.to_analytics()
-            attribution = analytics.attribution()
+            attribution = analytics.attribution_for(
+                data.get_classification_sources("Sector", portfolio)
+            )
             detail = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
 
             self.assertEqual(
@@ -637,14 +654,14 @@ class TestAxysPipeline(unittest.TestCase):
             self.assertTrue((detail[cols.ACTIVE_RETURN] == 0.0).all())
             self.assertTrue((detail[cols.TOTAL_EFFECT_SIMPLE] == 0.0).all())
 
-    def test_get_portfolio_can_include_requested_classification_sources(self) -> None:
-        """Lazy portfolio loading can attach one requested classification."""
+    def test_get_classification_sources_loads_requested_classification(self) -> None:
+        """Classification loading is explicit and separate from portfolio loading."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
 
-            portfolio = data.get_portfolio("P1", classification_name="Sector")
+            portfolio = data.get_portfolio("P1")
 
-            sources = portfolio.required_classification_sources
+            sources = data.get_classification_sources("Sector", portfolio)
             self.assertEqual(sources.classification_name, "Sector")
             self.assertIsNotNone(sources.mapping_data_sources)
             self.assertEqual(
@@ -652,112 +669,124 @@ class TestAxysPipeline(unittest.TestCase):
                 ["Cash", "Defensive", "Other", "Technology"],
             )
 
-    def test_portfolio_convenience_methods_build_attribution(self) -> None:
-        """Axys portfolio bundles can initialize Analytics and attribution."""
+    def test_portfolio_only_attribution_names_its_sources_explicitly(self) -> None:
+        """Portfolio-only Axys attribution identifies its classification source."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
-            portfolio = data.get_portfolio("P1", classification_name="Sector")
+            data = _axys_data(Path(temp_dir))
+            portfolio = data.get_portfolio("P1")
 
             analytics = portfolio.to_analytics()
-            attribution = analytics.attribution()
+            attribution = analytics.attribution_for(
+                data.get_classification_sources("Sector", portfolio)
+            )
             detail = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
 
-            self.assertEqual(analytics.classification_names(), ("Security", "Security"))
             self.assertEqual(
                 set(detail[cols.CLASSIFICATION_NAME].to_list()),
                 {"Defensive", "Technology"},
             )
 
-    def test_portfolio_convenience_method_accepts_axys_benchmark(self) -> None:
-        """An Axys benchmark portfolio can supply benchmark data and mappings."""
+    def test_portfolio_and_benchmark_attribution_names_paired_sources(self) -> None:
+        """Axys benchmark attribution identifies its paired sources explicitly."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
-            portfolio = data.get_portfolio("P1", classification_name="Country")
-            benchmark = data.get_portfolio("P2", classification_name="Country")
+            data = _axys_data(Path(temp_dir))
+            portfolio = data.get_portfolio("P1")
+            benchmark = data.get_portfolio("P2")
 
             analytics = portfolio.to_analytics(benchmark)
-            attribution = analytics.attribution()
+            attribution = analytics.attribution_for(
+                data.get_classification_sources_for_pair(
+                    "Country",
+                    portfolio,
+                    benchmark,
+                )
+            )
             detail = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
 
-            self.assertEqual(analytics.classification_names(), ("Security", "Security"))
             self.assertEqual(
                 set(detail[cols.CLASSIFICATION_NAME].to_list()),
                 {"United Kingdom", "United States"},
             )
 
-    def test_portfolio_convenience_method_rejects_different_classifications(self) -> None:
-        """Default Axys attribution requires matching portfolio classifications."""
+    def test_one_portfolio_pair_can_produce_multiple_explicit_classifications(
+        self,
+    ) -> None:
+        """One loaded pair supports independently selected attribution sources."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
-            portfolio = data.get_portfolio("P1", classification_name="Country")
-            benchmark = data.get_portfolio("P2", classification_name="Sector")
+            data = _axys_data(Path(temp_dir))
+            portfolio = data.get_portfolio("P1")
+            benchmark = data.get_portfolio("P2")
+            analytics = portfolio.to_analytics(benchmark)
 
-            with self.assertRaises(PparError):
-                portfolio.to_analytics(benchmark)
+            country = analytics.attribution_for(
+                data.get_classification_sources_for_pair(
+                    "Country", portfolio, benchmark
+                )
+            )
+            sector = analytics.attribution_for(
+                data.get_classification_sources_for_pair(
+                    "Sector", portfolio, benchmark
+                )
+            )
+
+            country_names = set(
+                country.to_polars(View.SUBPERIOD_ATTRIBUTION)[
+                    cols.CLASSIFICATION_NAME
+                ].to_list()
+            )
+            sector_names = set(
+                sector.to_polars(View.SUBPERIOD_ATTRIBUTION)[
+                    cols.CLASSIFICATION_NAME
+                ].to_list()
+            )
+            self.assertEqual(country_names, {"United Kingdom", "United States"})
+            self.assertEqual(sector_names, {"Cash", "Defensive", "Technology"})
 
     def test_portfolio_convenience_method_requires_overlapping_periods(self) -> None:
         """Analytics raises its normal error when Axys portfolios do not overlap."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
             portfolio = data.get_portfolio(
                 "P1",
                 from_date=dt.date(2024, 2, 1),
                 thru_date=dt.date(2024, 2, 29),
-                classification_name="Country",
             )
             benchmark = data.get_portfolio(
                 "P2",
                 from_date=dt.date(2024, 1, 1),
                 thru_date=dt.date(2024, 1, 31),
-                classification_name="Country",
             )
 
             with self.assertRaises(PparError):
                 portfolio.to_analytics(benchmark)
 
-    def test_required_classification_sources_requires_attached_sources(self) -> None:
-        """Required classification access fails when none were requested."""
+    def test_portfolio_analytics_options_are_keyword_only(self) -> None:
+        """Only the optional benchmark remains positional in the convenience API."""
+        parameters = inspect.signature(AxysPortfolio.to_analytics).parameters
+
+        self.assertEqual(
+            parameters["benchmark_data_source"].kind,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+        for name in tuple(parameters)[2:]:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    parameters[name].kind,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+
+    def test_portfolio_does_not_carry_hidden_classification_sources(self) -> None:
+        """Reconciled portfolios contain performance rather than report choices."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
             portfolio = data.get_portfolio("P1")
 
-            with self.assertRaises(PparError) as context:
-                _ = portfolio.required_classification_sources
-
-            self.assertIn("classification", str(context.exception).lower())
-
-    def test_source_path_overrides_replace_configured_defaults(self) -> None:
-        """Constructor overrides can replace configured classification files."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            directory = Path(temp_dir)
-            specification_path = _write_axys_inputs(directory)
-            pl.DataFrame(
-                {
-                    "CODE": ["TECH", "DEF", "CASH"],
-                    "DESCRIPTION": ["Growth Sector", "Defensive Sector", "Cash"],
-                    "TYPE": ["SECTOR", "SECTOR", "SECTOR"],
-                }
-            ).write_csv(directory / "alternate_classifications.csv")
-            data = AxysData(
-                specification_path,
-                source_path_overrides={
-                    "SectorLookup": directory / "alternate_classifications.csv"
-                },
-            )
-            portfolio = data.get_portfolio("P1")
-
-            sources = data.get_classification_sources("SectorLookup", portfolio)
-
-            self.assertEqual(sources.classification_name, "Sector")
-            self.assertEqual(
-                sources.classification_data_source[cols.NAME].sort().to_list(),
-                ["Cash", "Defensive Sector", "Growth Sector"],
-            )
+            self.assertFalse(hasattr(portfolio, "classification_sources"))
 
     def test_security_classification_sources_do_not_include_mapping(self) -> None:
         """Security-grain Axys classifications do not need mapping sources."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
             portfolio = data.get_portfolio("P1")
 
             sources = data.get_classification_sources("Security", portfolio)
@@ -772,7 +801,7 @@ class TestAxysPipeline(unittest.TestCase):
     def test_security_master_backed_classification_uses_mapping_column(self) -> None:
         """Security-master classifications can inherit path and identifier fields."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
+            data = _axys_data(Path(temp_dir))
             portfolio = data.get_portfolio("P1")
 
             sources = data.get_classification_sources("Sector", portfolio)
@@ -787,34 +816,97 @@ class TestAxysPipeline(unittest.TestCase):
                 ["Cash", "Defensive", "Other", "Technology"],
             )
 
-    def test_sector_and_sector_lookup_generate_same_attribution(self) -> None:
-        """Security-master and lookup-table sector sources produce identical output."""
+    def test_axys_sources_accept_exact_duplicate_pairs(self) -> None:
+        """Repeated identical security-master rows do not make sources ambiguous."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            data = AxysData(_write_axys_inputs(Path(temp_dir)))
-            portfolio = data.get_portfolio("P1")
-            analytics = Analytics(
-                portfolio.security_performance,
-                portfolio_name=portfolio.portfolio_name,
-                portfolio_classification_name="Security",
+            directory = Path(temp_dir)
+            specification = _write_axys_inputs(directory)
+            security_master_path = directory / "security_master.csv"
+            security_master = pl.read_csv(security_master_path)
+            duplicated = pl.concat((security_master, security_master.head(1)))
+            for source_rows in (duplicated, duplicated.reverse()):
+                with self.subTest(reversed=source_rows["SECURITY_ID"].item(0) != "A"):
+                    source_rows.write_csv(security_master_path)
+                    data = _axys_data(directory, specification)
+                    portfolio = data.get_portfolio("P1")
+                    sources = data.get_classification_sources("Security", portfolio)
+
+                    self.assertEqual(
+                        sources.classification_data_source[cols.IDENTIFIER]
+                        .sort()
+                        .to_list(),
+                        ["A", "B"],
+                    )
+
+    def test_axys_classification_rejects_conflicting_display_names(self) -> None:
+        """One grouping code cannot have two security-master display names."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            specification = _write_axys_inputs(directory)
+            security_master_path = directory / "security_master.csv"
+            security_master = pl.read_csv(security_master_path)
+            conflicting = security_master.head(1).with_columns(
+                pl.lit("D").alias("SECURITY_ID"),
+                pl.lit("Technology Alternate").alias("SECTOR_DESC"),
             )
+            conflict_rows = pl.concat((security_master, conflicting))
+            for source_rows in (conflict_rows, conflict_rows.reverse()):
+                with self.subTest(first_id=source_rows["SECURITY_ID"].item(0)):
+                    source_rows.write_csv(security_master_path)
+                    data = _axys_data(directory, specification)
+                    portfolio = data.get_portfolio("P1")
 
-            sector_sources = data.get_classification_sources("Sector", portfolio)
-            lookup_sources = data.get_classification_sources("SectorLookup", portfolio)
-            sector_detail = analytics.attribution(
-                sector_sources.classification_name,
-                sector_sources.classification_data_source,
-                sector_sources.mapping_data_sources,
-            ).to_polars(View.SUBPERIOD_ATTRIBUTION)
-            lookup_detail = analytics.attribution(
-                lookup_sources.classification_name,
-                lookup_sources.classification_data_source,
-                lookup_sources.mapping_data_sources,
-            ).to_polars(View.SUBPERIOD_ATTRIBUTION)
+                    with self.assertRaisesRegex(PparError, "conflicting values.*TECH"):
+                        data.get_classification_sources("Sector", portfolio)
 
-            self.assertEqual(sector_sources.classification_name, "Sector")
-            self.assertEqual(lookup_sources.classification_name, "Sector")
-            self.assertTrue(sector_detail.equals(lookup_detail))
+    def test_axys_mapping_rejects_conflicting_destinations(self) -> None:
+        """One security cannot map to two grouping codes in the same source."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            specification = _write_axys_inputs(directory)
+            security_master_path = directory / "security_master.csv"
+            security_master = pl.read_csv(security_master_path)
+            conflicting = security_master.head(1).with_columns(
+                pl.lit("DEF").alias("SECTOR_CODE"),
+                pl.lit("Defensive").alias("SECTOR_DESC"),
+            )
+            conflict_rows = pl.concat((security_master, conflicting))
+            for source_rows in (conflict_rows, conflict_rows.reverse()):
+                with self.subTest(first_id=source_rows["SECURITY_ID"].item(0)):
+                    source_rows.write_csv(security_master_path)
+                    data = _axys_data(directory, specification)
+                    portfolio = data.get_portfolio("P1")
 
+                    with self.assertRaisesRegex(PparError, "conflicting values.*A"):
+                        data.get_classification_sources("Sector", portfolio)
+
+    def test_combined_axys_sources_reject_conflicting_names_regardless_of_order(
+        self,
+    ) -> None:
+        """Portfolio/benchmark source order cannot select a grouping display name."""
+        first = AxysClassificationSources(
+            "Sector",
+            pl.DataFrame({cols.IDENTIFIER: ["TECH"], cols.NAME: ["Technology"]}),
+            None,
+        )
+        second = AxysClassificationSources(
+            "Sector",
+            pl.DataFrame(
+                {cols.IDENTIFIER: ["TECH"], cols.NAME: ["Technology Alternate"]}
+            ),
+            None,
+        )
+
+        exact_duplicates = combine_classification_sources(first, first)
+        self.assertEqual(exact_duplicates.classification_data_source.height, 1)
+
+        for portfolio_sources, benchmark_sources in ((first, second), (second, first)):
+            with self.subTest(portfolio_name=portfolio_sources.classification_name):
+                with self.assertRaisesRegex(PparError, "conflicting values.*TECH"):
+                    combine_classification_sources(
+                        portfolio_sources,
+                        benchmark_sources,
+                    )
 
 if __name__ == "__main__":
     unittest.main()

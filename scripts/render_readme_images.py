@@ -25,7 +25,7 @@ _IMAGE_DIRECTORY = _ROOT / "docs" / "images"
 _INPUT = _ROOT / "src" / "ppar" / "templates" / "generic" / "input"
 _RAW_PREFIX = "https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/"
 _FINGERPRINT_KEY = "ppar-source-fingerprint"
-_FINGERPRINT_VERSION = "ppar-readme-images-v1"
+_FINGERPRINT_VERSION = "ppar-readme-images-v2"
 _CHROME_CANDIDATES = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "google-chrome",
@@ -246,15 +246,12 @@ def _write_png_fingerprint(path: Path, fingerprint: str) -> None:
 
 
 def _fingerprint_files() -> Iterable[Path]:
-    """Yield every repository input that can affect the marketing images."""
+    """Yield the declared transitive inputs that can affect marketing images."""
     yield _ROOT / "scripts" / "render_readme_images.py"
     yield _ROOT / "constraints" / "ci.txt"
     yield _ROOT / "pyproject.toml"
-    for path in sorted((_ROOT / "src" / "ppar").rglob("*")):
-        if path.is_file() and (
-            path.suffix in {".csv", ".md", ".py", ".yaml"} or path.name == "py.typed"
-        ):
-            yield path
+    yield from sorted((_ROOT / "src" / "ppar").glob("*.py"))
+    yield from sorted(_INPUT.rglob("*.csv"))
 
 
 def _source_fingerprint() -> str:

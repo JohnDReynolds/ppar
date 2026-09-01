@@ -1,8 +1,4 @@
-"""Utility functions, type aliases, and constants used across the package.
-
-Public helpers in this module support package users that need the same date,
-path, tolerance, data-source, and linking semantics used internally.
-"""
+"""Provide internal types and helpers shared across ppar modules."""
 
 # Python Imports
 import datetime as dt
@@ -18,35 +14,7 @@ import polars as pl
 # Project Imports
 from ppar.errors import PparError
 
-__all__ = [
-    "PathLike",
-    "AllDataSources",
-    "ClassificationDataSource",
-    "MappingDataSource",
-    "PerformanceDataSource",
-    "DATE_FORMAT_STRING",
-    "DEFAULT_ANNUAL_MINIMUM_ACCEPTABLE_RETURN",
-    "DEFAULT_ANNUAL_RISK_FREE_RATE",
-    "DEFAULT_CONFIDENCE_LEVEL",
-    "DEFAULT_CURRENCY_SYMBOL",
-    "DEFAULT_PORTFOLIO_VALUE",
-    "ENCODING",
-    "Tolerance",
-    "are_near",
-    "carino_linking_coefficient",
-    "convert_to_date",
-    "date_str",
-    "file_basename_without_extension",
-    "file_path_error",
-    "file_path_exists",
-    "normalize_optional_string",
-    "load_datasource",
-    "logarithmic_linking_coefficients",
-    "logarithmic_linking_coefficient_series",
-    "logarithmic_smoothing_coefficients",
-    "near_zero",
-    "two_item_tuple",
-]
+__all__: list[str] = []
 
 # Types for type-checking.
 PathLike: TypeAlias = str | Path
@@ -68,14 +36,18 @@ _T = TypeVar("_T")
 
 
 def file_basename_without_extension(file_path: PathLike) -> str:
-    """Return a file name without its directory or first extension."""
-    return Path(file_path).name.split(".")[0]
+    """Return a file name without its directory or final extension."""
+    return Path(file_path).stem
 
 
 def file_path_error(file_path: PathLike) -> str:
     """Return an actionable file-path validation message."""
     is_blank_path = isinstance(file_path, str) and not file_path.strip()
-    return "Missing data source." if is_blank_path else f"File does not exist: {file_path}"
+    return (
+        "Data source path must not be blank."
+        if is_blank_path
+        else f"File does not exist: {file_path}"
+    )
 
 
 def file_path_exists(file_path: PathLike) -> bool:
@@ -214,18 +186,52 @@ def date_str(date: dt.date) -> str:
     return date.strftime(DATE_FORMAT_STRING)
 
 
-def normalize_optional_string(value: str | None) -> str | None:
-    """Normalize optional public string arguments to ``None``.
+def normalize_optional_string(
+    value: str | None,
+    parameter_name: str = "value",
+) -> str | None:
+    """Validate an optional public string without treating blank as omission.
 
     Args:
         value: Optional string value supplied by the caller.
+        parameter_name: Argument name used in validation details.
 
     Returns:
-        ``None`` for omitted or blank strings; otherwise, ``value``.
+        ``None`` when omitted; otherwise, the supplied nonblank value.
+
+    Raises:
+        PparError: If a supplied string is blank.
     """
-    if value is None or not value.strip():
+    if value is None:
         return None
+    if not value.strip():
+        raise PparError(
+            f"{parameter_name} must not be blank; use None to omit it.",
+            context={"parameter": parameter_name, "value": value},
+        )
     return value
+
+
+def invalid_identity_rows(
+    frame: pl.DataFrame,
+    column_name: str,
+) -> pl.DataFrame:
+    """Return rows whose textual identity is null, blank, or padded.
+
+    Args:
+        frame: Source rows containing a string identity column.
+        column_name: Identity column to validate.
+
+    Returns:
+        Invalid rows in their original order.
+    """
+    value = pl.col(column_name)
+    stripped_value = value.str.strip_chars()
+    return frame.filter(
+        value.is_null()
+        | stripped_value.eq("")
+        | value.ne(stripped_value)
+    )
 
 
 def load_datasource(
@@ -233,6 +239,8 @@ def load_datasource(
     column_names: Sequence[str],
     needed_items: Sequence[str],
     error_message: str,
+    source_description: str = "Data source",
+    identity_column_indices: Sequence[int] = (),
 ) -> pl.DataFrame:
     """Load a two-column data source into a normalized Polars DataFrame.
 
@@ -241,31 +249,42 @@ def load_datasource(
         column_names: The two output column names to assign to the DataFrame.
         needed_items: The allowed values for the first output column. Rows with
             other first-column values are filtered out.
-        error_message: The error message to use if the loaded source does not
-            contain exactly two columns.
+        error_message: Message used when the source does not contain two columns.
+        source_description: Short source description used in conflict errors.
+        identity_column_indices: Zero-based columns containing identities that
+            must be validated before unused source rows are filtered.
 
     Returns:
-        A two-column Polars DataFrame with normalized column names, duplicate
-        first-column values removed, values cast to strings for non-file inputs,
-        and rows filtered to ``needed_items``.
+        A two-column Polars DataFrame with normalized column names, exact duplicate
+        pairs removed, values cast to strings for non-file inputs, and rows filtered
+        to ``needed_items``.
 
     Raises:
         PparError: If ``data_source`` is a file path that does not point to an
-            existing file, or if the loaded source does not contain exactly two
-            columns.
+            existing file, if the loaded source does not contain exactly two
+            columns, if a selected identity is invalid, or if one identifier
+            has conflicting values.
     """
     # Get the 2-column dataframe.
     is_file_source = isinstance(data_source, str | Path)
     if isinstance(data_source, str | Path):
+        if isinstance(data_source, str) and not data_source.strip():
+            raise PparError(file_path_error(data_source))
         data_source = Path(data_source)
         # Assert that the data file path exists.
         if not file_path_exists(data_source):
             raise PparError(file_path_error(data_source))
-        # Load the data_source in lazy-mode.  infer_schema=False will force both columns to be the
-        # default strings (Utf8).  Then filter on needed_items.
+        # ``infer_schema=False`` preserves identity text such as leading zeroes.
         lf = pl.scan_csv(data_source, has_header=False, infer_schema=False)
         column0_name = list(lf.collect_schema().keys())[0]
-        df = lf.filter(pl.col(column0_name).is_in(needed_items)).collect()
+        # Mapping identities must be validated before filtering so a padded source
+        # cannot disappear and silently become a self-mapping. Other two-column
+        # sources retain the inexpensive lazy filter.
+        df = (
+            lf.collect()
+            if identity_column_indices
+            else lf.filter(pl.col(column0_name).is_in(needed_items)).collect()
+        )
     elif isinstance(data_source, pl.DataFrame):
         df = data_source.clone()
     else:
@@ -278,20 +297,79 @@ def load_datasource(
     # Give the columns consistent names.
     df.columns = column_names
 
-    # Remove duplicates.
-    df = df.unique(subset=[df.columns[0]], keep="last")
-
     # Cast to strings and filter on needed_items.  Note that this was done above in pl.scan_scv
     if not is_file_source:
         # All identifiers need to be strings for classifications, mappings, performances, etc.
         for column_name in df.columns:
             if not isinstance(df.schema[column_name], pl.String):
                 df = df.with_columns(df[column_name].cast(pl.String))
-        # Filter on only the needed_items.
+        # Filter on only the needed_items after any identity validation below.
+    if identity_column_indices:
+        for column_index in identity_column_indices:
+            column_name = df.columns[column_index]
+            invalid_rows = invalid_identity_rows(df, column_name)
+            if invalid_rows.is_empty():
+                continue
+            affected_rows = invalid_rows.head(10).to_dicts()
+            raise PparError(
+                f"{source_description} identity field {column_name!r} must be "
+                "non-null, nonblank, and free of surrounding whitespace. "
+                f"Affected rows: {affected_rows}",
+                context={
+                    "boundary": source_description,
+                    "field": column_name,
+                    "invalid_rows": affected_rows,
+                },
+            )
+        df = df.filter(pl.col(df.columns[0]).is_in(needed_items))
+    elif not is_file_source:
         df = df.filter(pl.col(df.columns[0]).is_in(needed_items))
 
-    # Return the dataframe.
-    return df
+    return _deduplicate_identifier_pairs(df, source_description)
+
+
+def _deduplicate_identifier_pairs(
+    frame: pl.DataFrame,
+    source_description: str,
+) -> pl.DataFrame:
+    """Return deterministic pairs after rejecting conflicting identifier values.
+
+    Exact duplicate pairs are harmless and collapse to one row. An identifier
+    associated with more than one value is ambiguous and therefore rejected rather
+    than resolved according to physical row order.
+
+    Args:
+        frame: Two-column identifier/value pairs.
+        source_description: Short source description used in validation errors.
+
+    Returns:
+        Unique pairs sorted by identifier and value.
+
+    Raises:
+        PparError: If one identifier is associated with conflicting values.
+    """
+    identifier_column, value_column = frame.columns
+    conflicts = (
+        frame.group_by(identifier_column)
+        .agg(
+            pl.col(value_column).unique().sort().alias(value_column),
+            pl.col(value_column).n_unique().alias("_value_count"),
+        )
+        .filter(pl.col("_value_count") > 1)
+        .drop("_value_count")
+        .sort(identifier_column)
+    )
+    if not conflicts.is_empty():
+        sample_rows = conflicts.head(10).to_dicts()
+        raise PparError(
+            f"{source_description} has conflicting values for the same identifier: "
+            f"{sample_rows}",
+            context={
+                "boundary": source_description,
+                "conflicts": sample_rows,
+            },
+        )
+    return frame.unique().sort([identifier_column, value_column])
 
 
 def logarithmic_linking_coefficients(overall_return: float, returns: pl.Series) -> pl.Series:

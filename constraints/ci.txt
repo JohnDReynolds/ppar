@@ -37,11 +37,9 @@ pyproject-hooks==1.2.0
 pyright==1.1.409
 pytest==9.0.3
 python-dateutil==2.9.0.post0
-pyyaml==6.0.3
 seaborn==0.13.2
 setuptools==82.0.1
 six==1.17.0
 twine==6.2.0
-types-pyyaml==6.0.12.20260518
 types-seaborn==0.13.2.20260518
 typing-extensions==4.15.0

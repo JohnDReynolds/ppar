@@ -15,7 +15,7 @@ import ppar.schema as cols
 from ppar.errors import PparError
 from ppar.frequency import Frequency
 from ppar.performance import Performance
-from tests import test_utilities as test_util
+from tests import helpers as test_util
 
 
 class TestCalculationInvariants(unittest.TestCase):

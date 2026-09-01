@@ -67,8 +67,8 @@ class Performance:
                 a CSV input, the file basename is used.
             classification_name: Name of the represented classification, such
                 as ``"Security"`` or ``"Economic Sector"``.
-            from_date: Earliest from date to keep.
-            thru_date: Latest thru date to keep.
+            from_date: Earliest period ``thru_date`` to retain.
+            thru_date: Latest period ``thru_date`` to retain.
 
         Data Parameters:
             Input must use one row per period and identifier with these columns::
@@ -86,8 +86,11 @@ class Performance:
                 duplicated, dates are invalid or overlapping, or period
                 weights do not sum to ``1.0``.
         """
-        name = util.normalize_optional_string(name)
-        self.classification_name = util.normalize_optional_string(classification_name)
+        name = util.normalize_optional_string(name, "name")
+        self.classification_name = util.normalize_optional_string(
+            classification_name,
+            "classification_name",
+        )
         from_date = util.convert_to_date(from_date)
         thru_date = util.convert_to_date(thru_date)
         self.subperiods_have_been_consolidated = False
@@ -197,7 +200,10 @@ class Performance:
                 differ, the date range differs from the expected range, or a
                 required classification does not match.
         """
-        common_classification_name = util.normalize_optional_string(common_classification_name)
+        common_classification_name = util.normalize_optional_string(
+            common_classification_name,
+            "common_classification_name",
+        )
         portfolio, benchmark = util.two_item_tuple(
             performances, "Performance.audit_performances performances"
         )
@@ -355,6 +361,25 @@ class Performance:
                         f"{self.error_message_context}: Cannot convert the column "
                         f"'{column_name}' to a {dtype}, {str(exception)[:1000]}",
                     ) from exception
+        invalid_identifiers = util.invalid_identity_rows(
+            self.narrow_df,
+            cols.IDENTIFIER,
+        )
+        if not invalid_identifiers.is_empty():
+            affected_rows = invalid_identifiers.select(
+                *cols.DATE_COLUMNS,
+                cols.IDENTIFIER,
+            ).head(10).to_dicts()
+            raise PparError(
+                f"Identity field {cols.IDENTIFIER!r} {self.error_message_context} "
+                "must be non-null, nonblank, and free of surrounding whitespace. "
+                f"Affected rows: {affected_rows}",
+                context={
+                    "boundary": "Performance",
+                    "field": cols.IDENTIFIER,
+                    "invalid_rows": affected_rows,
+                },
+            )
         float_columns = dtypes[pl.Float64]
         if self.narrow_df.select(
             pl.any_horizontal(pl.all().is_null().any())
@@ -492,12 +517,18 @@ class Performance:
             PparError: If a supplied file path does not exist.
         """
         if isinstance(data_source, str | Path):
+            if isinstance(data_source, str) and not data_source.strip():
+                raise PparError(util.file_path_error(data_source))
             path = Path(data_source)
             if not util.file_path_exists(path):
                 raise PparError(util.file_path_error(path))
             if name is None:
                 name = util.file_basename_without_extension(path)
-            lazy_frame = pl.scan_csv(source=path, try_parse_dates=True)
+            lazy_frame = pl.scan_csv(
+                source=path,
+                try_parse_dates=True,
+                schema_overrides={cols.IDENTIFIER: pl.String},
+            )
         elif isinstance(data_source, pl.DataFrame):
             lazy_frame = data_source.lazy()
         else:
@@ -510,22 +541,6 @@ class Performance:
         """Return linked total return for the full reporting period."""
         return cast(float, (self.period_totals()[cols.TOTAL_RETURN] + 1).product() - 1)
 
-    def reset_narrow_df(self, df: pl.DataFrame) -> None:
-        """Replace calculated narrow rows after validating internal invariants.
-
-        Args:
-            df: Replacement calculated rows using the narrow performance
-                schema.
-
-        Raises:
-            PparError: If calculated columns are missing or unexpected, values
-                are invalid, rows are duplicated, period metadata conflicts,
-                weights do not sum to one, or contributions do not foot to the
-                stored total return.
-        """
-        replacement = self._validated_calculated_rows(df)
-        self._replace_calculated_rows(replacement, sort_rows=False)
-
     def _replace_calculated_rows(
         self,
         df: pl.DataFrame,
@@ -534,10 +549,10 @@ class Performance:
     ) -> None:
         """Take ownership of rows produced by a trusted internal calculation.
 
-        Full financial validation belongs at the public ``reset_narrow_df``
-        boundary and at the production Attribution/Risk audit boundary. Trusted
-        filters, consolidation, mapping, and zero-row alignment use this helper
-        to avoid repeating expensive group-by validation on the same rows.
+        Source loading and production Attribution/Risk audits enforce financial
+        invariants. Trusted filters, consolidation, mapping, and zero-row alignment
+        use this helper to avoid repeating expensive group-by validation on the same
+        rows.
         """
         if len(df.columns) != len(_CALCULATED_COLUMNS) or set(df.columns) != set(
             _CALCULATED_COLUMNS
@@ -551,92 +566,3 @@ class Performance:
         self._df_overall = pl.DataFrame()
         self.narrow_df = replacement
         self.identifiers = sorted(self.narrow_df[cols.IDENTIFIER].unique().to_list())
-
-    def _validated_calculated_rows(self, df: pl.DataFrame) -> pl.DataFrame:
-        """Return an owned, validated calculated-row DataFrame."""
-        if len(df.columns) != len(_CALCULATED_COLUMNS) or set(df.columns) != set(
-            _CALCULATED_COLUMNS
-        ):
-            raise PparError(
-                f"{self.error_message_context}: calculated performance schema is invalid.",
-            )
-        replacement = df.select(_CALCULATED_COLUMNS).clone()
-        if replacement.is_empty():
-            raise PparError(f"Calculated performance rows are empty {self.error_message_context}.")
-        if any(replacement.null_count().row(0)):
-            raise PparError(
-                f"Calculated performance rows contain nulls {self.error_message_context}."
-            )
-
-        float_columns = (
-            cols.TOTAL_RETURN,
-            cols.RETURN,
-            cols.WEIGHT,
-            cols.CONTRIBUTION,
-        )
-        finite_values = replacement.select(
-            *(pl.col(column).is_finite().all().alias(column) for column in float_columns)
-        )
-        if not all(finite_values.row(0)):
-            raise PparError(
-                f"Calculated performance values must be finite {self.error_message_context}."
-            )
-
-        duplicate_rows = replacement.group_by(
-            [*cols.DATE_COLUMNS, cols.IDENTIFIER]
-        ).len().filter(pl.col("len") > 1)
-        if not duplicate_rows.is_empty():
-            raise PparError(
-                f"Calculated performance rows are duplicated {self.error_message_context}."
-            )
-
-        expected_days = (
-            (pl.col(cols.THRU_DATE) - pl.col(cols.FROM_DATE)).dt.total_days() + 1
-        )
-        if not replacement.select(
-            (expected_days == pl.col(cols.QUANTITY_OF_DAYS)).all()
-        ).item():
-            raise PparError(
-                f"{self.error_message_context}: calculated day counts are invalid.",
-            )
-
-        period_metadata = replacement.group_by(cols.DATE_COLUMNS).agg(
-            pl.col(cols.QUANTITY_OF_DAYS).n_unique().alias("_day_count_values"),
-            pl.col(cols.TOTAL_RETURN).n_unique().alias("_total_return_values"),
-            pl.col(cols.WEIGHT).sum().alias("_weight_total"),
-            pl.col(cols.CONTRIBUTION).sum().alias("_contribution_total"),
-            pl.col(cols.TOTAL_RETURN).first().alias("_stored_total_return"),
-        )
-        if not period_metadata.select(
-            (
-                (pl.col("_day_count_values") == 1)
-                & (pl.col("_total_return_values") == 1)
-                & (pl.col("_weight_total").round(8) == 1.0)
-                & (
-                    pl.col("_contribution_total").round(11)
-                    == pl.col("_stored_total_return").round(11)
-                )
-            ).all()
-        ).item():
-            raise PparError(
-                f"{self.error_message_context}: calculated period totals do not foot.",
-            )
-
-        periods = replacement.select(cols.DATE_COLUMNS).unique().sort(cols.THRU_DATE)
-        if periods[cols.THRU_DATE].n_unique() != periods.height:
-            raise PparError(
-                f"Calculated performance thru dates are duplicated "
-                f"{self.error_message_context}."
-            )
-        if (periods[cols.FROM_DATE] > periods[cols.THRU_DATE]).any():
-            raise PparError(
-                f"A calculated from date exceeds its thru date "
-                f"{self.error_message_context}."
-            )
-        if periods.height > 1 and (
-            periods[cols.FROM_DATE][1:] <= periods[cols.THRU_DATE][:-1]
-        ).any():
-            raise PparError(
-                f"Calculated performance periods overlap {self.error_message_context}."
-            )
-        return replacement.sort([cols.THRU_DATE, cols.IDENTIFIER])

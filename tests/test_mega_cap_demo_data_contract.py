@@ -158,6 +158,62 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
                 }
                 self.assertEqual(actual_artifacts, expected_artifacts)
 
+    def test_malformed_identities_preserve_prior_atomic_report_bundles(self) -> None:
+        """Both generated demos reject malformed identities without publishing."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for source, axys_apx in (("generic", False), ("axys_apx", True)):
+                directory = setup(root / source, axys_apx=axys_apx)
+                command = [sys.executable, directory / "ppar_demo.py"]
+                subprocess.run(command, check=True, capture_output=True, text=True)
+
+                output = directory / "output"
+                expected_artifacts = {
+                    path.name: path.read_bytes()
+                    for path in output.iterdir()
+                    if path.is_file()
+                }
+                marker = output / "prior-bundle-marker.txt"
+                marker.write_text("retain prior output", encoding="utf-8")
+
+                if axys_apx:
+                    malformed_path = directory / "input" / "secperf.csv"
+                    identity_column = "Security Symbol"
+                else:
+                    malformed_path = (
+                        directory
+                        / "input"
+                        / "performance"
+                        / "Mega-Cap Alpha Portfolio.csv"
+                    )
+                    identity_column = cols.IDENTIFIER
+                malformed = pl.read_csv(malformed_path).with_columns(
+                    pl.col(identity_column).map_elements(
+                        lambda value: f" {value} ",
+                        return_dtype=pl.String,
+                    )
+                )
+                malformed.write_csv(malformed_path)
+
+                completed = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("PparError", completed.stderr)
+                self.assertIn("whitespace", completed.stderr)
+                self.assertTrue(marker.is_file())
+                self.assertEqual(marker.read_text(encoding="utf-8"), "retain prior output")
+                actual_artifacts = {
+                    path.name: path.read_bytes()
+                    for path in output.iterdir()
+                    if path.is_file() and path != marker
+                }
+                self.assertEqual(actual_artifacts, expected_artifacts)
+
 
 if __name__ == "__main__":
     unittest.main()

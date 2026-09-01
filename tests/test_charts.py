@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 from unittest.mock import MagicMock, patch
 import unittest
 
 import numpy as np
 import polars as pl
 
+from ppar import Analytics
+from ppar.attribution import Chart
 from ppar import charts
 import ppar.schema as cols
 
@@ -34,15 +37,70 @@ def _heatmap_frame(names: list[str]) -> pl.DataFrame:
     )
 
 
-def _rendered_rows(df: pl.DataFrame) -> dict[str, list[float]]:
-    """Capture the labeled matrix passed to Seaborn by the public renderer."""
+def _rendered_metric_rows(
+    df: pl.DataFrame,
+    column_name: str,
+) -> dict[str, list[float]]:
+    """Capture the labeled matrix passed to Seaborn by the heatmap renderer."""
     axis = MagicMock()
     axis.get_yticklabels.return_value = []
     with patch.object(charts.sns, "heatmap", return_value=axis) as render:
         png = charts.heatmap(
             df,
-            _VALUE_COLUMN,
+            column_name,
             ("Portfolio vs Benchmark", "Attribution"),
+            columns_to_sort=cols.CLASSIFICATION_NAME,
+        )
+
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    matrix = np.asarray(render.call_args.args[0])
+    labels = render.call_args.kwargs["yticklabels"]
+    return dict(zip(labels, matrix.tolist(), strict=True))
+
+
+def _rendered_rows(df: pl.DataFrame) -> dict[str, list[float]]:
+    """Capture total-effect rows passed to Seaborn."""
+    return _rendered_metric_rows(df, _VALUE_COLUMN)
+
+
+def _zero_net_attribution():  # type annotation would obscure the public construction
+    """Return mapped attribution with one zero-net group and defined contribution."""
+    portfolio = pl.DataFrame(
+        {
+            cols.FROM_DATE: [dt.date(2024, 1, 1)] * 3,
+            cols.THRU_DATE: [dt.date(2024, 1, 31)] * 3,
+            cols.IDENTIFIER: ["LONG", "SHORT", "CORE"],
+            cols.RETURN: [0.20, 0.10, 0.02],
+            cols.WEIGHT: [0.50, -0.50, 1.0],
+        }
+    )
+    benchmark = portfolio.with_columns(
+        pl.Series(cols.RETURN, [0.10, 0.04, 0.01])
+    )
+    classification = pl.DataFrame(
+        {"identifier": ["HEDGE", "CORE"], "name": ["Hedge", "Core"]}
+    )
+    mapping = pl.DataFrame(
+        {
+            "from": ["LONG", "SHORT", "CORE"],
+            "to": ["HEDGE", "HEDGE", "CORE"],
+        }
+    )
+    return Analytics(
+        portfolio,
+        benchmark,
+        portfolio_classification_name="Security",
+        benchmark_classification_name="Security",
+    ).attribution("Strategy", classification, (mapping, mapping))
+
+
+def _rendered_attribution_rows(chart: Chart) -> dict[str, list[float]]:
+    """Capture one public mapped-attribution heatmap matrix."""
+    axis = MagicMock()
+    axis.get_yticklabels.return_value = []
+    with patch.object(charts.sns, "heatmap", return_value=axis) as render:
+        png = _zero_net_attribution().to_chart(
+            chart,
             columns_to_sort=cols.CLASSIFICATION_NAME,
         )
 
@@ -85,6 +143,92 @@ class TestHeatmapIdentity(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one value per date"):
             charts.heatmap(duplicate, _VALUE_COLUMN, ("Title", "Subtitle"))
 
+    def test_zero_net_mapped_contribution_remains_visible(self) -> None:
+        """Portfolio contribution is available even when mapped weight nets to zero."""
+        rows = _rendered_attribution_rows(Chart.HEATMAP_PORTFOLIO_CONTRIBUTION)
+
+        self.assertIn("Hedge", rows)
+        self.assertTrue(math.isclose(rows["Hedge"][0], 0.05, abs_tol=1e-12))
+
+    def test_zero_net_mapped_returns_remain_unavailable(self) -> None:
+        """Undefined mapped portfolio and active returns stay masked, not zero."""
+        for chart in (
+            Chart.HEATMAP_PORTFOLIO_RETURN,
+            Chart.HEATMAP_ACTIVE_RETURN,
+        ):
+            with self.subTest(chart=chart):
+                rows = _rendered_attribution_rows(chart)
+
+                self.assertIn("Hedge", rows)
+                self.assertTrue(math.isnan(rows["Hedge"][0]))
+
+    def test_missing_portfolio_holding_is_omitted_but_real_zero_is_retained(self) -> None:
+        """Portfolio-only heatmaps omit absences without removing observed zeroes."""
+        frame = pl.DataFrame(
+            {
+                cols.THRU_DATE: [dt.date(2024, 1, 31)] * 2,
+                cols.CLASSIFICATION_IDENTIFIER: ["A", "B"],
+                cols.CLASSIFICATION_NAME: ["Alpha", "Beta"],
+                cols.PORTFOLIO_WEIGHT: [1.0, 0.0],
+                cols.PORTFOLIO_CONTRIB_SIMPLE: [0.0, 0.0],
+                cols.PORTFOLIO_RETURN: [0.0, 0.0],
+            }
+        )
+
+        for column_name in (
+            cols.PORTFOLIO_CONTRIB_SIMPLE,
+            cols.PORTFOLIO_RETURN,
+        ):
+            with self.subTest(column_name=column_name):
+                rows = _rendered_metric_rows(frame, column_name)
+
+                self.assertEqual(rows, {"Alpha": [0.0]})
+
+    def test_explicit_null_and_absent_pivot_cell_remain_distinct(self) -> None:
+        """Undefined source values stay masked while absent groups receive zero."""
+        frame = pl.DataFrame(
+            {
+                cols.THRU_DATE: [
+                    dt.date(2024, 1, 31),
+                    dt.date(2024, 2, 29),
+                    dt.date(2024, 2, 29),
+                ],
+                cols.CLASSIFICATION_IDENTIFIER: ["A", "A", "B"],
+                cols.CLASSIFICATION_NAME: ["Alpha", "Alpha", "Beta"],
+                cols.PORTFOLIO_WEIGHT: [0.0, 0.5, 0.5],
+                cols.ACTIVE_RETURN: [None, 0.01, 0.02],
+            }
+        )
+
+        rows = _rendered_metric_rows(frame, cols.ACTIVE_RETURN)
+
+        self.assertTrue(math.isnan(rows["Alpha"][0]))
+        self.assertEqual(rows["Alpha"][1], 0.01)
+        self.assertEqual(rows["Beta"], [0.0, 0.02])
+
+    def test_ordinary_heatmap_does_not_annotate_undefined_cell(self) -> None:
+        """The ordinary Matplotlib path skips an explicitly undefined value."""
+        frame = _heatmap_frame(["Alpha", "Beta", "Alpha", "Beta"]).with_columns(
+            pl.when(pl.int_range(pl.len()) == 0)
+            .then(None)
+            .otherwise(pl.col(_VALUE_COLUMN))
+            .alias(_VALUE_COLUMN)
+        )
+        original_heatmap = charts.sns.heatmap
+        rendered_axes = []
+
+        def capture_heatmap(*args, **kwargs):
+            axis = original_heatmap(*args, **kwargs)
+            rendered_axes.append(axis)
+            return axis
+
+        with patch.object(charts.sns, "heatmap", side_effect=capture_heatmap) as render:
+            charts.heatmap(frame, _VALUE_COLUMN, ("Title", "Subtitle"))
+
+        self.assertTrue(render.call_args.kwargs["annot"])
+        self.assertEqual(len(rendered_axes), 1)
+        self.assertEqual(len(rendered_axes[0].texts), frame.height - 1)
+
     def test_cell_annotations_are_excluded_only_from_layout_measurement(self) -> None:
         """Cell text remains rendered without participating in expensive layout."""
         annotations = [MagicMock(), MagicMock()]
@@ -104,7 +248,7 @@ class TestHeatmapIdentity(unittest.TestCase):
             annotation.set_visible.assert_not_called()
 
     def test_large_heatmap_uses_the_complete_raster_annotation_path(self) -> None:
-        """Large matrices retain all cells without constructing text artists."""
+        """Large matrices annotate every defined cell without text artists."""
         dates = [dt.date(2024, 1, 1) + dt.timedelta(days=offset) for offset in range(51)]
         identifiers = [f"ID{index:02d}" for index in range(11)]
         rows = [(date, identifier) for date in dates for identifier in identifiers]
@@ -114,7 +258,10 @@ class TestHeatmapIdentity(unittest.TestCase):
                 cols.CLASSIFICATION_IDENTIFIER: [identifier for _, identifier in rows],
                 cols.CLASSIFICATION_NAME: [identifier for _, identifier in rows],
                 cols.PORTFOLIO_WEIGHT: [1.0 / len(identifiers)] * len(rows),
-                _VALUE_COLUMN: [index / 10_000 for index in range(len(rows))],
+                _VALUE_COLUMN: [
+                    None if index == 17 else index / 10_000
+                    for index in range(len(rows))
+                ],
             }
         )
         original_heatmap = charts.sns.heatmap
@@ -134,8 +281,9 @@ class TestHeatmapIdentity(unittest.TestCase):
 
         self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
         self.assertFalse(render.call_args.kwargs["annot"])
+        self.assertEqual(np.isnan(np.asarray(render.call_args.args[0])).sum(), 1)
         self.assertEqual(len(drawings), 1)
-        self.assertEqual(drawings[0].text.call_count, len(rows))
+        self.assertEqual(drawings[0].text.call_count, len(rows) - 1)
 
 
 if __name__ == "__main__":

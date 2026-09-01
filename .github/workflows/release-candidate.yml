@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  MPLBACKEND: Agg
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -36,4 +39,13 @@ jobs:
             --editable ".[dev]"
 
       - name: Run the release-candidate gate
-        run: ./.venv/bin/python scripts/check_release_candidate.py
+        run: |
+          ./.venv/bin/python scripts/check_release_candidate.py \
+            --wheel-output "${{ runner.temp }}/validated-wheel"
+
+      - name: Retain the validated universal wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppar-universal-wheel
+          path: ${{ runner.temp }}/validated-wheel/*.whl
+          if-no-files-found: error

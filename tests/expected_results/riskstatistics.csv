@@ -18,10 +18,10 @@ Annualized Sharpe Ratio,-0.05785980,-0.06767700,0.00981720,Risk-Adjusted Perform
 Quarterly Sortino Ratio,0.36814223,1.09482693,-0.72668470,Risk-Adjusted Performance
 Annualized Sortino Ratio,0.73628446,2.18965386,-1.45336940,Risk-Adjusted Performance
 Quarterly Information Ratio,-0.01734706,NaN,NaN,Risk-Adjusted Performance
-Quarterly M_Squared,0.00436251,NaN,NaN,Risk-Adjusted Performance
+Quarterly M-Squared,0.00436251,NaN,NaN,Risk-Adjusted Performance
 Quarterly Treynor Ratio,-0.00660841,NaN,NaN,Risk-Adjusted Performance
 Quarterly Beta,1.15787296,NaN,NaN,Regression
 Quarterly Alpha,-0.00468576,NaN,NaN,Regression
 Annualized Alpha,-0.01861170,NaN,NaN,Regression
-Quarterly Jensens Alpha,-0.00351480,NaN,NaN,Regression
-Annualized Jensens Alpha,-0.01398525,NaN,NaN,Regression
+Quarterly Jensen's Alpha,-0.00351480,NaN,NaN,Regression
+Annualized Jensen's Alpha,-0.01398525,NaN,NaN,Regression

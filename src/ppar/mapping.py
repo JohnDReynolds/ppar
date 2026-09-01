@@ -42,8 +42,8 @@ class Mapping:
         Args:
             from_items_to_map: Source classification identifiers that must be
                 mapped.
-            data_source: Mapping data source. This can be a CSV file path, a
-                a CSV file path or a Polars DataFrame.
+            data_source: Mapping data source. This can be a CSV file path or a
+                Polars DataFrame.
 
         Data Parameters:
             Sample source-data rows for mapping a ``Security`` classification
@@ -60,7 +60,8 @@ class Mapping:
         Raises:
             PparError: Raised by ``util.load_datasource()`` if ``data_source``
                 does not exist when provided as a file path, or if the loaded
-                mapping data does not contain exactly two columns.
+                mapping data does not contain exactly two columns or contains
+                an invalid source or destination identity.
         """
         # Load the data source into dataframe with 2 columns: 0=from, 1=to
         from_tos = util.load_datasource(
@@ -68,6 +69,8 @@ class Mapping:
             column_names=cols.FROM_TO_COLUMNS,
             needed_items=from_items_to_map,
             error_message="Mapping data must contain exactly two columns.",
+            source_description="Mapping data",
+            identity_column_indices=(0, 1),
         )
 
         # Turn the from_tos dataframe into a dictionary.

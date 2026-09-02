@@ -558,7 +558,7 @@ def _check_large_site(workspace: Path, scale: int, *, diagnostics: bool = False)
             f"{baseline_calculation:.3f}s -> {scaled_calculation:.3f}s"
         )
         print(
-            "    report rendering and publication remain inside the end-to-end "
+            "    report rendering and file writing remain inside the end-to-end "
             "timings above."
         )
 

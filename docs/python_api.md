@@ -13,7 +13,6 @@ The complete supported Python surface is:
 - `ppar.axys_apx`: `AxysClassificationSources`, `AxysData`, `AxysPortfolio`
 - `ppar.errors`: `PparError`
 - `ppar.frequency`: `Frequency`
-- `ppar.publication`: `atomic_output_directory`, `write_report_bundle`
 - `ppar.risk`: `RiskStatistics`
 - `ppar.schema`: the names listed in that module's `__all__`
 
@@ -50,6 +49,9 @@ risk = analytics.risk_statistics()
 risk_frame = risk.to_polars()
 risk_html = risk.to_html()
 risk.write_csv("risk.csv")
+
+Path("overall.html").write_text(html, encoding="utf-8")
+Path("overall.png").write_bytes(png)
 ```
 
 The portfolio and optional benchmark are the only positional constructor arguments.
@@ -131,37 +133,8 @@ row order and later unselected periods do not change that display name.
 Attribution HTML tables are limited to 1,010 rows. For larger results, use
 `to_polars()` or `write_csv()` rather than `to_html()`.
 
-## Report bundles and transactional publication
-
-`write_report_bundle()` writes any selected combination of security views,
-classification views, classification charts, and risk statistics. Report categories
-that are not needed can be omitted. The generated demonstrations combine it with
-`atomic_output_directory()` so a complete bundle replaces the prior output only after
-every selected report succeeds:
-
-Continuing with `analytics`, `attribution`, and `risk` created above:
-
-```python
-from ppar.publication import atomic_output_directory, write_report_bundle
-
-output_directory = Path("./my_ppar") / "output"
-
-with atomic_output_directory(output_directory) as staging_directory:
-    output_names = write_report_bundle(
-        output_directory=staging_directory,
-        security_attribution=attribution,
-        security_views=(View.OVERALL_ATTRIBUTION,),
-        risk_statistics=risk,
-    )
-```
-
-`write_report_bundle()` returns the filenames in display order. It requires at least
-one selected report and validates that each selected category has its corresponding
-calculation. Repeated selections and values of the wrong enum type are rejected before
-any report is written. The context provides rollback safety for Python exceptions and
-interruptions; it does not claim process-crash atomicity. On success, it replaces the
-entire destination directory, so unrelated files in the prior directory are not
-retained. Call `write_report_bundle()` directly to write into a directory without
-that replacement behavior. Expected validation and calculation failures use
-`ppar.errors.PparError`; its message is intended for people, and optional `context`
-contains independent diagnostic values.
+The generated demonstrations show ordinary loops for selecting and writing multiple
+HTML and PNG reports. Applications remain free to choose their own filenames,
+directory layout, replacement behavior, and error-recovery policy. Expected
+validation and calculation failures use `ppar.errors.PparError`; its message is
+intended for people, and optional `context` contains independent diagnostic values.

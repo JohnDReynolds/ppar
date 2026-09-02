@@ -51,7 +51,7 @@ daily and monthly rows, only when every reported bucket covers the same complete
 gapless inclusive dates on both sides.
 
 The package retains inexpensive reconciliation checks in normal runs. A failed
-financial invariant raises `PparError` instead of publishing partial output.
+financial invariant raises `PparError` instead of returning an invalid result.
 
 ## Ex-post risk
 

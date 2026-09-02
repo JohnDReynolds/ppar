@@ -79,7 +79,7 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
         self.assertEqual(summary[cols.THRU_DATE].item(-1), dt.date(2026, 3, 31))
 
     def test_setup_variants_are_valid_and_run_complete_workflows(self) -> None:
-        """Both generated tutorial scripts run complete workflows without YAML."""
+        """Both generated tutorial scripts write the selected reports directly."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for source, axys_apx in (("generic", False), ("axys_apx", True)):
@@ -90,6 +90,8 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
                     readme,
                 )
                 self.assertNotIn("__PPAR_DEMO_PATH__", readme)
+                marker = directory / "output" / "user-created-report.txt"
+                marker.write_text("retain independent output", encoding="utf-8")
                 completed = subprocess.run(
                     [sys.executable, directory / "ppar_demo.py"],
                     check=True,
@@ -102,15 +104,22 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
                 artifacts = {
                     path.name for path in (directory / "output").iterdir() if path.is_file()
                 }
-                self.assertEqual(artifacts, _EXPECTED_ARTIFACTS)
+                self.assertEqual(
+                    artifacts,
+                    _EXPECTED_ARTIFACTS | {"user-created-report.txt"},
+                )
+                self.assertEqual(
+                    marker.read_text(encoding="utf-8"),
+                    "retain independent output",
+                )
                 self.assertFalse((directory / "ppar.yaml").exists())
                 self.assertEqual(
                     [path.name for path in directory.rglob("*.py")],
                     ["ppar_demo.py"],
                 )
 
-    def test_malformed_inputs_preserve_prior_atomic_report_bundles(self) -> None:
-        """Both generated demos reject malformed input without publishing output."""
+    def test_malformed_inputs_leave_existing_output_unchanged(self) -> None:
+        """Input loading fails before either demo writes a selected report."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for source, axys_apx in (("generic", False), ("axys_apx", True)):
@@ -158,8 +167,8 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
                 }
                 self.assertEqual(actual_artifacts, expected_artifacts)
 
-    def test_malformed_identities_preserve_prior_atomic_report_bundles(self) -> None:
-        """Both generated demos reject malformed identities without publishing."""
+    def test_malformed_identities_leave_existing_output_unchanged(self) -> None:
+        """Identity validation fails before either demo writes a selected report."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for source, axys_apx in (("generic", False), ("axys_apx", True)):

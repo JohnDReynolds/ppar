@@ -16,7 +16,6 @@ import ppar.attribution
 import ppar.axys_apx
 import ppar.errors
 import ppar.frequency
-import ppar.publication
 import ppar.risk
 import ppar.schema
 import ppar.utilities
@@ -90,10 +89,6 @@ class TestPackageMetadata(unittest.TestCase):
             ],
             ppar.errors: ["PparError"],
             ppar.frequency: ["Frequency"],
-            ppar.publication: [
-                "atomic_output_directory",
-                "write_report_bundle",
-            ],
             ppar.risk: ["RiskStatistics"],
         }
         for module, expected in expected_exports.items():
@@ -143,7 +138,7 @@ class TestPackageMetadata(unittest.TestCase):
             self.assertIn(expected, axys_readme)
 
     def test_templates_keep_shared_workflow_in_sync(self) -> None:
-        """Common demo settings and report publication remain equivalent."""
+        """Common demo settings and direct report writing remain equivalent."""
         generic = _template_named_nodes("generic")
         axys_apx = _template_named_nodes("axys_apx")
         shared_names = (

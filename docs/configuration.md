@@ -101,7 +101,8 @@ When `INCLUDE_RISK_STATISTICS` is `True`, risk statistics are produced only when
 `FREQUENCY` is a fixed, valid frequency. With `Frequency.AS_OFTEN_AS_POSSIBLE`, source
 periods are preserved and risk statistics are intentionally omitted.
 
-Each successful run transactionally replaces `output/` with the complete new bundle.
-If loading, calculation, report rendering, or publication raises a Python exception or
-interruption, the previous successful output remains intact. This rollback guarantee
-does not extend to an abrupt process or system crash.
+The scripts create `output/` when necessary and write each selected report directly.
+A report replaces an existing file with the same name; unrelated files remain in the
+directory. If a later report fails, files written earlier in that run remain. Users
+can replace these simple loops with file-management behavior suited to their own
+applications.

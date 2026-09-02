@@ -18,7 +18,6 @@ from pathlib import Path
 from ppar import Analytics
 from ppar.attribution import Attribution, Chart, View
 from ppar.frequency import Frequency
-from ppar.publication import atomic_output_directory, write_report_bundle
 
 
 # Input and output paths are based on this script's location. You can therefore
@@ -123,43 +122,57 @@ INCLUDE_RISK_STATISTICS = True
 
 
 def main() -> int:
-    """Run the demonstration and publish its selected reports.
+    """Run the demonstration and write its selected reports.
 
     Returns:
-        Process exit code. Zero means the complete output bundle was published.
+        Process exit code. Zero means every selected report was written.
 
     Raises:
         PparError: If source validation or an analytics calculation fails.
-        OSError: If an input cannot be read or output cannot be published.
+        OSError: If an input or output file cannot be accessed.
     """
     analytics, security_attribution, classification_attribution = _build_analytics()
+    OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
 
-    # atomic_output_directory() lets the script build the complete report bundle in
-    # a staging directory and replace the entire OUTPUT_DIRECTORY only after every
-    # report succeeds. It provides rollback safety for Python errors and interruptions;
-    # using it is optional.
-    with atomic_output_directory(OUTPUT_DIRECTORY) as staging_directory:
-        # Native source periods do not establish a fixed annualization frequency, so
-        # risk statistics are limited to monthly, quarterly, or yearly runs.
-        risk_statistics = (
-            analytics.risk_statistics()
-            if INCLUDE_RISK_STATISTICS
-            and FREQUENCY is not Frequency.AS_OFTEN_AS_POSSIBLE
-            else None
+    output_paths: list[Path] = []
+
+    for view in SECURITY_VIEWS:
+        output_path = OUTPUT_DIRECTORY / f"security_{view.name.lower()}.html"
+        output_path.write_text(
+            security_attribution.to_html(view),
+            encoding="utf-8",
         )
-        output_names = write_report_bundle(
-            output_directory=staging_directory,
-            security_attribution=security_attribution,
-            security_views=SECURITY_VIEWS,
-            classification_attribution=classification_attribution,
-            classification_views=CLASSIFICATION_VIEWS,
-            classification_charts=CLASSIFICATION_CHARTS,
-            risk_statistics=risk_statistics,
+        output_paths.append(output_path)
+
+    for view in CLASSIFICATION_VIEWS:
+        output_path = OUTPUT_DIRECTORY / f"classification_{view.name.lower()}.html"
+        output_path.write_text(
+            classification_attribution.to_html(view),
+            encoding="utf-8",
         )
+        output_paths.append(output_path)
+
+    for chart in CLASSIFICATION_CHARTS:
+        output_path = OUTPUT_DIRECTORY / f"classification_{chart.name.lower()}.png"
+        output_path.write_bytes(classification_attribution.to_chart(chart))
+        output_paths.append(output_path)
+
+    # Native source periods do not establish a fixed annualization frequency, so
+    # risk statistics are limited to monthly, quarterly, or yearly runs.
+    if (
+        INCLUDE_RISK_STATISTICS
+        and FREQUENCY is not Frequency.AS_OFTEN_AS_POSSIBLE
+    ):
+        output_path = OUTPUT_DIRECTORY / "risk_statistics.html"
+        output_path.write_text(
+            analytics.risk_statistics().to_html(),
+            encoding="utf-8",
+        )
+        output_paths.append(output_path)
 
     print("Output files:")
-    for name in output_names:
-        print(f"  {OUTPUT_DIRECTORY / name}")
+    for output_path in output_paths:
+        print(f"  {output_path}")
     return 0
 
 

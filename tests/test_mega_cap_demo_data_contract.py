@@ -35,6 +35,27 @@ _EXPECTED_ARTIFACTS = {
 _INPUT = Path("src/ppar/templates/generic/input")
 
 
+def _seed_existing_output(directory: Path) -> dict[str, bytes]:
+    """Create representative existing output and return its exact contents."""
+    artifacts = {
+        "classification_overall_attribution.html": b"existing ppar report",
+        "user-created-report.txt": b"independent report",
+    }
+    output = directory / "output"
+    for file_name, contents in artifacts.items():
+        (output / file_name).write_bytes(contents)
+    return artifacts
+
+
+def _output_artifacts(directory: Path) -> dict[str, bytes]:
+    """Return every file and its contents from a demonstration output directory."""
+    return {
+        path.name: path.read_bytes()
+        for path in (directory / "output").iterdir()
+        if path.is_file()
+    }
+
+
 class TestMegaCapDemoDataContract(unittest.TestCase):
     """The packaged inputs remain complete, coherent, and immediately runnable."""
 
@@ -125,16 +146,7 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
             for source, axys_apx in (("generic", False), ("axys_apx", True)):
                 directory = setup(root / source, axys_apx=axys_apx)
                 command = [sys.executable, directory / "ppar_demo.py"]
-                subprocess.run(command, check=True, capture_output=True, text=True)
-
-                output = directory / "output"
-                expected_artifacts = {
-                    path.name: path.read_bytes()
-                    for path in output.iterdir()
-                    if path.is_file()
-                }
-                marker = output / "prior-bundle-marker.txt"
-                marker.write_text("retain prior output", encoding="utf-8")
+                expected_artifacts = _seed_existing_output(directory)
 
                 if axys_apx:
                     malformed_path = directory / "input" / "portperf.csv"
@@ -158,14 +170,7 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
 
                 self.assertNotEqual(completed.returncode, 0)
                 self.assertIn("PparError", completed.stderr)
-                self.assertTrue(marker.is_file())
-                self.assertEqual(marker.read_text(encoding="utf-8"), "retain prior output")
-                actual_artifacts = {
-                    path.name: path.read_bytes()
-                    for path in output.iterdir()
-                    if path.is_file() and path != marker
-                }
-                self.assertEqual(actual_artifacts, expected_artifacts)
+                self.assertEqual(_output_artifacts(directory), expected_artifacts)
 
     def test_malformed_identities_leave_existing_output_unchanged(self) -> None:
         """Identity validation fails before either demo writes a selected report."""
@@ -174,16 +179,7 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
             for source, axys_apx in (("generic", False), ("axys_apx", True)):
                 directory = setup(root / source, axys_apx=axys_apx)
                 command = [sys.executable, directory / "ppar_demo.py"]
-                subprocess.run(command, check=True, capture_output=True, text=True)
-
-                output = directory / "output"
-                expected_artifacts = {
-                    path.name: path.read_bytes()
-                    for path in output.iterdir()
-                    if path.is_file()
-                }
-                marker = output / "prior-bundle-marker.txt"
-                marker.write_text("retain prior output", encoding="utf-8")
+                expected_artifacts = _seed_existing_output(directory)
 
                 if axys_apx:
                     malformed_path = directory / "input" / "secperf.csv"
@@ -214,14 +210,7 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
                 self.assertNotEqual(completed.returncode, 0)
                 self.assertIn("PparError", completed.stderr)
                 self.assertIn("whitespace", completed.stderr)
-                self.assertTrue(marker.is_file())
-                self.assertEqual(marker.read_text(encoding="utf-8"), "retain prior output")
-                actual_artifacts = {
-                    path.name: path.read_bytes()
-                    for path in output.iterdir()
-                    if path.is_file() and path != marker
-                }
-                self.assertEqual(actual_artifacts, expected_artifacts)
+                self.assertEqual(_output_artifacts(directory), expected_artifacts)
 
 
 if __name__ == "__main__":

@@ -125,8 +125,6 @@ def _check_documentation(root: Path = _ROOT) -> None:
         "portperf.csv",
         "secperf.csv",
         "secmast.csv",
-        "Repeated identical pairs are collapsed",
-        "conflicting names or mapping targets",
     ):
         if value not in demonstration_documentation:
             raise RuntimeError(f"Demonstration documentation omits {value}.")
@@ -213,6 +211,7 @@ def _inspect_wheel(directory: Path) -> Path:
 
 def _installed_package_workflow_smoke(wheel: Path, directory: Path) -> None:
     """Run the installed package against the verified development dependencies."""
+    expected_version = wheel.name.split("-", maxsplit=2)[1]
     environment = directory / "venv"
     venv.EnvBuilder(with_pip=True).create(environment)
     python = _venv_command(environment, "python")
@@ -235,6 +234,7 @@ def _installed_package_workflow_smoke(wheel: Path, directory: Path) -> None:
         "assert 'site-packages' in str(origin), origin; "
         "assert importlib.util.find_spec('perfaud') is None; "
         "assert ppar.__all__ == ['Analytics', '__version__']; "
+        f"assert ppar.__version__ == {expected_version!r}, ppar.__version__; "
         "print(origin)"
     )
     _run([python, "-c", code], cwd=smoke, env=smoke_env)

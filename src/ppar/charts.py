@@ -14,15 +14,13 @@ from collections import Counter
 import io
 import logging
 import math
+import os
 import textwrap
 from typing import cast, Iterable, Protocol, Sequence
 
-# Configure cache state before any Matplotlib import can initialize it.
-from ppar._chart_environment import (  # noqa: E402
-    configure_current_process,
-)
-
-configure_current_process()
+# Static PNG rendering does not need a GUI backend. Respect any backend the caller
+# selected explicitly.
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 # Third-Party Imports
 logging.getLogger("matplotlib").setLevel(logging.ERROR)

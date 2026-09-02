@@ -37,7 +37,7 @@ class TestCheckProjectScript(unittest.TestCase):
         """Building a wheel neither creates nor removes generated checkout paths."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            wheel = root / "dist" / "ppar-0.2.0-py3-none-any.whl"
+            wheel = root / "dist" / "ppar-0.2.1-py3-none-any.whl"
             with (
                 mock.patch.object(check_project, "_run") as run,
                 mock.patch.object(
@@ -75,14 +75,14 @@ class TestCheckProjectScript(unittest.TestCase):
         """Wheel inspection enforces artifacts rather than implementation text."""
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            wheel = directory / "ppar-0.2.0-py3-none-any.whl"
+            wheel = directory / "ppar-0.2.1-py3-none-any.whl"
             with zipfile.ZipFile(wheel, "w") as archive:
                 for name in check_project._REQUIRED_WHEEL_RESOURCES:
                     archive.writestr(name, "fixture")
 
             self.assertEqual(check_project._inspect_wheel(directory), wheel)
 
-            (directory / "ppar-0.2.0.tar.gz").touch()
+            (directory / "ppar-0.2.1.tar.gz").touch()
             with self.assertRaisesRegex(RuntimeError, "must not create an sdist"):
                 check_project._inspect_wheel(directory)
 
@@ -151,7 +151,7 @@ class TestCheckProjectScript(unittest.TestCase):
         self.assertIn("actions/download-artifact@v5", publish)
         self.assertIn("name: ppar-universal-wheel", publish)
         self.assertNotIn("python -m build", publish)
-        self.assertNotIn("ppar-0.2.0", publish)
+        self.assertNotIn("ppar-0.2.1", publish)
 
 
 if __name__ == "__main__":

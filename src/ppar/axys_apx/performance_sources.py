@@ -215,6 +215,9 @@ class AxysPerformanceSourceLoader:
         selected_columns = set(mapped_required_columns)
         if construction is not None:
             selected_columns.update(construction.source_columns)
+        text_columns = selected_columns & _IDENTITY_COLUMNS
+        if construction is not None:
+            text_columns.update(construction.source_columns)
         lazy_frame = (
             pl.scan_csv(
                 path,
@@ -227,36 +230,21 @@ class AxysPerformanceSourceLoader:
                 pl.col(cols.THRU_DATE).str.strptime(pl.Date, "%Y-%m-%d", strict=True),
             )
         )
-        source_lazy_frame = lazy_frame
-        requested_codes: tuple[str, ...] = ()
         if isinstance(portfolio_code, str):
-            requested_codes = (portfolio_code,)
-            lazy_frame = lazy_frame.filter(pl.col(cols.PORTFOLIO_CODE) == portfolio_code)
-        elif portfolio_code is not None:
-            requested_codes = tuple(portfolio_code)
             lazy_frame = lazy_frame.filter(
-                pl.col(cols.PORTFOLIO_CODE).is_in(portfolio_code)
+                pl.col(cols.PORTFOLIO_CODE).str.strip_chars() == portfolio_code
             )
+        elif portfolio_code is not None:
+            lazy_frame = lazy_frame.filter(
+                pl.col(cols.PORTFOLIO_CODE).str.strip_chars().is_in(portfolio_code)
+            )
+        lazy_frame = lazy_frame.with_columns(
+            pl.col(column_name).str.strip_chars()
+            for column_name in sorted(text_columns)
+        )
         frame = _collect_performance_source(
             self._date_range.filter_performance(lazy_frame)
         )
-        matched_codes = set(frame[cols.PORTFOLIO_CODE].unique().to_list())
-        if requested_codes and not set(requested_codes).issubset(matched_codes):
-            # Exact account codes retain predicate pushdown for normal bulk loading.
-            # Only a failed exact match pays for a normalized fallback scan.
-            normalized_codes = source_lazy_frame.with_columns(
-                pl.col(cols.PORTFOLIO_CODE).str.strip_chars()
-            )
-            normalized_codes = normalized_codes.filter(
-                pl.col(cols.PORTFOLIO_CODE).is_in(requested_codes)
-            )
-            frame = _collect_performance_source(
-                self._date_range.filter_performance(normalized_codes)
-            )
-        text_columns = set(frame.columns) & _IDENTITY_COLUMNS
-        if construction is not None:
-            text_columns.update(construction.source_columns)
-        frame = util.normalize_text_columns(frame, sorted(text_columns))
         if construction is not None:
             frame = with_constructed_security_id(
                 frame,

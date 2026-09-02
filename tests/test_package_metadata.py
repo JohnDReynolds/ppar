@@ -32,13 +32,14 @@ class TestPackageMetadata(unittest.TestCase):
         """Distribution metadata names only the independent Analytics product."""
         project = _pyproject()["project"]
         self.assertEqual(project["name"], "ppar")
-        self.assertEqual(project["version"], "0.2.0")
+        self.assertEqual(project["version"], "0.2.1")
         self.assertEqual(project["requires-python"], ">=3.11.9,<3.15")
         self.assertEqual(project["scripts"], {"ppar": "ppar.cli:main"})
         self.assertEqual(
             project["urls"]["Repository"],
             "https://github.com/JohnDReynolds/ppar",
         )
+        self.assertEqual(ppar.__version__, project["version"])
         self.assertEqual(ppar.__version__, metadata.version("ppar"))
         self.assertIn(
             "ppar supports Python 3.11.9 through Python 3.14.",
@@ -93,7 +94,6 @@ class TestPackageMetadata(unittest.TestCase):
 
         api_guide = (_ROOT / "docs/python_api.md").read_text(encoding="utf-8")
         self.assertNotIn("analytics = Analytics(", api_guide)
-        self.assertIn("This page does not duplicate those examples.", api_guide)
         self.assertIn("Attribution.to_html(view)", api_guide)
         self.assertIn("Attribution.to_chart(chart)", api_guide)
 

@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import os
+from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 import unittest
 
+import matplotlib
 import numpy as np
 import polars as pl
 
@@ -17,6 +22,55 @@ import ppar.schema as cols
 
 
 _VALUE_COLUMN = cols.TOTAL_EFFECT_SIMPLE
+_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _import_backend(
+    *,
+    environment_backend: str | None = None,
+    programmatic: str | None = None,
+) -> str:
+    """Import chart rendering in a child process and return its backend."""
+    environment = os.environ.copy()
+    environment["MPLCONFIGDIR"] = matplotlib.get_configdir()
+    if environment_backend is None:
+        environment.pop("MPLBACKEND", None)
+    else:
+        environment["MPLBACKEND"] = environment_backend
+    before_import = (
+        f"import matplotlib; matplotlib.use({programmatic!r}); "
+        if programmatic is not None
+        else ""
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            before_import
+            + "import ppar.charts; import matplotlib; print(matplotlib.get_backend())",
+        ],
+        cwd=_ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip().lower()
+
+
+class TestChartBackend(unittest.TestCase):
+    """Static rendering defaults to Agg without overriding caller choices."""
+
+    def test_ordinary_chart_import_uses_agg(self) -> None:
+        """A caller without a backend selection receives the static backend."""
+        self.assertEqual(_import_backend(), "agg")
+
+    def test_explicit_backend_choices_remain_authoritative(self) -> None:
+        """Environment and programmatic backend selections remain unchanged."""
+        with self.subTest(selection="environment"):
+            self.assertEqual(_import_backend(environment_backend="svg"), "svg")
+        with self.subTest(selection="programmatic"):
+            self.assertEqual(_import_backend(programmatic="svg"), "svg")
 
 
 class TestChartAccessibility(unittest.TestCase):

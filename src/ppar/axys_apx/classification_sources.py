@@ -45,6 +45,11 @@ _SECURITY_ID_CONSTRUCTION: Final[str] = "_security_id_construction"
 _CONSTRUCTED_SECURITY_ID_COLUMN: Final[str] = "__ppar_constructed_security_id"
 
 
+def _collect_classification_source(lazy_frame: pl.LazyFrame) -> pl.DataFrame:
+    """Materialize one projected and filtered classification-source query."""
+    return lazy_frame.collect()
+
+
 class AxysClassificationSourceLoader:
     """Normalize security and security-master classification sources.
 
@@ -119,23 +124,16 @@ class AxysClassificationSourceLoader:
             cast(str, source["identifier_column"]),
             cast(str, source["name_column"]),
         }
-        source_lazy_frame = lazy_frame
-        if source[_FILTER_TO_SECURITY_IDS]:
-            lazy_frame = lazy_frame.filter(
-                pl.col(source["identifier_column"]).is_in(unique_security_ids)
-            )
-        source_frame = lazy_frame.collect()
         if source[_FILTER_TO_SECURITY_IDS]:
             identifier_column = cast(str, source["identifier_column"])
-            matched_ids = set(source_frame[identifier_column].unique().to_list())
-            if not set(unique_security_ids).issubset(matched_ids):
-                # Preserve predicate pushdown for exact identifiers. Only missing
-                # matches require a normalized fallback scan of the source.
-                normalized_ids = source_lazy_frame.with_columns(
-                    pl.col(identifier_column).str.strip_chars()
-                ).filter(pl.col(identifier_column).is_in(unique_security_ids))
-                source_frame = normalized_ids.collect()
-        source_frame = util.normalize_text_columns(source_frame, sorted(text_columns))
+            lazy_frame = lazy_frame.filter(
+                pl.col(identifier_column).str.strip_chars().is_in(unique_security_ids)
+            )
+        lazy_frame = lazy_frame.with_columns(
+            pl.col(column_name).str.strip_chars()
+            for column_name in sorted(text_columns)
+        )
+        source_frame = _collect_classification_source(lazy_frame)
         self._validate_identity_columns(
             source_frame,
             source_type,

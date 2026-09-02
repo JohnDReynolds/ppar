@@ -41,19 +41,6 @@ command retains the established timed gates for selected-workload and long-histo
 scaling. Add `--diagnostics` to also report fixture preparation, Python startup, and
 calculation-only timings as observation-only components.
 
-For repeatable optimization measurements, run:
-
-```bash
-./.venv/bin/python scripts/benchmark_optimizations.py --samples 3
-```
-
-This informational benchmark separates startup, calculations, HTML serialization,
-PNG rendering, cold and reused chart caches, long history, exact monthly periods,
-and bulk Axys/APX account loading. Fixture preparation is excluded from timed work,
-and repeated financial and report outputs are checked for equivalence. The results
-are observations only; they do not establish or alter a release threshold. Use a
-repeated `--scenario` option to run only selected workloads.
-
 The release-candidate command composes both gates:
 
 ```bash

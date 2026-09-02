@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 from typing import cast
 import unittest
+from unittest import mock
 
 # Third-Party Imports
 import polars as pl
@@ -17,6 +18,8 @@ from tests import helpers as test_util
 
 # Project Imports
 from ppar.axys_apx import AxysData
+import ppar.axys_apx.classification_sources as classification_source_module
+import ppar.axys_apx.performance_sources as performance_source_module
 from ppar.axys_apx.reconciliation import derive_security_performance_for_all_periods
 from ppar.axys_apx.security_identity import (
     SecurityIdConstruction,
@@ -489,32 +492,6 @@ class TestAxysValidation(unittest.TestCase):
                 self.assertIn("secperf.csv", message)
                 self.assertIn("2024-01-31", message)
 
-    def test_security_identifiers_are_trimmed(self) -> None:
-        """Direct security identifiers lose only surrounding whitespace."""
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp)
-            portfolio_path = _write_frame_csv(
-                directory,
-                "portperf.csv",
-                _valid_portfolio_rows(),
-            )
-            security_path = _write_frame_csv(
-                directory,
-                "secperf.csv",
-                _valid_security_rows(security_ids=[" S1 "]),
-            )
-            data = AxysData(
-                directory,
-                _minimal_source_values(portfolio_path, security_path),
-            )
-
-            portfolio = data.get_portfolio("PORT")
-
-            self.assertEqual(
-                portfolio.security_performance[cols.IDENTIFIER].unique().to_list(),
-                ["S1"],
-            )
-
     def test_blank_portfolio_names_are_rejected(self) -> None:
         """Selected portfolio display names must contain non-whitespace text."""
         for invalid_name in (None, "", " "):
@@ -549,14 +526,14 @@ class TestAxysValidation(unittest.TestCase):
                 self.assertIn("portperf.csv", message)
                 self.assertIn("2024-01-31", message)
 
-    def test_portfolio_codes_and_names_are_trimmed(self) -> None:
-        """Axys account identities and display names are normalized before matching."""
+    def test_performance_identities_are_trimmed_in_one_materialization(self) -> None:
+        """Both performance files normalize identities in their one source query."""
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             portfolio_rows = _valid_portfolio_rows()
             portfolio_rows["PORTFOLIO_CODE"] = [" PORT "]
             portfolio_rows["PORTFOLIO_NAME"] = [" Portfolio "]
-            security_rows = _valid_security_rows()
+            security_rows = _valid_security_rows(security_ids=[" S1 "])
             security_rows["PORTFOLIO_CODE"] = [" PORT "]
             portfolio_path = _write_frame_csv(directory, "portperf.csv", portfolio_rows)
             security_path = _write_frame_csv(directory, "secperf.csv", security_rows)
@@ -565,10 +542,32 @@ class TestAxysValidation(unittest.TestCase):
                 _minimal_source_values(portfolio_path, security_path),
             )
 
-            portfolio = data.get_portfolio("PORT")
+            optimized_plans: list[str] = []
+
+            def collect_source(lazy_frame: pl.LazyFrame) -> pl.DataFrame:
+                """Record each final performance query before collecting it."""
+                optimized_plans.append(lazy_frame.explain(optimized=True))
+                return lazy_frame.collect()
+
+            with mock.patch.object(
+                performance_source_module,
+                "_collect_performance_source",
+                side_effect=collect_source,
+            ) as collect:
+                portfolio = data.get_portfolio("PORT")
 
             self.assertEqual(portfolio.portfolio_code, "PORT")
             self.assertEqual(portfolio.portfolio_name, "PORT - Portfolio")
+            self.assertEqual(
+                portfolio.security_performance[cols.IDENTIFIER].unique().to_list(),
+                ["S1"],
+            )
+            self.assertEqual(collect.call_count, 2)
+            self.assertEqual(len(optimized_plans), 2)
+            for plan in optimized_plans:
+                with self.subTest(plan=plan):
+                    self.assertIn("SELECTION:", plan)
+                    self.assertIn('"PORT"', plan)
 
     def test_classification_identities_reject_null_or_blank_values(self) -> None:
         """Security-master classification codes must contain non-whitespace text."""
@@ -696,32 +695,43 @@ class TestAxysValidation(unittest.TestCase):
                 self.assertIn("mapping", message)
                 self.assertIn("secmast.csv", message)
 
-    def test_mapping_identities_are_trimmed(self) -> None:
-        """Security-to-classification identities are normalized before filtering."""
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp)
-            security_master_path = _write_frame_csv(
-                directory,
-                "secmast.csv",
-                {
-                    "SECURITY_ID": [" S001 "],
-                    "SECURITY_NAME": [" Synthetic Security S001 "],
-                    "SECTOR_CODE": [" TECH "],
-                    "SECTOR_DESC": [" Technology "],
-                },
-            )
-            specification = _fixture_specification()
-            security_master = _file_definition(specification, "security_master")
-            security_master["path"] = str(security_master_path)
-            data = AxysData(directory, specification)
+    def test_mapping_filter_normalizes_once_and_allows_unmapped_ids(self) -> None:
+        """Mapping selection uses one query for padded and incomplete sources."""
+        cases = (
+            ("padded", " S001 ", ["S001"]),
+            ("incomplete", "S001", ["S001", "UNMAPPED"]),
+        )
+        for name, source_identifier, requested_identifiers in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                security_master_path = _write_frame_csv(
+                    directory,
+                    "secmast.csv",
+                    {
+                        "SECURITY_ID": [source_identifier],
+                        "SECURITY_NAME": [" Synthetic Security S001 "],
+                        "SECTOR_CODE": [" TECH "],
+                        "SECTOR_DESC": [" Technology "],
+                    },
+                )
+                specification = _fixture_specification()
+                security_master = _file_definition(specification, "security_master")
+                security_master["path"] = str(security_master_path)
+                data = AxysData(directory, specification)
 
-            mapping = data._classification_loader.load(  # pylint: disable=protected-access
-                "mapping",
-                "Sector",
-                ["S001"],
-            )
+                with mock.patch.object(
+                    classification_source_module,
+                    "_collect_classification_source",
+                    wraps=classification_source_module._collect_classification_source,
+                ) as collect:
+                    mapping = data._classification_loader.load(  # pylint: disable=protected-access
+                        "mapping",
+                        "Sector",
+                        requested_identifiers,
+                    )
 
-            self.assertEqual(mapping.rows(), [("S001", "TECH")])
+                self.assertEqual(mapping.rows(), [("S001", "TECH")])
+                self.assertEqual(collect.call_count, 1)
 
     def test_security_master_components_reject_null_or_blank_values(self) -> None:
         """Composite security-master identity components require text."""

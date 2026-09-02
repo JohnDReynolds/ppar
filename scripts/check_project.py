@@ -18,7 +18,6 @@ import zipfile
 _ROOT = Path(__file__).resolve().parents[1]
 _ACTIVE_DOCUMENTATION = (
     "README.md",
-    "docs/configuration.md",
     "docs/methodology.md",
     "docs/python_api.md",
     "docs/maintenance.md",
@@ -110,20 +109,26 @@ def _check_documentation(root: Path = _ROOT) -> None:
     for relative in _ACTIVE_DOCUMENTATION:
         if not (root / relative).is_file():
             raise RuntimeError(f"Missing active documentation: {relative}")
-    configuration = (root / "docs/configuration.md").read_text(encoding="utf-8")
+    demonstration_documentation = "\n".join(
+        (root / path).read_text(encoding="utf-8")
+        for path in (
+            "src/ppar/templates/generic/ppar_demo.py",
+            "src/ppar/templates/generic/README.md",
+            "src/ppar/templates/axys_apx/ppar_demo.py",
+            "src/ppar/templates/axys_apx/README.md",
+        )
+    )
     for value in (
         "ppar_demo.py",
-        "AxysData()",
+        "AxysData(",
         "CLASSIFICATION_VIEWS",
         "portperf.csv",
         "secperf.csv",
         "secmast.csv",
-        "identifier/name pairs are collapsed",
-        "conflicting names",
-        "source/target pairs are also collapsed",
-        "conflicting targets",
+        "Repeated identical pairs are collapsed",
+        "conflicting names or mapping targets",
     ):
-        if value not in configuration:
+        if value not in demonstration_documentation:
             raise RuntimeError(f"Demonstration documentation omits {value}.")
     readme = (root / "README.md").read_text(encoding="utf-8")
     for command in (

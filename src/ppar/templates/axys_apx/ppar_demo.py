@@ -26,10 +26,9 @@ from ppar.frequency import Frequency
 DIRECTORY = Path(__file__).resolve().parent
 OUTPUT_DIRECTORY = DIRECTORY / "output"
 
-# FROM_DATE is the earliest source period end date to retain; THRU_DATE is the
-# latest. Both bounds are inclusive, so a bound inside a source period selects
-# that complete period when its end date is within the bounds. Use dt.date.min
-# for no lower bound and dt.date.max for no upper bound.
+# FROM_DATE and THRU_DATE define the inclusive reporting period. Complete source
+# periods are selected by their thru_date. Use dt.date.min or dt.date.max when
+# you do not want a lower or upper limit.
 FROM_DATE = dt.date(2021, 7, 1)
 THRU_DATE = dt.date(2026, 5, 29)
 
@@ -168,11 +167,16 @@ def main() -> int:
         PparError: If source validation or an analytics calculation fails.
         OSError: If an input or output file cannot be accessed.
     """
+    # Load and calculate the shared analytics once before rendering any reports.
     analytics, security_attribution, classification_attribution = _build_analytics()
+
+    # Create the output directory if this is the first run. Each report replaces
+    # only a same-named file; unrelated files in the directory remain untouched.
     OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
 
     output_paths: list[Path] = []
 
+    # Write the selected holding-level attribution tables.
     for view in SECURITY_VIEWS:
         output_path = OUTPUT_DIRECTORY / f"security_{view.name.lower()}.html"
         output_path.write_text(
@@ -181,6 +185,7 @@ def main() -> int:
         )
         output_paths.append(output_path)
 
+    # Write the selected classification-level attribution tables.
     for view in CLASSIFICATION_VIEWS:
         output_path = OUTPUT_DIRECTORY / f"classification_{view.name.lower()}.html"
         output_path.write_text(
@@ -189,6 +194,7 @@ def main() -> int:
         )
         output_paths.append(output_path)
 
+    # Render the selected classification charts.
     for chart in CLASSIFICATION_CHARTS:
         output_path = OUTPUT_DIRECTORY / f"classification_{chart.name.lower()}.png"
         output_path.write_bytes(classification_attribution.to_chart(chart))
@@ -208,6 +214,7 @@ def main() -> int:
         output_paths.append(output_path)
 
     print("Output files:")
+    # List the reports in the same order in which they were produced.
     for output_path in output_paths:
         print(f"  {output_path}")
     return 0

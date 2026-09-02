@@ -458,9 +458,9 @@ class TestAxysValidation(unittest.TestCase):
                 sorted((value, value) for value in identifiers),
             )
 
-    def test_blank_or_padded_security_identifiers_are_rejected(self) -> None:
-        """Direct security identifiers must be complete, exact text values."""
-        for invalid_identifier in (None, "", " S1 "):
+    def test_blank_security_identifiers_are_rejected(self) -> None:
+        """Direct security identifiers must contain non-whitespace text."""
+        for invalid_identifier in (None, "", " "):
             with (
                 self.subTest(invalid_identifier=invalid_identifier),
                 tempfile.TemporaryDirectory() as tmp,
@@ -489,9 +489,35 @@ class TestAxysValidation(unittest.TestCase):
                 self.assertIn("secperf.csv", message)
                 self.assertIn("2024-01-31", message)
 
-    def test_blank_or_padded_portfolio_names_are_rejected(self) -> None:
-        """Selected portfolio display names must be complete, exact text."""
-        for invalid_name in (None, "", " ", " Portfolio", "Portfolio "):
+    def test_security_identifiers_are_trimmed(self) -> None:
+        """Direct security identifiers lose only surrounding whitespace."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            portfolio_path = _write_frame_csv(
+                directory,
+                "portperf.csv",
+                _valid_portfolio_rows(),
+            )
+            security_path = _write_frame_csv(
+                directory,
+                "secperf.csv",
+                _valid_security_rows(security_ids=[" S1 "]),
+            )
+            data = AxysData(
+                directory,
+                _minimal_source_values(portfolio_path, security_path),
+            )
+
+            portfolio = data.get_portfolio("PORT")
+
+            self.assertEqual(
+                portfolio.security_performance[cols.IDENTIFIER].unique().to_list(),
+                ["S1"],
+            )
+
+    def test_blank_portfolio_names_are_rejected(self) -> None:
+        """Selected portfolio display names must contain non-whitespace text."""
+        for invalid_name in (None, "", " "):
             with (
                 self.subTest(invalid_name=invalid_name),
                 tempfile.TemporaryDirectory() as tmp,
@@ -519,13 +545,34 @@ class TestAxysValidation(unittest.TestCase):
 
                 message = str(context.exception)
                 self.assertIn(cols.PORTFOLIO_NAME, message)
-                self.assertIn("non-null, nonblank", message)
+                self.assertIn("non-null and nonblank", message)
                 self.assertIn("portperf.csv", message)
                 self.assertIn("2024-01-31", message)
 
-    def test_classification_identities_reject_null_blank_and_padding(self) -> None:
-        """Security-master classification codes must be complete exact text."""
-        for invalid_value in (None, "", " TECH "):
+    def test_portfolio_codes_and_names_are_trimmed(self) -> None:
+        """Axys account identities and display names are normalized before matching."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            portfolio_rows = _valid_portfolio_rows()
+            portfolio_rows["PORTFOLIO_CODE"] = [" PORT "]
+            portfolio_rows["PORTFOLIO_NAME"] = [" Portfolio "]
+            security_rows = _valid_security_rows()
+            security_rows["PORTFOLIO_CODE"] = [" PORT "]
+            portfolio_path = _write_frame_csv(directory, "portperf.csv", portfolio_rows)
+            security_path = _write_frame_csv(directory, "secperf.csv", security_rows)
+            data = AxysData(
+                directory,
+                _minimal_source_values(portfolio_path, security_path),
+            )
+
+            portfolio = data.get_portfolio("PORT")
+
+            self.assertEqual(portfolio.portfolio_code, "PORT")
+            self.assertEqual(portfolio.portfolio_name, "PORT - Portfolio")
+
+    def test_classification_identities_reject_null_or_blank_values(self) -> None:
+        """Security-master classification codes must contain non-whitespace text."""
+        for invalid_value in (None, "", " "):
             with (
                 self.subTest(invalid_value=invalid_value),
                 tempfile.TemporaryDirectory() as tmp,
@@ -569,9 +616,55 @@ class TestAxysValidation(unittest.TestCase):
                 self.assertIn("classification", message)
                 self.assertIn("secmast.csv", message)
 
-    def test_mapping_identities_reject_null_blank_and_padding(self) -> None:
-        """Security-to-classification destination codes must be exact text."""
-        for invalid_value in (None, "", " TECH "):
+    def test_classification_identities_and_names_are_trimmed(self) -> None:
+        """Classification codes and display names are normalized together."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            portfolio_path = _write_frame_csv(
+                directory,
+                "portperf.csv",
+                _valid_portfolio_rows(),
+            )
+            security_path = _write_frame_csv(
+                directory,
+                "secperf.csv",
+                _valid_security_rows(),
+            )
+            security_master_path = _write_frame_csv(
+                directory,
+                "secmast.csv",
+                {
+                    "SECURITY_ID": [" S1 "],
+                    "SECURITY_NAME": [" Security One "],
+                    "SECTOR_CODE": [" TECH "],
+                    "SECTOR_NAME": [" Technology "],
+                },
+            )
+            data = AxysData(
+                directory,
+                _minimal_source_values(
+                    portfolio_path,
+                    security_path,
+                    security_master_path,
+                ),
+            )
+            portfolio = data.get_portfolio("PORT")
+
+            sources = data.get_classification_sources("Sector", portfolio)
+
+            self.assertEqual(
+                sources.classification_data_source.to_dict(as_series=False),
+                {cols.IDENTIFIER: ["TECH"], cols.NAME: ["Technology"]},
+            )
+            assert sources.mapping_data_sources is not None
+            self.assertEqual(
+                sources.mapping_data_sources[0].rows(),
+                [("S1", "TECH")],
+            )
+
+    def test_mapping_identities_reject_null_or_blank_values(self) -> None:
+        """Security-to-classification destinations must contain text."""
+        for invalid_value in (None, "", " "):
             with (
                 self.subTest(invalid_value=invalid_value),
                 tempfile.TemporaryDirectory() as tmp,
@@ -603,14 +696,41 @@ class TestAxysValidation(unittest.TestCase):
                 self.assertIn("mapping", message)
                 self.assertIn("secmast.csv", message)
 
-    def test_security_master_components_reject_null_blank_and_padding(self) -> None:
-        """Composite security-master identity components remain strictly validated."""
+    def test_mapping_identities_are_trimmed(self) -> None:
+        """Security-to-classification identities are normalized before filtering."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            security_master_path = _write_frame_csv(
+                directory,
+                "secmast.csv",
+                {
+                    "SECURITY_ID": [" S001 "],
+                    "SECURITY_NAME": [" Synthetic Security S001 "],
+                    "SECTOR_CODE": [" TECH "],
+                    "SECTOR_DESC": [" Technology "],
+                },
+            )
+            specification = _fixture_specification()
+            security_master = _file_definition(specification, "security_master")
+            security_master["path"] = str(security_master_path)
+            data = AxysData(directory, specification)
+
+            mapping = data._classification_loader.load(  # pylint: disable=protected-access
+                "mapping",
+                "Sector",
+                ["S001"],
+            )
+
+            self.assertEqual(mapping.rows(), [("S001", "TECH")])
+
+    def test_security_master_components_reject_null_or_blank_values(self) -> None:
+        """Composite security-master identity components require text."""
         construction = SecurityIdConstruction(
             components=("security_type", "security_symbol"),
             source_columns=("SECURITY_TYPE", "SECURITY_SYMBOL"),
             separator="_",
         )
-        for invalid_value in (None, "", " csus "):
+        for invalid_value in (None, "", " "):
             with self.subTest(invalid_value=invalid_value):
                 frame = pl.DataFrame(
                     {
@@ -634,6 +754,38 @@ class TestAxysValidation(unittest.TestCase):
                 self.assertIn("security_type", message)
                 self.assertIn("security_master", message)
                 self.assertIn("secmast.csv", message)
+
+    def test_security_master_components_are_trimmed(self) -> None:
+        """Composite security identifiers use normalized component values."""
+        construction = SecurityIdConstruction(
+            components=("security_type", "security_symbol"),
+            source_columns=("SECURITY_TYPE", "SECURITY_SYMBOL"),
+            separator="_",
+        )
+        frame = pl.DataFrame(
+            {
+                "SECURITY_TYPE": [" csus "],
+                "SECURITY_SYMBOL": [" S001 "],
+            }
+        )
+
+        normalized = with_constructed_security_id(
+            frame,
+            construction,
+            output_column=cols.IDENTIFIER,
+            dataset_name="security_master",
+            source_path=Path("secmast.csv"),
+            error_message=lambda message: message,
+        )
+
+        self.assertEqual(
+            normalized.select(
+                "SECURITY_TYPE",
+                "SECURITY_SYMBOL",
+                cols.IDENTIFIER,
+            ).row(0),
+            ("csus", "S001", "csus_S001"),
+        )
 
     def test_missing_portfolio_performance_columns_are_rejected(self) -> None:
         """Required portfolio performance columns are validated before processing."""

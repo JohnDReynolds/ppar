@@ -121,9 +121,9 @@ class TestPerformanceNormalization(unittest.TestCase):
                         sorted(identifiers),
                     )
 
-    def test_generic_performance_rejects_invalid_identifiers(self) -> None:
-        """Generic CSV and Polars identities must be complete exact text."""
-        for invalid_identifier in (None, "", " ", " A", "A "):
+    def test_generic_performance_rejects_blank_identifiers(self) -> None:
+        """Generic CSV and Polars identities must contain non-whitespace text."""
+        for invalid_identifier in (None, "", " "):
             frame = pl.DataFrame(
                 {
                     cols.FROM_DATE: [dt.date(2024, 1, 1)] * 2,
@@ -145,11 +145,36 @@ class TestPerformanceNormalization(unittest.TestCase):
                             Performance(data_source)
 
                         self.assertIn("identifier", str(context.exception))
-                        self.assertIn("non-null, nonblank", str(context.exception))
+                        self.assertIn("non-null and nonblank", str(context.exception))
                         self.assertEqual(
                             context.exception.context.get("field"),
                             cols.IDENTIFIER,
                         )
+
+    def test_generic_performance_trims_surrounding_whitespace(self) -> None:
+        """Generic CSV and Polars identities and names are normalized at ingestion."""
+        frame = _narrow_performance_df(include_names=True).with_columns(
+            pl.col(cols.IDENTIFIER).map_elements(
+                lambda value: f"  {value}  ",
+                return_dtype=pl.String,
+            ),
+            pl.col(cols.NAME).map_elements(
+                lambda value: f"  {value}  ",
+                return_dtype=pl.String,
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "performance.csv"
+            frame.write_csv(path)
+            for data_source in (frame, path):
+                with self.subTest(source_type=type(data_source).__name__):
+                    performance = Performance(data_source)
+
+                    self.assertEqual(performance.identifiers, ["A", "B"])
+                    self.assertEqual(
+                        performance.classification_items[cols.CLASSIFICATION_NAME].to_list(),
+                        ["Alpha", "Beta"],
+                    )
 
     def test_generic_performance_preserves_internal_identifier_spaces(self) -> None:
         """Internal spaces are identity content rather than surrounding padding."""

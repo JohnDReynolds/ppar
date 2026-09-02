@@ -115,12 +115,27 @@ class AxysClassificationSourceLoader:
             lazy_frame = source_frame.lazy()
         self._validate_csv_columns(source_type, source_name, source, lazy_frame)
 
+        text_columns = {
+            cast(str, source["identifier_column"]),
+            cast(str, source["name_column"]),
+        }
+        source_lazy_frame = lazy_frame
         if source[_FILTER_TO_SECURITY_IDS]:
             lazy_frame = lazy_frame.filter(
                 pl.col(source["identifier_column"]).is_in(unique_security_ids)
             )
-
         source_frame = lazy_frame.collect()
+        if source[_FILTER_TO_SECURITY_IDS]:
+            identifier_column = cast(str, source["identifier_column"])
+            matched_ids = set(source_frame[identifier_column].unique().to_list())
+            if not set(unique_security_ids).issubset(matched_ids):
+                # Preserve predicate pushdown for exact identifiers. Only missing
+                # matches require a normalized fallback scan of the source.
+                normalized_ids = source_lazy_frame.with_columns(
+                    pl.col(identifier_column).str.strip_chars()
+                ).filter(pl.col(identifier_column).is_in(unique_security_ids))
+                source_frame = normalized_ids.collect()
+        source_frame = util.normalize_text_columns(source_frame, sorted(text_columns))
         self._validate_identity_columns(
             source_frame,
             source_type,
@@ -224,10 +239,8 @@ class AxysClassificationSourceLoader:
         source: dict[str, Any],
         file_path: util.PathLike,
     ) -> None:
-        """Reject null, blank, or padded identifiers in supporting sources."""
-        field_names = ["identifier_column"]
-        if source_type == "mapping":
-            field_names.append("name_column")
+        """Reject null or blank identities in normalized supporting sources."""
+        field_names = ["identifier_column", "name_column"]
         for field_name in field_names:
             column_name = cast(str, source[field_name])
             invalid_rows = util.invalid_identity_rows(frame, column_name)
@@ -236,8 +249,8 @@ class AxysClassificationSourceLoader:
             raise PparError(
                 self._error_message(
                     f"Identity field {column_name!r} in {str(file_path)!r} for "
-                    f"{source_type} {source_name!r} must be non-null, nonblank, "
-                    "and free of surrounding whitespace. "
+                    f"{source_type} {source_name!r} must be non-null and nonblank "
+                    "after surrounding whitespace is removed. "
                     f"Affected rows: {sample_rows(invalid_rows, [column_name])}"
                 )
             )

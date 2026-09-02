@@ -216,7 +216,7 @@ def invalid_identity_rows(
     frame: pl.DataFrame,
     column_name: str,
 ) -> pl.DataFrame:
-    """Return rows whose textual identity is null, blank, or padded.
+    """Return rows whose textual identity is null or blank after trimming.
 
     Args:
         frame: Source rows containing a string identity column.
@@ -227,10 +227,26 @@ def invalid_identity_rows(
     """
     value = pl.col(column_name)
     stripped_value = value.str.strip_chars()
-    return frame.filter(
-        value.is_null()
-        | stripped_value.eq("")
-        | value.ne(stripped_value)
+    return frame.filter(value.is_null() | stripped_value.eq(""))
+
+
+def normalize_text_columns(
+    frame: pl.DataFrame,
+    column_names: Sequence[str],
+) -> pl.DataFrame:
+    """Remove surrounding whitespace from textual source values.
+
+    Args:
+        frame: Source rows containing string columns.
+        column_names: Columns to normalize.
+
+    Returns:
+        A new DataFrame with normalized columns. Null values remain null and
+        meaningful internal whitespace is unchanged.
+    """
+    return frame.with_columns(
+        pl.col(column_name).str.strip_chars().alias(column_name)
+        for column_name in column_names
     )
 
 
@@ -255,9 +271,9 @@ def load_datasource(
             must be validated before unused source rows are filtered.
 
     Returns:
-        A two-column Polars DataFrame with normalized column names, exact duplicate
-        pairs removed, values cast to strings for non-file inputs, and rows filtered
-        to ``needed_items``.
+        A two-column Polars DataFrame with normalized column names and surrounding
+        whitespace removed, exact duplicate pairs removed, values cast to strings
+        for non-file inputs, and rows filtered to ``needed_items``.
 
     Raises:
         PparError: If ``data_source`` is a file path that does not point to an
@@ -277,7 +293,8 @@ def load_datasource(
         # ``infer_schema=False`` preserves identity text such as leading zeroes.
         lf = pl.scan_csv(data_source, has_header=False, infer_schema=False)
         column0_name = list(lf.collect_schema().keys())[0]
-        # Mapping identities must be validated before filtering so a padded source
+        lf = lf.with_columns(pl.all().str.strip_chars())
+        # Mapping identities must be validated before filtering so an invalid source
         # cannot disappear and silently become a self-mapping. Other two-column
         # sources retain the inexpensive lazy filter.
         df = (
@@ -297,13 +314,14 @@ def load_datasource(
     # Give the columns consistent names.
     df.columns = column_names
 
-    # Cast to strings and filter on needed_items.  Note that this was done above in pl.scan_scv
+    # Cast to strings, remove surrounding whitespace, and filter on needed_items.
     if not is_file_source:
         # All identifiers need to be strings for classifications, mappings, performances, etc.
         for column_name in df.columns:
             if not isinstance(df.schema[column_name], pl.String):
                 df = df.with_columns(df[column_name].cast(pl.String))
-        # Filter on only the needed_items after any identity validation below.
+    df = normalize_text_columns(df, df.columns)
+    # Filter on only the needed_items after any identity validation below.
     if identity_column_indices:
         for column_index in identity_column_indices:
             column_name = df.columns[column_index]
@@ -313,7 +331,7 @@ def load_datasource(
             affected_rows = invalid_rows.head(10).to_dicts()
             raise PparError(
                 f"{source_description} identity field {column_name!r} must be "
-                "non-null, nonblank, and free of surrounding whitespace. "
+                "non-null and nonblank after surrounding whitespace is removed. "
                 f"Affected rows: {affected_rows}",
                 context={
                     "boundary": source_description,

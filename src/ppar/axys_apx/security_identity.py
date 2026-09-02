@@ -198,8 +198,8 @@ def with_constructed_security_id(
         A new frame containing ``output_column``.
 
     Raises:
-        PparError: If a component column is missing, blank, padded with
-            whitespace, or produces an ambiguous composite identifier.
+        PparError: If a component column is missing or blank after trimming, or
+            produces an ambiguous composite identifier.
 
     Notes:
         Symbols may contain the configured separator. ppar therefore checks
@@ -217,7 +217,7 @@ def with_constructed_security_id(
         )
 
     string_expressions = {
-        component: pl.col(source_column).cast(pl.String, strict=False)
+        component: pl.col(source_column).cast(pl.String, strict=False).str.strip_chars()
         for component, source_column in zip(
             construction.components,
             construction.source_columns,
@@ -230,25 +230,31 @@ def with_constructed_security_id(
         strict=True,
     ):
         string_expression = string_expressions[component]
-        stripped_expression = string_expression.str.strip_chars()
         invalid_rows = frame.filter(
             string_expression.is_null()
-            | stripped_expression.eq("")
-            | string_expression.ne(stripped_expression)
+            | string_expression.eq("")
         )
         if not invalid_rows.is_empty():
             value = invalid_rows.get_column(source_column)[0]
             raise PparError(
                 error_message(
                     f"security_id component {component!r}, mapped to source column "
-                    f"{source_column!r}, contains a blank, null, or "
-                    f"whitespace-padded value {value!r} in {str(source_path)!r} "
+                    f"{source_column!r}, contains a blank or null value "
+                    f"{value!r} after surrounding whitespace is removed in "
+                    f"{str(source_path)!r} "
                     f"for {dataset_name}."
                 ),
             )
     result = frame.with_columns(
+        string_expressions[component].alias(source_column)
+        for component, source_column in zip(
+            construction.components,
+            construction.source_columns,
+            strict=True,
+        )
+    ).with_columns(
         pl.concat_str(
-            [string_expressions[component] for component in construction.components],
+            [pl.col(source_column) for source_column in construction.source_columns],
             separator=construction.separator,
         ).alias(output_column)
     )

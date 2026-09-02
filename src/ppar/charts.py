@@ -257,9 +257,10 @@ def heatmap(
             .drop("_row_total")
         )
 
-    # Use a blue-to-red diverging palette so sign does not depend on a
-    # difficult-to-distinguish red/green pairing.
-    cmap = sns.diverging_palette(240, 20, s=80, l=55, as_cmap=True)
+    # Use the familiar financial convention of muted red for negative values and
+    # green for positive values. Every cell remains numerically annotated so color
+    # reinforces, rather than solely communicates, the sign and magnitude.
+    cmap = sns.diverging_palette(10, 130, s=65, l=55, center="light", as_cmap=True)
 
     # Thousands of independent Matplotlib text artists dominate long-history
     # rendering. Large heatmaps use the same complete annotations through a

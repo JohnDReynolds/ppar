@@ -20,7 +20,7 @@ _VALUE_COLUMN = cols.TOTAL_EFFECT_SIMPLE
 
 
 class TestChartAccessibility(unittest.TestCase):
-    """Chart palettes distinguish series and signs without red/green dependence."""
+    """Chart palettes use explicit, consistently interpretable colors."""
 
     def test_series_and_sign_colors_use_color_vision_friendly_palette(self) -> None:
         """The Okabe-Ito series and sign colors remain explicit and distinct."""
@@ -30,6 +30,23 @@ class TestChartAccessibility(unittest.TestCase):
         self.assertEqual(charts._NEGATIVE_COLOR, "#D55E00")
         self.assertEqual(len(set((*charts._COLORS, charts._NEGATIVE_COLOR))), 4)
         # pylint: enable=protected-access
+
+    def test_heatmap_uses_red_for_negative_and_green_for_positive(self) -> None:
+        """The annotated heatmap follows the familiar financial sign convention."""
+        axis = MagicMock()
+        axis.get_yticklabels.return_value = []
+        with patch.object(charts.sns, "heatmap", return_value=axis) as render:
+            charts.heatmap(
+                _heatmap_frame(["Alpha", "Beta", "Alpha", "Beta"]),
+                _VALUE_COLUMN,
+                ("Portfolio vs Benchmark", "Attribution"),
+            )
+
+        cmap = render.call_args.kwargs["cmap"]
+        negative = cmap(0.0)
+        positive = cmap(1.0)
+        self.assertGreater(negative[0], negative[1])
+        self.assertGreater(positive[1], positive[0])
 
 
 def _heatmap_frame(names: list[str]) -> pl.DataFrame:

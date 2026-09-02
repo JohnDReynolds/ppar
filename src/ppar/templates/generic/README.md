@@ -44,9 +44,9 @@ exactly two columns:
 For the demonstrated reports, every performance identifier must be named in
 `Security.csv` and mapped to an identifier in the selected classification file.
 
-Performance identifiers and both mapping columns are exact textual identities.
-Leading zeroes are preserved. These values must be non-null, nonblank, and free of
-surrounding whitespace; meaningful internal spaces are retained.
+Performance identifiers and both mapping columns are treated as textual identities.
+Leading zeroes and meaningful internal spaces are preserved. Surrounding whitespace
+is removed, and values that are then blank are rejected.
 
 Common setup errors include misspelled headings, percentages entered as whole
 numbers, weights that do not sum to 1.0, duplicate or overlapping periods, and

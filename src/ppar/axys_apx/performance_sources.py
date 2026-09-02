@@ -227,15 +227,36 @@ class AxysPerformanceSourceLoader:
                 pl.col(cols.THRU_DATE).str.strptime(pl.Date, "%Y-%m-%d", strict=True),
             )
         )
+        source_lazy_frame = lazy_frame
+        requested_codes: tuple[str, ...] = ()
         if isinstance(portfolio_code, str):
+            requested_codes = (portfolio_code,)
             lazy_frame = lazy_frame.filter(pl.col(cols.PORTFOLIO_CODE) == portfolio_code)
         elif portfolio_code is not None:
+            requested_codes = tuple(portfolio_code)
             lazy_frame = lazy_frame.filter(
                 pl.col(cols.PORTFOLIO_CODE).is_in(portfolio_code)
             )
         frame = _collect_performance_source(
             self._date_range.filter_performance(lazy_frame)
         )
+        matched_codes = set(frame[cols.PORTFOLIO_CODE].unique().to_list())
+        if requested_codes and not set(requested_codes).issubset(matched_codes):
+            # Exact account codes retain predicate pushdown for normal bulk loading.
+            # Only a failed exact match pays for a normalized fallback scan.
+            normalized_codes = source_lazy_frame.with_columns(
+                pl.col(cols.PORTFOLIO_CODE).str.strip_chars()
+            )
+            normalized_codes = normalized_codes.filter(
+                pl.col(cols.PORTFOLIO_CODE).is_in(requested_codes)
+            )
+            frame = _collect_performance_source(
+                self._date_range.filter_performance(normalized_codes)
+            )
+        text_columns = set(frame.columns) & _IDENTITY_COLUMNS
+        if construction is not None:
+            text_columns.update(construction.source_columns)
+        frame = util.normalize_text_columns(frame, sorted(text_columns))
         if construction is not None:
             frame = with_constructed_security_id(
                 frame,
@@ -286,7 +307,7 @@ class AxysPerformanceSourceLoader:
         dataset_name: str,
         path: util.PathLike,
     ) -> pl.DataFrame:
-        """Reject invalid normalized identities and portfolio display names.
+        """Reject null or blank normalized identities and portfolio display names.
 
         Args:
             frame: Selected and normalized source rows.
@@ -297,7 +318,7 @@ class AxysPerformanceSourceLoader:
             The unchanged validated frame.
 
         Raises:
-            PparError: If a required textual value is null, blank, or padded.
+            PparError: If a required textual value is null or blank after trimming.
         """
         text_columns = [cols.PORTFOLIO_CODE]
         text_columns.append(
@@ -321,8 +342,9 @@ class AxysPerformanceSourceLoader:
             raise PparError(
                 self._error_message(
                     f"{field_kind} field {column_name!r} in {str(path)!r} for "
-                    f"{dataset_name} must be non-null, nonblank, and free of "
-                    f"surrounding whitespace. Affected rows: {affected_rows}"
+                    f"{dataset_name} must be non-null and nonblank after "
+                    f"surrounding whitespace is removed. Affected rows: "
+                    f"{affected_rows}"
                 )
             )
         return frame

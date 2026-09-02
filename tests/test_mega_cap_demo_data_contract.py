@@ -198,7 +198,7 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
                     identity_column = cols.IDENTIFIER
                 malformed = pl.read_csv(malformed_path).with_columns(
                     pl.col(identity_column).map_elements(
-                        lambda value: f" {value} ",
+                        lambda _value: "   ",
                         return_dtype=pl.String,
                     )
                 )

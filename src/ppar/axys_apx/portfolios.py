@@ -39,14 +39,14 @@ _PortfolioErrorMessage = Callable[[str, str | None], str]
 def _partition_by_portfolio_code(
     performance: pl.DataFrame,
 ) -> dict[str, pl.DataFrame]:
-    """Partition performance rows once while retaining exact identity and order.
+    """Partition performance rows once while retaining normalized identity and order.
 
     Args:
         performance: Normalized portfolio- or security-performance rows containing
             validated string portfolio codes.
 
     Returns:
-        DataFrames keyed by exact portfolio code. Both partition order and row order
+        DataFrames keyed by normalized portfolio code. Both partition order and row order
         within each partition follow the source frame.
     """
     partitions = performance.partition_by(

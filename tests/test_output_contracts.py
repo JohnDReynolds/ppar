@@ -235,7 +235,7 @@ class TestRiskOutputs(unittest.TestCase):
             confidence_level=0.9876,
         ).to_html()
         assumptions = (
-            "Assumptions: Annual risk-free rate: 4.56% · "
+            "Annual risk-free rate: 4.56% · "
             "Annual minimum acceptable return: -1.23% · "
             "VaR confidence level: 98.76%"
         )

@@ -33,7 +33,6 @@ import ppar.utilities as util
 
 # Constants
 _DEFAULT_OUTPUT_PRECISION = 8
-_MAXIMUM_HTML_ROWS = 1_010
 
 __all__ = ["Attribution", "Chart", "View"]
 
@@ -1233,8 +1232,7 @@ class Attribution:
             HTML string containing the rendered table.
 
         Raises:
-            PparError: If the requested table is too large for HTML rendering or view
-                construction fails validation.
+            PparError: If view construction fails validation.
         """
         df = self._fetch_dataframe(
             view,
@@ -1242,17 +1240,6 @@ class Attribution:
             sort_descendings,
             label_total=True,
         )
-        if _MAXIMUM_HTML_ROWS < len(df):
-            raise PparError(
-                f"{view.value} has {len(df):,} rows; HTML output is limited to "
-                f"{_MAXIMUM_HTML_ROWS:,} rows. Use to_polars() or write_csv() for "
-                "larger results.",
-                context={
-                    "view": view.value,
-                    "row_count": len(df),
-                    "row_limit": _MAXIMUM_HTML_ROWS,
-                },
-            )
         return html_table.attribution_html(
             df,
             view.value,

@@ -407,7 +407,7 @@ def riskstatistics_table(
         row["column"]: _risk_statistic_format(str(row["column"])) for row in df.to_dicts()
     }
     note = (
-        f"Assumptions: Annual risk-free rate: {_format_percentage_text(annual_risk_free_rate)} "
+        f"Annual risk-free rate: {_format_percentage_text(annual_risk_free_rate)} "
         "· Annual minimum acceptable return: "
         f"{_format_percentage_text(annual_minimum_acceptable_return)} · "
         f"VaR confidence level: {_format_percentage_text(confidence_level)}"

@@ -39,18 +39,20 @@ class TestAttributionValidation(unittest.TestCase):
         with self.assertRaises(PparError):
             Analytics(invalid_return, invalid_return.clone()).attribution()
 
-    def test_large_detail_html_output_is_rejected(self) -> None:
-        """Overlarge detail HTML tables are rejected before rendering."""
+    def test_large_detail_html_output_is_rendered(self) -> None:
+        """Detail HTML renders all rows rather than enforcing an arbitrary cap."""
         analytics = Analytics(
             test_util.performance_data_path("Magnificent 7"),
             test_util.performance_data_path("Magnificent 7"),
         )
 
-        with self.assertRaises(PparError):
-            analytics.attribution().to_html(View.SUBPERIOD_ATTRIBUTION)
+        html = analytics.attribution().to_html(View.SUBPERIOD_ATTRIBUTION)
 
-    def test_html_row_limit_accepts_1010_and_rejects_1011(self) -> None:
-        """HTML output enforces the established 1,010-row boundary."""
+        self.assertTrue(html.startswith("<!DOCTYPE html>"))
+        self.assertIn("Sub-Period Attribution", html)
+
+    def test_html_renders_more_than_1010_rows(self) -> None:
+        """HTML output has no arbitrary row-count boundary."""
         analytics = Analytics(
             test_util.performance_data_path("Magnificent 7"),
             test_util.performance_data_path("Magnificent 7"),
@@ -61,7 +63,7 @@ class TestAttributionValidation(unittest.TestCase):
             mock.patch.object(
                 attribution,
                 "_fetch_dataframe",
-                return_value=pl.DataFrame({"row": range(1_010)}),
+                return_value=pl.DataFrame({"row": range(1_011)}),
             ),
             mock.patch.object(
                 attribution_module.html_table,
@@ -70,26 +72,6 @@ class TestAttributionValidation(unittest.TestCase):
             ),
         ):
             self.assertEqual(attribution.to_html(View.OVERALL_ATTRIBUTION), "html")
-
-        with mock.patch.object(
-            attribution,
-            "_fetch_dataframe",
-            return_value=pl.DataFrame({"row": range(1_011)}),
-        ):
-            with self.assertRaisesRegex(
-                PparError,
-                "Overall Attribution has 1,011 rows; HTML output is limited to "
-                "1,010 rows.*to_polars.*write_csv",
-            ) as raised:
-                attribution.to_html(View.OVERALL_ATTRIBUTION)
-            self.assertEqual(
-                raised.exception.context,
-                {
-                    "view": "Overall Attribution",
-                    "row_count": 1_011,
-                    "row_limit": 1_010,
-                },
-            )
 
     def test_runtime_audit_rejects_corrupted_smoothed_effect_total(self) -> None:
         """A broken linked-effect total cannot survive the production audit."""

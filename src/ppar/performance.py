@@ -365,6 +365,10 @@ class Performance:
                         f"{self.error_message_context}: Cannot convert the column "
                         f"'{column_name}' to a {dtype}, {str(exception)[:1000]}",
                     ) from exception
+        text_columns = [cols.IDENTIFIER]
+        if cols.NAME in self.narrow_df.columns:
+            text_columns.append(cols.NAME)
+        self.narrow_df = util.normalize_text_columns(self.narrow_df, text_columns)
         invalid_identifiers = util.invalid_identity_rows(
             self.narrow_df,
             cols.IDENTIFIER,
@@ -376,7 +380,8 @@ class Performance:
             ).head(10).to_dicts()
             raise PparError(
                 f"Identity field {cols.IDENTIFIER!r} {self.error_message_context} "
-                "must be non-null, nonblank, and free of surrounding whitespace. "
+                "must be non-null and nonblank after surrounding whitespace is "
+                "removed. "
                 f"Affected rows: {affected_rows}",
                 context={
                     "boundary": "Performance",

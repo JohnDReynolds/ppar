@@ -215,9 +215,9 @@ class MappingTests(unittest.TestCase):
                     with self.assertRaisesRegex(PparError, "conflicting values.*A"):
                         Mapping(("A",), data_source)
 
-    def test_mapping_rejects_invalid_source_and_destination_identities(self) -> None:
-        """Mapping identifiers must be nonblank exact text before filtering."""
-        for invalid_value in (None, "", " ", " A", "A "):
+    def test_mapping_rejects_blank_source_and_destination_identities(self) -> None:
+        """Mapping identifiers must contain non-whitespace text before filtering."""
+        for invalid_value in (None, "", " "):
             for invalid_column in ("from", "to"):
                 values = {
                     "from": [invalid_value if invalid_column == "from" else "A"],
@@ -238,7 +238,7 @@ class MappingTests(unittest.TestCase):
 
                             self.assertIn("Mapping data", str(context.exception))
                             self.assertIn(
-                                "non-null, nonblank",
+                                "non-null and nonblank",
                                 str(context.exception),
                             )
                             self.assertEqual(
@@ -247,6 +247,58 @@ class MappingTests(unittest.TestCase):
                                     0 if invalid_column == "from" else 1
                                 ],
                             )
+
+    def test_mapping_trims_surrounding_whitespace(self) -> None:
+        """Mapping source and destination identities are normalized consistently."""
+        source = pl.DataFrame({"from": [" A "], "to": [" TECH "]})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mapping.csv"
+            source.write_csv(path, include_header=False)
+            for data_source in (source, path):
+                with self.subTest(source_type=type(data_source).__name__):
+                    mapping = Mapping(("A",), data_source)
+
+                    self.assertEqual(mapping.to_froms, {"TECH": ["A"]})
+
+    def test_mapping_rejects_conflicts_created_by_trimming(self) -> None:
+        """Normalization cannot silently choose between conflicting targets."""
+        source = pl.DataFrame(
+            {"from": ["A", " A "], "to": ["TECH", "HEALTH"]}
+        )
+
+        with self.assertRaisesRegex(PparError, "conflicting values.*A"):
+            Mapping(("A",), source)
+
+    def test_classification_trims_surrounding_whitespace(self) -> None:
+        """Classification identifiers and display names are normalized together."""
+        performance = _named_performance()
+        source = pl.DataFrame(
+            {"identifier": [" A ", " B "], "name": [" Alpha ", " Beta "]}
+        )
+
+        classification = Classification(
+            "Security",
+            source,
+            (performance, performance),
+        )
+
+        self.assertEqual(
+            classification.df.to_dict(as_series=False),
+            {
+                cols.CLASSIFICATION_IDENTIFIER: ["A", "B"],
+                cols.CLASSIFICATION_NAME: ["Alpha", "Beta"],
+            },
+        )
+
+    def test_classification_rejects_conflicts_created_by_trimming(self) -> None:
+        """Normalized duplicate identifiers cannot retain conflicting names."""
+        performance = _named_performance()
+        source = pl.DataFrame(
+            {"identifier": ["A", " A ", "B"], "name": ["Alpha", "Other", "Beta"]}
+        )
+
+        with self.assertRaisesRegex(PparError, "conflicting values.*A"):
+            Classification("Security", source, (performance, performance))
 
     def test_mapping_preserves_internal_identifier_spaces(self) -> None:
         """Mapping identities may contain meaningful internal spaces."""

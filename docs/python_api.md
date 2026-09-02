@@ -16,7 +16,7 @@ Other modules, classes, and helpers are implementation details. In particular,
 `ppar.tables` and `ppar.utilities` are not supported application interfaces.
 
 ppar has no complete-workspace `run()` API. The setup-generated `ppar_demo.py` shows
-the full executable workflow with ordinary Python values.
+the full executable workflow with Python values.
 
 ## Analytics
 
@@ -113,13 +113,14 @@ analytics, use `AxysData.get_classification_sources()` with the one reconciled
 portfolio. `AxysPortfolio.to_analytics()` accepts an optional positional benchmark;
 all remaining options are keyword-only.
 
-Portfolio codes and names are validated as exact, nonblank text. A portfolio rename
-is permitted across periods; `AxysPortfolio.portfolio_name` contains the exact code
-and the latest name within the retained `AxysData.get_portfolio()` date window. CSV
-row order and later unselected periods do not change that display name.
+Surrounding whitespace is removed from portfolio codes and names, and values that are
+then blank are rejected. A portfolio rename is permitted across periods;
+`AxysPortfolio.portfolio_name` contains the code and the latest name within the
+retained `AxysData.get_portfolio()` date window. CSV row order and later unselected
+periods do not change that display name.
 
-Attribution HTML tables are limited to 1,010 rows. For larger results, use
-`to_polars()` or `write_csv()` rather than `to_html()`.
+Attribution HTML tables include every result row. For very large results,
+`to_polars()` or `write_csv()` may be more practical than opening a large HTML file.
 
 The generated demonstrations show ordinary loops for selecting and writing multiple
 HTML and PNG reports. Applications remain free to choose their own filenames,

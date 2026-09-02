@@ -96,6 +96,7 @@ class Classification:
                 needed_items=needed_items,
                 error_message="Classification data must contain exactly two columns.",
                 source_description="Classification data",
+                identity_column_indices=(0, 1),
             )
 
     @property

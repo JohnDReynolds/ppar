@@ -19,6 +19,19 @@ import ppar.schema as cols
 _VALUE_COLUMN = cols.TOTAL_EFFECT_SIMPLE
 
 
+class TestChartAccessibility(unittest.TestCase):
+    """Chart palettes distinguish series and signs without red/green dependence."""
+
+    def test_series_and_sign_colors_use_color_vision_friendly_palette(self) -> None:
+        """The Okabe-Ito series and sign colors remain explicit and distinct."""
+        # pylint: disable=protected-access
+        self.assertEqual(charts._COLORS, ("#0072B2", "#E69F00", "#009E73"))
+        self.assertEqual(charts._POSITIVE_COLOR, "#0072B2")
+        self.assertEqual(charts._NEGATIVE_COLOR, "#D55E00")
+        self.assertEqual(len(set((*charts._COLORS, charts._NEGATIVE_COLOR))), 4)
+        # pylint: enable=protected-access
+
+
 def _heatmap_frame(names: list[str]) -> pl.DataFrame:
     """Return two classifications across two heatmap dates."""
     return pl.DataFrame(
@@ -225,9 +238,30 @@ class TestHeatmapIdentity(unittest.TestCase):
         with patch.object(charts.sns, "heatmap", side_effect=capture_heatmap) as render:
             charts.heatmap(frame, _VALUE_COLUMN, ("Title", "Subtitle"))
 
-        self.assertTrue(render.call_args.kwargs["annot"])
+        annotations = np.asarray(render.call_args.kwargs["annot"])
+        self.assertEqual(annotations.shape, (2, 2))
+        self.assertEqual(np.count_nonzero(annotations == ""), 1)
+        self.assertTrue(all(value.endswith("%") for value in annotations.flat if value))
         self.assertEqual(len(rendered_axes), 1)
         self.assertEqual(len(rendered_axes[0].texts), frame.height - 1)
+
+    def test_heatmap_percentage_annotations_normalize_negative_zero(self) -> None:
+        """Heatmap labels use percentages without displaying negative zero."""
+        frame = _heatmap_frame(["Alpha", "Beta", "Alpha", "Beta"]).with_columns(
+            pl.when(pl.int_range(pl.len()) == 0)
+            .then(pl.lit(-0.000001))
+            .otherwise(pl.col(_VALUE_COLUMN))
+            .alias(_VALUE_COLUMN)
+        )
+        axis = MagicMock()
+        axis.get_yticklabels.return_value = []
+
+        with patch.object(charts.sns, "heatmap", return_value=axis) as render:
+            charts.heatmap(frame, _VALUE_COLUMN, ("Title", "Subtitle"))
+
+        annotations = np.asarray(render.call_args.kwargs["annot"])
+        self.assertIn("0.00%", annotations)
+        self.assertNotIn("-0.00%", annotations)
 
     def test_cell_annotations_are_excluded_only_from_layout_measurement(self) -> None:
         """Cell text remains rendered without participating in expensive layout."""
@@ -284,6 +318,26 @@ class TestHeatmapIdentity(unittest.TestCase):
         self.assertEqual(np.isnan(np.asarray(render.call_args.args[0])).sum(), 1)
         self.assertEqual(len(drawings), 1)
         self.assertEqual(drawings[0].text.call_count, len(rows) - 1)
+        rendered_text = [call.args[1] for call in drawings[0].text.call_args_list]
+        self.assertTrue(all(value.endswith("%") for value in rendered_text))
+
+    def test_percentage_tick_precision_distinguishes_small_intervals(self) -> None:
+        """Adaptive chart labels preserve meaningful differences on tight axes."""
+        tick_values = [0.000001, 0.00000104, 0.00000108]
+
+        precision = charts._percentage_tick_precision(  # pylint: disable=protected-access
+            tick_values
+        )
+        labels = [
+            charts._format_percentage(  # pylint: disable=protected-access
+                value,
+                precision,
+            )
+            for value in tick_values
+        ]
+
+        self.assertGreater(precision, 2)
+        self.assertEqual(len(set(labels)), len(labels))
 
 
 if __name__ == "__main__":

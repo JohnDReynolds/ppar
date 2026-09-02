@@ -113,7 +113,7 @@ class TestAttributionValidation(unittest.TestCase):
             )
         )
 
-        with self.assertRaisesRegex(PparError, "does not foot when summed"):
+        with self.assertRaisesRegex(PparError, "does not reconcile to its total"):
             attribution.audit()
 
     def test_direct_attribution_rejects_mislabeled_classification(self) -> None:

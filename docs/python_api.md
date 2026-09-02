@@ -1,10 +1,6 @@
 # Python API
 
-The root API is deliberately small:
-
-```python
-from ppar import Analytics, __version__
-```
+The root API is deliberately small: `from ppar import Analytics, __version__`.
 
 The complete supported Python surface is:
 
@@ -24,35 +20,9 @@ the full executable workflow with ordinary Python values.
 
 ## Analytics
 
-```python
-from pathlib import Path
-
-from ppar import Analytics
-from ppar.attribution import Chart, View
-from ppar.frequency import Frequency
-
-performance_input_directory = Path("./my_ppar") / "input" / "performance"
-
-analytics = Analytics(
-    performance_input_directory / "Mega-Cap Alpha Portfolio.csv",
-    performance_input_directory / "Mega-Cap Benchmark.csv",
-    frequency=Frequency.QUARTERLY,
-)
-attribution = analytics.attribution()
-
-frame = attribution.to_polars(View.OVERALL_ATTRIBUTION)
-html = attribution.to_html(View.OVERALL_ATTRIBUTION)
-png = attribution.to_chart(Chart.OVERALL_ATTRIBUTION)
-attribution.write_csv(View.OVERALL_ATTRIBUTION, "overall.csv")
-
-risk = analytics.risk_statistics()
-risk_frame = risk.to_polars()
-risk_html = risk.to_html()
-risk.write_csv("risk.csv")
-
-Path("overall.html").write_text(html, encoding="utf-8")
-Path("overall.png").write_bytes(png)
-```
+The root README contains the shortest complete `Analytics` example. The generated
+`ppar_demo.py` is the canonical full workflow for configuring calculations, selecting
+reports, and saving them. This page does not duplicate those examples.
 
 The portfolio and optional benchmark are the only positional constructor arguments.
 Names, classifications, dates, frequency, holidays, and risk assumptions are
@@ -61,6 +31,24 @@ keyword-only so their meaning remains visible at each call site.
 Performance, classification, and mapping table inputs accept only a CSV path or a
 Polars DataFrame. Focused types and lower-level APIs live in `ppar.attribution`,
 `ppar.frequency`, `ppar.risk`, and `ppar.axys_apx`.
+
+### Results and files
+
+| Result | Public method | Value or action |
+| --- | --- | --- |
+| Attribution table | `Attribution.to_polars(view)` | Returns a Polars DataFrame. |
+| Attribution HTML | `Attribution.to_html(view)` | Returns an HTML string. |
+| Attribution chart | `Attribution.to_chart(chart)` | Returns PNG bytes. |
+| Attribution CSV | `Attribution.write_csv(view, path)` | Writes a CSV file. |
+| Risk table | `RiskStatistics.to_polars()` | Returns a Polars DataFrame. |
+| Risk HTML | `RiskStatistics.to_html()` | Returns an HTML string. |
+| Risk CSV | `RiskStatistics.write_csv(path)` | Writes a CSV file. |
+
+Applications choose where and how HTML and PNG reports are stored. Save HTML with
+`path.write_text(attribution.to_html(view), encoding="utf-8")` and PNG with
+`path.write_bytes(attribution.to_chart(chart))`, as demonstrated by `ppar_demo.py`.
+Keeping these values in memory also supports notebooks, web responses, and custom
+storage without temporary files.
 
 ## Direct risk arrays
 

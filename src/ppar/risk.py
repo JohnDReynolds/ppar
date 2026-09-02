@@ -199,6 +199,11 @@ class RiskStatistics:
         # Set the validated frequency and currency symbol.
         self._frequency = frequency
         self._currency_symbol = currency_symbol
+        self._report_assumptions = (
+            float(annual_risk_free_rate),
+            float(annual_minimum_acceptable_return),
+            float(confidence_level),
+        )
         self._from_date: dt.date | None
         self._thru_date: dt.date | None
 
@@ -857,6 +862,7 @@ class RiskStatistics:
             title,
             subtitle,
             self._currency_symbol,
+            *self._report_assumptions,
         )
 
     def to_polars(self) -> pl.DataFrame:

@@ -213,19 +213,23 @@ class Performance:
         portfolio_periods = portfolio.period_totals().select(dates_days)
         benchmark_periods = benchmark.period_totals().select(dates_days)
         if not portfolio_periods.equals(benchmark_periods):
-            raise PparError("audit_perfs(): Portfolio and Benchmark dates are not equal.")
+            raise PparError(
+                "Portfolio and benchmark performance periods do not match."
+            )
         if not (
             portfolio_periods[cols.FROM_DATE][0] == expected_from_date
             and portfolio_periods[cols.THRU_DATE][-1] == expected_thru_date
         ):
-            raise PparError("audit_perfs(): Date logic error.")
+            raise PparError(
+                "Portfolio and benchmark performance do not match the expected date range."
+            )
         if common_classification_name is not None:
             if (
                 portfolio.classification_name != common_classification_name
                 or benchmark.classification_name != common_classification_name
             ):
                 raise PparError(
-                    "audit_perfs(): Requested classification does not match "
+                    "Requested classification does not match "
                     "both performance sources. "
                     f"Requested={common_classification_name!r}, "
                     f"portfolio={portfolio.classification_name!r}, "

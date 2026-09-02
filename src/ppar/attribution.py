@@ -288,7 +288,9 @@ class Attribution:
 
         # Assert that df and df_overall have the same columns.
         if set(self._df.columns) != set(self._df_overall.columns):
-            raise PparError("Attr.audit(): df columns != df_overall columns.")
+            raise PparError(
+                "Attribution detail and overall results contain different columns."
+            )
 
         # Audit all columns.
         Attribution._audit_columns(self._df, self._df_overall)
@@ -365,7 +367,10 @@ class Attribution:
             for col1, col2 in _SIMPLE_COLUMN_PAIRS_THAT_SHOULD_BE_EQUAL:
                 if col1 in df.columns and col2 in df.columns:
                     if not df[col1].round(7).equals(df[col2].round(7)):
-                        raise PparError(f"_audit_columns() df: {col1} <> {col2}.")
+                        raise PparError(
+                            "Attribution columns do not reconcile: "
+                            f"{col1!r} differs from {col2!r}."
+                        )
 
         # Audit df_overall.
         if not df_overall.is_empty():
@@ -377,7 +382,9 @@ class Attribution:
                     float(df_overall[col_name].item(0)),
                     util.Tolerance.MEDIUM,
                 ):
-                    raise PparError(f"_audit_columns: {col_name} does not foot when summed.")
+                    raise PparError(
+                        f"Attribution column {col_name!r} does not reconcile to its total."
+                    )
 
     def _from_date(self) -> dt.date:
         """Return the first from date in the attribution period.
@@ -717,7 +724,7 @@ class Attribution:
                     .with_columns(self._smoothed_detail_expressions())
                 )
             case _:
-                raise PparError(f"Unhandled View {view} in Attribution._construct_df_detail()")
+                raise PparError(f"Unsupported attribution view: {view!r}.")
 
         return (
             detail.lazy()

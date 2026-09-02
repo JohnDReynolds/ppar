@@ -1,4 +1,4 @@
-"""Create self-contained portfolio analytics demonstration directories."""
+"""Create portfolio analytics demonstration directories."""
 
 from __future__ import annotations
 

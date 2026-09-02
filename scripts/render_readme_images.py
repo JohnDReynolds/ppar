@@ -50,14 +50,14 @@ _TABLE_SIZES = {
 }
 _IMAGE_SIZES = {
     "ActiveContributionsByEconomicSector.png": (1330, 480),
-    "CumulativeAttributionByEconomicSector.jpg": (3262, 1791),
+    "CumulativeAttributionByEconomicSector.jpg": (3250, 1791),
     "CumulativeAttributionEffectsByEconomicSector.png": (1400, 600),
     "CumulativeReturns.png": (1400, 600),
-    "OverallAttributionByEconomicSector.jpg": (2194, 1287),
+    "OverallAttributionByEconomicSector.jpg": (2240, 1287),
     "OverallAttributionByEconomicSector.png": (1400, 480),
-    "OverallAttributionBySecurity.jpg": (2504, 8199),
+    "OverallAttributionBySecurity.jpg": (2520, 8199),
     "OverallContributionByEconomicSector.png": (1400, 480),
-    "RiskStatistics.jpg": (1094, 2592),
+    "RiskStatistics.jpg": (1090, 2676),
     "SubPeriodAttributionEffectsByEconomicSector.png": (1140, 600),
     "SubPeriodReturns.png": (1140, 600),
     "TotalAttributionEffectsByEconomicSector.png": (1330, 480),

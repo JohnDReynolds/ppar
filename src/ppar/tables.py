@@ -14,11 +14,28 @@ import polars as pl
 import ppar.schema as cols
 import ppar.utilities as util
 
-_ColumnFormat = Literal["text", "number", "currency", "date"]
+_ColumnFormat = Literal["text", "number", "percentage", "currency", "date"]
 _ColumnAlign = Literal["left", "center", "right"]
 
 _DEFAULT_TABLE_CLASS = "ppar_table"
 _MISSING_VALUE = "<NA>"
+_PERCENTAGE_PRECISION = 2
+
+# These statistics have return-like or probability units. Ratio and regression
+# statistics that are dimensionless retain ordinary numeric formatting.
+_PERCENTAGE_RISK_STATISTICS = (
+    "Return Range",
+    "Mean Return",
+    "Standard Deviation",
+    "Downside Probability",
+    "Expected Downside Value",
+    "Downside Deviation",
+    "Tracking Error",
+    "M-Squared",
+    "Treynor Ratio",
+    "Alpha",
+    "Jensen's Alpha",
+)
 
 
 @dataclass(frozen=True)
@@ -60,11 +77,12 @@ class HtmlTable:
         columns: Columns to display, in output order.
         title: Optional title displayed above the header rows.
         subtitle: Optional subtitle displayed below the title.
+        note: Optional full-width note displayed below the subtitle.
         spanners: Optional grouped column headers.
         group_column: Optional source column used to insert group heading rows.
         stub_column: Optional display column rendered as row-header cells.
         table_class: CSS class used for the table element.
-        float_precision: Decimal places for ``number`` columns.
+        float_precision: Decimal places for unitless ``number`` columns.
         currency_symbol: Prefix for ``currency`` columns.
         row_format_column: Optional column whose values select row-specific
             formatting overrides.
@@ -75,6 +93,7 @@ class HtmlTable:
     columns: Sequence[ColumnSpec]
     title: str = ""
     subtitle: str = ""
+    note: str = ""
     spanners: Sequence[SpannerSpec] = ()
     group_column: str | None = None
     stub_column: str | None = None
@@ -93,11 +112,15 @@ class HtmlTable:
         Returns:
             HTML string containing the rendered table.
         """
+        document_title = " — ".join(
+            value for value in (self.title, self.subtitle) if value
+        ) or "ppar report"
         table_html = "\n".join(
             [
                 '<div class="ppar_table_container">',
                 _style_block(self.table_class),
-                f'<table class="{html.escape(self.table_class)}">',
+                f'<table class="{html.escape(self.table_class)}" '
+                f'aria-label="{_escape(document_title)}">',
                 self._thead_html(),
                 self._tbody_html(),
                 "</table>",
@@ -112,6 +135,8 @@ class HtmlTable:
                 '<html lang="en">',
                 "<head>",
                 '<meta charset="utf-8"/>',
+                '<meta name="viewport" content="width=device-width, initial-scale=1"/>',
+                f"<title>{_escape(document_title)}</title>",
                 "</head>",
                 "<body>",
                 table_html,
@@ -130,9 +155,16 @@ class HtmlTable:
                 f'class="ppar_title">{_escape(self.title)}</td></tr>'
             )
         if self.subtitle:
+            subtitle_note_class = " ppar_subtitle_with_note" if self.note else ""
             lines.append(
                 f'  <tr class="ppar_heading"><td colspan="{col_count}" '
-                f'class="ppar_subtitle">{_escape(self.subtitle)}</td></tr>'
+                f'class="ppar_subtitle{subtitle_note_class}">'
+                f"{_escape(self.subtitle)}</td></tr>"
+            )
+        if self.note:
+            lines.append(
+                f'  <tr class="ppar_heading"><td colspan="{col_count}" '
+                f'class="ppar_note"><span>{_escape(self.note)}</span></td></tr>'
             )
         if self.spanners:
             lines.extend(self._spanner_rows_html())
@@ -169,13 +201,17 @@ class HtmlTable:
                 group_class = (
                     " ppar_group_start" if column_name in group_start_columns else ""
                 )
-                lines.append(f'    <th class="ppar_spanner_blank{group_class}"></th>')
+                lines.append(
+                    f'    <th class="ppar_spanner_blank{group_class}" '
+                    'aria-hidden="true"></th>'
+                )
                 idx += 1
                 continue
             colspan = len(spanner.columns)
             group_class = " ppar_group_start" if column_name in group_start_columns else ""
             lines.append(
-                f'    <th class="ppar_spanner{group_class}" colspan="{colspan}">'
+                f'    <th class="ppar_spanner{group_class}" colspan="{colspan}" '
+                'scope="colgroup">'
                 f"{_escape(spanner.label)}</th>"
             )
             idx += colspan
@@ -193,6 +229,7 @@ class HtmlTable:
                 current_group = row.get(self.group_column)
                 lines.append(
                     f'  <tr class="ppar_group_heading_row"><th colspan="{len(self.columns)}" '
+                    'scope="rowgroup" '
                     f'class="ppar_group_heading">{_format_text(current_group)}</th></tr>'
                 )
             stripe = " ppar_striped" if data_row_index % 2 == 1 else ""
@@ -314,6 +351,9 @@ def riskstatistics_html(
     title: str,
     subtitle: str,
     currency_symbol: str,
+    annual_risk_free_rate: float,
+    annual_minimum_acceptable_return: float,
+    confidence_level: float,
 ) -> str:
     """Return risk-statistics data as a lightweight HTML document.
 
@@ -322,11 +362,22 @@ def riskstatistics_html(
         title: Main table title.
         subtitle: Table subtitle.
         currency_symbol: Currency symbol used for value-at-risk rows.
+        annual_risk_free_rate: Annual risk-free rate used by applicable metrics.
+        annual_minimum_acceptable_return: Annual hurdle used by downside metrics.
+        confidence_level: Confidence level used for value at risk.
 
     Returns:
         HTML document string for the risk-statistics table.
     """
-    return riskstatistics_table(df, title, subtitle, currency_symbol).as_raw_html(make_page=True)
+    return riskstatistics_table(
+        df,
+        title,
+        subtitle,
+        currency_symbol,
+        annual_risk_free_rate,
+        annual_minimum_acceptable_return,
+        confidence_level,
+    ).as_raw_html(make_page=True)
 
 
 def riskstatistics_table(
@@ -334,6 +385,9 @@ def riskstatistics_table(
     title: str,
     subtitle: str,
     currency_symbol: str,
+    annual_risk_free_rate: float,
+    annual_minimum_acceptable_return: float,
+    confidence_level: float,
 ) -> HtmlTable:
     """Return risk-statistics data as a lightweight HTML table object.
 
@@ -342,13 +396,22 @@ def riskstatistics_table(
         title: Main table title.
         subtitle: Table subtitle.
         currency_symbol: Currency symbol used for value-at-risk rows.
+        annual_risk_free_rate: Annual risk-free rate used by applicable metrics.
+        annual_minimum_acceptable_return: Annual hurdle used by downside metrics.
+        confidence_level: Confidence level used for value at risk.
 
     Returns:
         HtmlTable object for the risk-statistics table.
     """
     row_formats: dict[object, _ColumnFormat] = {
-        row["column"]: "currency" for row in df.to_dicts() if "Value At Risk" in row["column"]
+        row["column"]: _risk_statistic_format(str(row["column"])) for row in df.to_dicts()
     }
+    note = (
+        f"Assumptions: Annual risk-free rate: {_format_percentage_text(annual_risk_free_rate)} "
+        "· Annual minimum acceptable return: "
+        f"{_format_percentage_text(annual_minimum_acceptable_return)} · "
+        f"VaR confidence level: {_format_percentage_text(confidence_level)}"
+    )
     return HtmlTable(
         df=df,
         columns=(
@@ -359,6 +422,7 @@ def riskstatistics_table(
         ),
         title=title,
         subtitle=subtitle,
+        note=note,
         group_column="Category",
         stub_column="column",
         currency_symbol=currency_symbol,
@@ -410,7 +474,7 @@ def _attribution_layout(
     }
 
     if view_name == "Cumulative Attribution":
-        columns = date_columns + _number_columns(
+        columns = date_columns + _percentage_columns(
             cols.VIEW_CUMULATIVE_ATTRIBUTION_COLUMNS, entity_labels
         )
         spanners: Sequence[SpannerSpec] = (
@@ -425,7 +489,7 @@ def _attribution_layout(
         return columns, spanners
 
     if view_name == "Overall Attribution":
-        columns = classification_columns + _number_columns(
+        columns = classification_columns + _percentage_columns(
             cols.VIEW_OVERALL_ATTRIBUTION_COLUMNS, measure_labels
         )
         spanners = (
@@ -443,7 +507,7 @@ def _attribution_layout(
         columns = (
             date_columns
             + classification_columns
-            + _number_columns(cols.VIEW_SUBPERIOD_ATTRIBUTION_COLUMNS, measure_labels)
+            + _percentage_columns(cols.VIEW_SUBPERIOD_ATTRIBUTION_COLUMNS, measure_labels)
         )
         spanners = (
             time_period_spanner,
@@ -458,7 +522,7 @@ def _attribution_layout(
         return columns, spanners
 
     if view_name == "Sub-Period Summary":
-        columns = date_columns + _number_columns(
+        columns = date_columns + _percentage_columns(
             cols.VIEW_SUBPERIOD_SUMMARY_COLUMNS, entity_labels
         )
         spanners = (
@@ -477,22 +541,39 @@ def _display_classification_label(classification_label: str | None) -> str:
     return classification_label or ""
 
 
-def _number_columns(
+def _percentage_columns(
     column_names: Sequence[str], labels: dict[str, str] | None = None
 ) -> tuple[ColumnSpec, ...]:
-    """Return numeric column specifications with display labels.
+    """Return percentage column specifications with display labels.
 
     Args:
         column_names: Source numeric columns to include.
         labels: Optional explicit display-label overrides.
 
     Returns:
-        Ordered numeric column specifications.
+        Ordered percentage column specifications.
     """
     return tuple(
-        ColumnSpec(column_name, _column_label(column_name, labels), format="number")
+        ColumnSpec(column_name, _column_label(column_name, labels), format="percentage")
         for column_name in column_names
     )
+
+
+def _risk_statistic_format(statistic_name: str) -> _ColumnFormat:
+    """Return the presentation format for one risk-statistic row.
+
+    Args:
+        statistic_name: Frequency-qualified risk-statistic display name.
+
+    Returns:
+        Currency for value at risk, percentage for return-like statistics, and
+        an ordinary number for dimensionless statistics.
+    """
+    if "Value At Risk" in statistic_name:
+        return "currency"
+    if any(statistic_name.endswith(name) for name in _PERCENTAGE_RISK_STATISTICS):
+        return "percentage"
+    return "number"
 
 
 def _column_label(column_name: str, labels: dict[str, str] | None = None) -> str:
@@ -581,6 +662,8 @@ def _format_value(
         return _MISSING_VALUE
     if column_format == "number":
         return _format_number(_as_float(value), float_precision)
+    if column_format == "percentage":
+        return _format_percentage(_as_float(value))
     if column_format == "currency":
         return f"{_escape(currency_symbol)}{_format_number(_as_float(value), 0)}"
     if column_format == "date" and isinstance(value, dt.date):
@@ -604,8 +687,42 @@ def _format_number(value: float, precision: int) -> str:
         Thousands-separated numeric text using an HTML minus sign for negative
         values.
     """
-    formatted = f"{value:,.{precision}f}"
+    # Suppress a negative sign when the value rounds to displayed zero. The raw
+    # DataFrame value remains unchanged.
+    display_value = 0.0 if round(value, precision) == 0 else value
+    formatted = f"{display_value:,.{precision}f}"
     return formatted.replace("-", "&minus;", 1) if formatted.startswith("-") else formatted
+
+
+def _format_percentage(value: float) -> str:
+    """Format a decimal value as a presentation percentage.
+
+    Args:
+        value: Decimal value, where ``1.0`` represents 100 percent.
+
+    Returns:
+        Percentage text with display-only negative zero suppressed.
+    """
+    formatted = _format_percentage_text(value)
+    return formatted.replace("-", "&minus;", 1) if formatted.startswith("-") else formatted
+
+
+def _format_percentage_text(value: float) -> str:
+    """Format a decimal value as plain percentage text.
+
+    Args:
+        value: Decimal value, where ``1.0`` represents 100 percent.
+
+    Returns:
+        Percentage text with display-only negative zero suppressed.
+    """
+    if math.isinf(value):
+        return f"{'-' if value < 0 else ''}inf%"
+    percentage = value * 100
+    display_value = (
+        0.0 if round(percentage, _PERCENTAGE_PRECISION) == 0 else percentage
+    )
+    return f"{display_value:,.{_PERCENTAGE_PRECISION}f}%"
 
 
 def _style_block(table_class: str) -> str:
@@ -653,11 +770,32 @@ def _style_block(table_class: str) -> str:
   border-top: 0;
   border-bottom: 2px solid #D3D3D3;
 }}
+{table_selector} .ppar_subtitle_with_note {{
+  border-bottom: 0;
+}}
+{table_selector} .ppar_note {{
+  text-align: center;
+  font-size: 85%;
+  font-weight: normal;
+  border-top: 0;
+  border-bottom: 2px solid #D3D3D3;
+  padding-top: 2px;
+}}
+{table_selector} .ppar_note span {{
+  display: inline-block;
+  max-width: 500px;
+}}
 {table_selector} .ppar_col_heading,
 {table_selector} .ppar_spanner {{
   font-size: 100%;
   font-weight: normal;
   border-bottom: 2px solid #D3D3D3;
+}}
+{table_selector} .ppar_col_headings .ppar_col_heading {{
+  background-color: #FFFFFF;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }}
 {table_selector} .ppar_spanner_blank {{
   border-bottom: 2px solid #D3D3D3;

@@ -30,6 +30,7 @@ logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 from matplotlib import ticker  # noqa: E402  # pylint: disable=wrong-import-position
 from matplotlib.axes import Axes
+from matplotlib.axis import Axis
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties, findfont
@@ -53,11 +54,15 @@ _MINIMUM_FIGURE_HEIGHT = 0.8 * _DEFAULT_FIGSIZE[1]  # in inches
 _MINIMUM_FIGURE_WIDTH = 0.8 * _DEFAULT_FIGSIZE[0]  # in inches
 _XTICK_ROTATION = 45  # Rotate the x-axis labels(dates) by 45 degrees for better readability
 _LARGE_HEATMAP_CELL_THRESHOLD = 500
+_PERCENTAGE_PRECISION = 2
+_MAXIMUM_PERCENTAGE_TICK_PRECISION = 6
 
-# Chart colors
-# 0 = portfolio, 1 = benchmark, 2 = active
-# 0 = allocation effect, 1 = selection effect, 2 = total effect
-_COLORS = ("green", "blue", "orange")
+# Color-vision-friendly Okabe-Ito colors. Series labels, legends, and positions
+# remain additional visual cues rather than relying on color alone.
+# 0 = portfolio/allocation, 1 = benchmark/selection, 2 = active/total
+_COLORS = ("#0072B2", "#E69F00", "#009E73")
+_POSITIVE_COLOR = "#0072B2"
+_NEGATIVE_COLOR = "#D55E00"
 
 
 class _HeatmapMesh(Protocol):
@@ -118,6 +123,7 @@ def cumulative_lines(
 
     # Set the y-axis labels.
     ax.set_ylabel(y_axis_label)
+    _set_percentage_formatter(ax.yaxis)
 
     # Add horizontal grid line at y == 0
     ax.axhline(0, color="gray", linestyle="--", linewidth=1)
@@ -251,22 +257,31 @@ def heatmap(
             .drop("_row_total")
         )
 
-    # Create the cmap: 0 = green, 120 = red, 100=saturation, 50=lightness
-    cmap = sns.diverging_palette(0, 120, s=100, l=50, as_cmap=True)
+    # Use a blue-to-red diverging palette so sign does not depend on a
+    # difficult-to-distinguish red/green pairing.
+    cmap = sns.diverging_palette(240, 20, s=80, l=55, as_cmap=True)
 
     # Thousands of independent Matplotlib text artists dominate long-history
     # rendering. Large heatmaps use the same complete annotations through a
     # batched raster path after the axes have been drawn.
     heatmap_values = heatmap_data.select(date_columns).to_numpy()
     use_large_heatmap_path = heatmap_values.size > _LARGE_HEATMAP_CELL_THRESHOLD
+    heatmap_annotations: bool | np.ndarray = False
+    if not use_large_heatmap_path:
+        heatmap_annotations = np.array(
+            [
+                [_format_percentage(float(value)) for value in row]
+                for row in heatmap_values
+            ]
+        )
 
     # Create the heatmap.
     ax = sns.heatmap(
         heatmap_values,
         cmap=cmap,
         center=0,
-        annot=not use_large_heatmap_path,
-        fmt=".4f",
+        annot=heatmap_annotations,
+        fmt="",
         linewidths=0.5,
         cbar=False,
         xticklabels=date_columns,
@@ -302,7 +317,7 @@ def heatmap(
     # artists; only unusually large matrices use the equivalent raster path.
     if use_large_heatmap_path:
         mesh = cast(_HeatmapMesh, ax.collections[0])
-        return _large_heatmap_to_png(fig, ax, mesh, heatmap_values, ".4f")
+        return _large_heatmap_to_png(fig, ax, mesh, heatmap_values)
     return _to_png(fig)
 
 
@@ -311,7 +326,6 @@ def _large_heatmap_to_png(
     ax: Axes,
     mesh: _HeatmapMesh,
     values: np.ndarray,
-    fmt: str,
 ) -> bytes:
     """Serialize a large heatmap with complete batched cell annotations.
 
@@ -320,8 +334,6 @@ def _large_heatmap_to_png(
         ax: Heatmap axes used to transform cell centers into pixels.
         mesh: Colored heatmap cells whose luminance controls text color.
         values: Two-dimensional values to format into the cells.
-        fmt: Python numeric format specification for each value.
-
     Returns:
         PNG image bytes containing every heatmap cell and annotation.
     """
@@ -351,7 +363,7 @@ def _large_heatmap_to_png(
         )
         drawing.text(
             (display_x, image.height - display_y),
-            format(float(values[row, column]), fmt),
+            _format_percentage(float(values[row, column])),
             font=font,
             fill=text_color,
             anchor="mm",
@@ -372,6 +384,62 @@ def _relative_luminance(color: np.ndarray) -> float:
         ((color[:3] + 0.055) / 1.055) ** 2.4,
     )
     return float(rgb @ np.array([0.2126, 0.7152, 0.0722]))
+
+
+def _format_percentage(value: float, precision: int = _PERCENTAGE_PRECISION) -> str:
+    """Return a decimal value as percentage text for presentation.
+
+    Args:
+        value: Decimal value, where ``1.0`` represents 100 percent.
+        precision: Number of percentage decimal places to display.
+
+    Returns:
+        Percentage text, an empty string for NaN, and no negative sign when the
+        value rounds to displayed zero.
+    """
+    if math.isnan(value):
+        return ""
+    if math.isinf(value):
+        return f"{'-' if value < 0 else ''}inf%"
+    percentage = value * 100
+    display_value = 0.0 if round(percentage, precision) == 0 else percentage
+    return f"{display_value:.{precision}f}%"
+
+
+def _percentage_tick_precision(tick_values: Iterable[float]) -> int:
+    """Return percentage precision that distinguishes adjacent chart ticks.
+
+    Args:
+        tick_values: Axis tick locations expressed as decimal values.
+
+    Returns:
+        Decimal places for percentage labels, with two places as the standard
+        presentation precision and additional places for unusually tight axes.
+    """
+    finite_values = sorted({float(value) for value in tick_values if math.isfinite(value)})
+    differences = [
+        current - previous
+        for previous, current in zip(finite_values, finite_values[1:])
+        if current > previous
+    ]
+    if not differences:
+        return _PERCENTAGE_PRECISION
+    minimum_percentage_step = min(differences) * 100
+    required_precision = max(
+        _PERCENTAGE_PRECISION,
+        math.ceil(-math.log10(minimum_percentage_step)),
+    )
+    return min(required_precision, _MAXIMUM_PERCENTAGE_TICK_PRECISION)
+
+
+def _set_percentage_formatter(axis: Axis) -> None:
+    """Apply an adaptive percentage formatter to one Matplotlib axis."""
+    precision = _percentage_tick_precision(axis.get_ticklocs())
+    axis.set_major_formatter(
+        ticker.FuncFormatter(
+            lambda value, _position: _format_percentage(value, precision)
+        )
+    )
 
 
 def _prepare_heatmap_rows(df: pl.DataFrame, column_name: str) -> pl.DataFrame:
@@ -499,8 +567,13 @@ def overall_attribution(
 
     # Concatenate all series into a single Polars DataFrame column and find min/max.
     combined_series = pl.concat(series_values)
-    overall_min = math.floor(cast(float, combined_series.min()) * 100) / 100
-    overall_max = math.ceil(cast(float, combined_series.max()) * 100) / 100
+    data_min = cast(float, combined_series.min())
+    data_max = cast(float, combined_series.max())
+    overall_min = min(0.0, data_min)
+    overall_max = max(0.0, data_max)
+    if overall_min == overall_max:
+        overall_min = -0.0001
+        overall_max = 0.0001
 
     # Get the vertical chart measurements.
     bar_height, _, fig_height = _vertical_chart_measurements(len(labels))
@@ -520,7 +593,10 @@ def overall_attribution(
     for ax, series_value, title in zip(axes, series_values, series_names):
         # Create the subplot.
         ax.set_title(title)
-        colors = ["green" if val >= 0 else "red" for val in series_value]
+        colors = [
+            _POSITIVE_COLOR if val >= 0 else _NEGATIVE_COLOR
+            for val in series_value
+        ]
         ax.barh(labels, series_value, height=bar_height, color=colors)
 
         # Set the y-axis.
@@ -535,9 +611,9 @@ def overall_attribution(
         # Invert the y-axis so the first group will be at the top.
         ax.invert_yaxis()
 
-        # Set the x-axis ticks min/max, and format them to 2 decimals.
+        # Use shared exact bounds so small effects remain visually distinguishable.
         ax.set_xticks(np.linspace(overall_min, overall_max, num=7))
-        ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f"))
+        _set_percentage_formatter(ax.xaxis)
 
         # Add vertical grid line at x == 0
         ax.axvline(0, color="gray", linestyle="--", linewidth=1)
@@ -615,18 +691,19 @@ def overall_contribution(
         # Invert the y-axis so the first group will be at the top.
         ax.invert_yaxis()
 
-        # # Set x-axis ticks to 2 decimals.
-        ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f"))
-
         # Add vertical grid line at x == 0
         ax.axvline(0, color="gray", linestyle="--", linewidth=1)
 
         # Plot the bars.
         for i in range(len(labels)):
-            # Plot the green portfolio bar at y = i - delta
-            ax.barh(i - delta, values[0][i], height=bar_height, color="green")
-            # Plot the blue benchmark bar at y = i + delta
-            ax.barh(i + delta, values[1][i], height=bar_height, color="blue")
+            # Series position and color both distinguish portfolio from benchmark.
+            ax.barh(i - delta, values[0][i], height=bar_height, color=_COLORS[0])
+            ax.barh(i + delta, values[1][i], height=bar_height, color=_COLORS[1])
+
+        # Each panel is narrow, so limit tick density before adding the longer
+        # percentage labels.
+        ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
+        _set_percentage_formatter(ax.xaxis)
 
     # tight_layout() is a "best pratice" that does some automatic spacing between subplots
     # rect=[left, bottom, right, top], where (0, 0, 1, 1) means the entire figure.
@@ -637,8 +714,8 @@ def overall_contribution(
     fig.tight_layout(rect=(0, bottom_margin, 1, top_margin))
 
     # Create a legend for the portfolio and benchmark.
-    portfolio_patch = mpatches.Patch(color="green", label=portfolio_name)
-    benchmark_patch = mpatches.Patch(color="blue", label=benchmark_name)
+    portfolio_patch = mpatches.Patch(color=_COLORS[0], label=portfolio_name)
+    benchmark_patch = mpatches.Patch(color=_COLORS[1], label=benchmark_name)
     fig.legend(
         handles=[portfolio_patch, benchmark_patch],
         loc="lower center",
@@ -725,9 +802,9 @@ def vertical_bars(
     ax.set_xticks(indices)
     ax.set_xticklabels(dates, rotation=_XTICK_ROTATION, ha="right")
 
-    # Set y-axis labels to 2 decimals, and add a horizontal grid line at y == 0
+    # Use explicit percentage ticks and add a horizontal grid line at y == 0.
     ax.set_ylabel(y_axis_label)
-    ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f"))
+    _set_percentage_formatter(ax.yaxis)
     ax.axhline(0, color="gray", linestyle="--", linewidth=1)
 
     # Set x-limits to decrease the horizontal space between the left boundary and the first bar,

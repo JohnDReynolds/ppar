@@ -10,6 +10,10 @@ vendor-neutral CSV files or Axys/APX exports.
 
 ppar supports Python 3.11.9 through Python 3.14.
 
+ppar is available under a 45-day, single-user internal evaluation license.
+Production, commercial, multi-user, or continued use requires a separate agreement;
+contact `jjjkreynolds@gmail.com`. Review the [license](LICENSE) before installing.
+
 ```bash
 python -m pip install ppar
 ```
@@ -30,7 +34,7 @@ ppar setup ./my_ppar --axys-apx
 python ./my_ppar/ppar_demo.py
 ```
 
-Either setup command creates a self-contained demonstration directory:
+Either setup command creates a demonstration directory:
 
 ```text
 my_ppar/
@@ -80,6 +84,8 @@ selected by editing `ppar_demo.py`.
 
 ## Python
 
+This prints the overall portfolio, benchmark, and active returns as decimals:
+
 ```python
 from pathlib import Path
 
@@ -93,12 +99,17 @@ analytics = Analytics(
     performance_input_directory / "Mega-Cap Benchmark.csv",
 )
 
-overall_attribution = analytics.attribution().to_polars(View.OVERALL_ATTRIBUTION)
-print(overall_attribution)
+overall_returns = (
+    analytics.attribution()
+    .to_polars(View.OVERALL_ATTRIBUTION)
+    .tail(1)
+    .select("Portfolio_Return", "Benchmark_Return", "Active_Return")
+)
+print(overall_returns)
 ```
 
-Tabular results are available as Polars DataFrames, HTML, or CSV. Charts are available
-as PNG files.
+The generated `ppar_demo.py` is the complete reporting example. Results are available
+as Polars DataFrames, HTML text, PNG bytes, or CSV files.
 
 ## Documentation
 
@@ -107,8 +118,5 @@ as PNG files.
 - [Python API](docs/python_api.md)
 - [Maintenance](docs/maintenance.md)
 
-[License](LICENSE)
-
 Downloading, installing, accessing, copying, or using ppar constitutes acceptance of
-the license. The public package grants a time-limited internal evaluation license;
-production and other commercial use require a separate written agreement.
+the [license](LICENSE).

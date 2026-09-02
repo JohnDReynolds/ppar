@@ -62,6 +62,41 @@ class TestPackageMetadata(unittest.TestCase):
         readme_lines = (_ROOT / "README.md").read_text(encoding="utf-8").splitlines()
         self.assertEqual(readme_lines[2], _PRODUCT_DESCRIPTION)
 
+    def test_evaluation_terms_and_licensing_contact_are_visible(self) -> None:
+        """Users see the evaluation limit and a direct contact before installation."""
+        readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+        license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
+
+        install_position = readme.index("python -m pip install ppar")
+        self.assertLess(readme.index("45-day, single-user"), install_position)
+        self.assertLess(readme.index("jjjkreynolds@gmail.com"), install_position)
+        self.assertIn("solely for internal evaluation for 45 days", license_text)
+        self.assertIn("John D Reynolds at\njjjkreynolds@gmail.com", license_text)
+        self.assertNotRegex(license_text, r"\bPPAR\b")
+
+    def test_documentation_has_one_concise_introductory_analytics_example(self) -> None:
+        """The root owns the complete introductory example without API-page duplication."""
+        readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+        python_section = readme.split("## Python\n", maxsplit=1)[1].split(
+            "## Documentation\n", maxsplit=1
+        )[0]
+        self.assertEqual(python_section.count("```python"), 1)
+        example = python_section.split("```python\n", maxsplit=1)[1].split(
+            "```", maxsplit=1
+        )[0]
+        compile(example, "README.md Python example", "exec")
+        self.assertIn(".tail(1)", example)
+        self.assertIn(
+            '.select("Portfolio_Return", "Benchmark_Return", "Active_Return")',
+            example,
+        )
+
+        api_guide = (_ROOT / "docs/python_api.md").read_text(encoding="utf-8")
+        self.assertNotIn("analytics = Analytics(", api_guide)
+        self.assertIn("This page does not duplicate those examples.", api_guide)
+        self.assertIn("Attribution.to_html(view)", api_guide)
+        self.assertIn("Attribution.to_chart(chart)", api_guide)
+
     def test_runtime_dependencies_are_complete_and_independent(self) -> None:
         """The base install contains both workflows without product extras."""
         project = _pyproject()["project"]
@@ -124,6 +159,25 @@ class TestPackageMetadata(unittest.TestCase):
         self.assertTrue(
             generic_readme.startswith("# ppar vendor-neutral demonstration\n")
         )
+        for expected in (
+            "Reports are written to `output/`.",
+            "## Performance files",
+            "`weight` | Holding weight as a decimal; `0.25` means 25%.",
+            "`return` | Holding return as a decimal; `0.05` means 5%.",
+            "weights must sum to 1.0",
+            "at least one common selected period",
+            "select periods by `thru_date`, including both boundaries",
+            "## Classifications and mappings",
+            "`Security.csv` | Performance identifier | Display name",
+            "Mapping file | Performance identifier | Classification identifier",
+            "Common setup errors include",
+        ):
+            self.assertIn(expected, generic_readme)
+        for obsolete_output_claim in (
+            "atomically replaces",
+            "replaces the complete `output/` directory",
+        ):
+            self.assertNotIn(obsolete_output_claim, generic_readme)
         axys_readme = templates.joinpath("axys_apx", "README.md").read_text(
             encoding="utf-8"
         )

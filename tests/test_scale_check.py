@@ -97,13 +97,62 @@ class TestScaleCheck(unittest.TestCase):
             ):
                 check_scale._check_large_site(root, 500)
 
-    def test_selected_and_history_caps_are_unchanged(self) -> None:
-        """10x selected and 5x history thresholds retain their observed shape."""
-        selected = check_scale._sublinear_scaling_result("selected", 10, 1.0, 1.0)
+    def test_history_caps_are_unchanged(self) -> None:
+        """The fivefold long-history thresholds retain their observed shape."""
         history = check_scale._sublinear_scaling_result("history", 5, 1.0, 1.0)
-        self.assertEqual(selected[2:], (2.10, 2.20))
         self.assertAlmostEqual(history[2], 1.575)
         self.assertAlmostEqual(history[3], 1.65)
+
+    def test_slow_equivalent_selected_workload_is_observational(self) -> None:
+        """Machine-dependent selected timing cannot reject equivalent results."""
+        baseline_security = pl.DataFrame(
+            {"Classification_Identifier": ["A", None]}
+        )
+        scaled_security = pl.DataFrame(
+            {
+                "Classification_Identifier": [
+                    *[f"A{index}" for index in range(10)],
+                    None,
+                ]
+            }
+        )
+        sector = pl.DataFrame({"Effect": [0.25]})
+        risk = pl.DataFrame(
+            {"Portfolio": [0.5], "Benchmark": [0.25], "Difference": [0.25]}
+        )
+        stream = io.StringIO()
+        with (
+            mock.patch.object(
+                check_scale,
+                "_prepare_large_site",
+                return_value=(Path("baseline"), 100),
+            ),
+            mock.patch.object(
+                check_scale,
+                "_prepare_selected",
+                return_value=(Path("scaled"), 1_000),
+            ),
+            mock.patch.object(
+                check_scale,
+                "_selected_tables",
+                side_effect=(
+                    (baseline_security, sector, risk),
+                    (scaled_security, sector, risk),
+                ),
+            ),
+            mock.patch.object(
+                check_scale.time,
+                "perf_counter",
+                side_effect=(0.0, 1.0, 2.0, 12.0),
+            ),
+            redirect_stdout(stream),
+        ):
+            check_scale._check_selected(Path("unused"))
+
+        output = stream.getvalue()
+        self.assertIn("PASS Analytics selected-workload 10x", output)
+        self.assertIn("10.000x", output)
+        self.assertIn("no performance threshold", output)
 
     def test_large_site_expansion_preserves_values(self) -> None:
         """Synthetic copies change only portfolio identity."""

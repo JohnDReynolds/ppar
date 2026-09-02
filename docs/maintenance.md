@@ -36,10 +36,12 @@ The large-site result runs the complete baseline and scaled demonstrations once 
 requires every generated report file to be byte-for-byte equal. It prints their
 elapsed times and ratio for observation, without applying a machine-dependent timing
 threshold. Deterministic tests separately require the requested accounts to reach one
-predicate-pushed query and one materialization for each performance source. The same
-command retains the established timed gates for selected-workload and long-history
-scaling. Add `--diagnostics` to also report fixture preparation, Python startup, and
-calculation-only timings as observation-only components.
+predicate-pushed query and one materialization for each performance source. The
+selected-workload check retains its row-growth and financial-equivalence assertions
+while reporting machine-dependent timing as an observation. The long-history check
+retains its established timed gate. Add `--diagnostics` to also report fixture
+preparation, Python startup, and calculation-only timings as observation-only
+components.
 
 The release-candidate command composes both gates:
 

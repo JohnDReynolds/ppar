@@ -76,7 +76,7 @@ selected by editing `ppar_demo.py`.
 
 <img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/OverallAttributionBySecurity.jpg" alt="Overall attribution table by security" width="100%" />
 
-<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/RiskStatistics.jpg" alt="Ex-post risk statistics table" width="100%" />
+<img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/RiskStatistics.jpg" alt="Ex-post risk statistics table" width="50%" />
 
 ## Python
 

@@ -29,7 +29,7 @@ def _release_commands(
     python: str,
     wheel_output: Path | None = None,
 ) -> tuple[tuple[str, ...], ...]:
-    """Return the routine and unchanged 500x release command contract."""
+    """Return the routine and required 500x release command contract."""
     product_gate: tuple[str, ...] = (python, "scripts/check_project.py")
     if wheel_output is not None:
         product_gate += ("--wheel-output", str(wheel_output))
@@ -40,7 +40,7 @@ def _release_commands(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Compose the routine product gate with the unchanged 500x scale gate."""
+    """Compose the routine product gate with the required 500x scale check."""
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     for command in _release_commands(sys.executable, args.wheel_output):
         _run(list(command))

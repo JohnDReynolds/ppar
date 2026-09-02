@@ -91,7 +91,7 @@ class TestCheckProjectScript(unittest.TestCase):
         check_project._check_documentation()
 
     def test_release_candidate_keeps_500x(self) -> None:
-        """The release gate composes the routine gate and unchanged scale gate."""
+        """The release gate composes the routine gate and required scale check."""
         self.assertEqual(
             check_release_candidate._release_commands("python"),
             (

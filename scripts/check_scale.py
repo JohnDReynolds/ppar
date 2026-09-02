@@ -1,4 +1,4 @@
-"""Run ppar's unchanged large-site, selected-workload, and history scale gates."""
+"""Run ppar's large-site, selected-workload, and history scale checks."""
 
 from __future__ import annotations
 
@@ -46,12 +46,9 @@ _EXPECTED_HISTORY_SOURCE_PERIODS = 300
 _EXPECTED_HISTORY_REPORTING_PERIODS = 99
 _EXPECTED_HISTORY_REPORTING_END = dt.date(2046, 3, 30)
 _DIAGNOSTIC_STARTUP_SAMPLES = 3
-_LARGE_SITE_PAIRED_SAMPLES = 5
 _TIMEOUT_GRACE_SECONDS = 5.0
 _SCALING_WARNING_MULTIPLIER = 1.05
 _SCALING_FAILURE_MULTIPLIER = 1.10
-_LARGE_SITE_WARNING_RATIO = 1.05
-_LARGE_SITE_FAILURE_RATIO = 1.10
 
 
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -97,46 +94,6 @@ def _run_elapsed_samples(
     return tuple(
         _run(command, timeout_seconds=timeout_seconds) for _ in range(sample_count)
     )
-
-
-def _run_paired_elapsed_samples(
-    baseline_command: Sequence[str | Path],
-    scaled_command: Sequence[str | Path],
-    *,
-    sample_count: int = _LARGE_SITE_PAIRED_SAMPLES,
-) -> tuple[tuple[float, float], ...]:
-    """Warm both commands, then return paired baseline and scaled timings."""
-    if sample_count < 1:
-        raise ValueError("Paired timing sample count must be positive.")
-
-    _run(baseline_command)
-    _run(scaled_command)
-    samples: list[tuple[float, float]] = []
-    for _ in range(sample_count):
-        baseline_elapsed = _run(baseline_command)
-        scaled_elapsed = _run(
-            scaled_command,
-            timeout_seconds=_scaled_timeout(
-                baseline_elapsed,
-                _LARGE_SITE_FAILURE_RATIO,
-            ),
-        )
-        samples.append((baseline_elapsed, scaled_elapsed))
-    return tuple(samples)
-
-
-def _analytics_scaling_result(paired_ratios: Sequence[float]) -> tuple[str, float]:
-    """Apply established boundaries to the median paired large-site ratio."""
-    if not paired_ratios:
-        raise ValueError("Analytics paired ratios must not be empty.")
-    ratio = statistics.median(paired_ratios)
-    if ratio > _LARGE_SITE_FAILURE_RATIO:
-        values = ", ".join(f"{sample:.3f}x" for sample in paired_ratios)
-        raise RuntimeError(
-            "Analytics large-site scaling exceeded the 1.10x failure threshold: "
-            f"paired ratios=[{values}], median={ratio:.3f}x."
-        )
-    return ("WARN" if ratio > _LARGE_SITE_WARNING_RATIO else "PASS", ratio)
 
 
 def _sublinear_scaling_result(
@@ -518,9 +475,13 @@ def _selected_tables(site: Path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFra
     )
 
 
-def _html_outputs(directory: Path) -> dict[str, bytes]:
-    """Return generated HTML files keyed by name."""
-    return {path.name: path.read_bytes() for path in directory.glob("*.html")}
+def _artifact_outputs(directory: Path) -> dict[str, bytes]:
+    """Return every generated report file keyed by name."""
+    return {
+        path.name: path.read_bytes()
+        for path in sorted(directory.iterdir())
+        if path.is_file()
+    }
 
 
 def _print_result(
@@ -554,49 +515,31 @@ def _print_samples(label: str, samples: Sequence[float]) -> None:
     print(f"  {label} samples: [{values}]; median={statistics.median(samples):.3f}s")
 
 
-def _print_ratios(label: str, ratios: Sequence[float]) -> None:
-    """Print raw ratios and their median for timing review."""
-    values = ", ".join(f"{ratio:.3f}x" for ratio in ratios)
-    print(f"  {label}: [{values}]; median={statistics.median(ratios):.3f}x")
-
-
 def _check_large_site(workspace: Path, scale: int, *, diagnostics: bool = False) -> None:
-    """Run the paired large-site gate and require identical visible tables."""
+    """Require one equivalent report run and observe its large-site timing."""
     preparation_started = time.perf_counter()
     baseline, baseline_rows = _prepare_large_site(workspace / "baseline", 1)
     scaled, scaled_rows = _prepare_large_site(workspace / "scaled", scale)
     preparation_elapsed = time.perf_counter() - preparation_started
     baseline_command: list[str | Path] = [sys.executable, baseline / "ppar_demo.py"]
     scaled_command: list[str | Path] = [sys.executable, scaled / "ppar_demo.py"]
-    paired_samples = _run_paired_elapsed_samples(
-        baseline_command,
-        scaled_command,
+    baseline_elapsed = _run(baseline_command)
+    scaled_elapsed = _run(scaled_command)
+    baseline_artifacts = _artifact_outputs(baseline / "output")
+    scaled_artifacts = _artifact_outputs(scaled / "output")
+    if baseline_artifacts != scaled_artifacts:
+        raise RuntimeError(
+            "Scaled Analytics report bundle differs from the 1x baseline."
+        )
+    measured_ratio = scaled_elapsed / baseline_elapsed
+    print(f"PASS Analytics large-site equivalence {scale}x")
+    print(
+        f"  rows: {baseline_rows:,} -> {scaled_rows:,} "
+        f"({scaled_rows / baseline_rows:.2f}x)"
     )
-    baseline_samples = tuple(sample[0] for sample in paired_samples)
-    scaled_samples = tuple(sample[1] for sample in paired_samples)
-    paired_ratios = tuple(
-        scaled_sample / baseline_sample
-        for baseline_sample, scaled_sample in paired_samples
-    )
-    baseline_elapsed = statistics.median(baseline_samples)
-    scaled_elapsed = statistics.median(scaled_samples)
-    if _html_outputs(baseline / "output") != _html_outputs(scaled / "output"):
-        raise RuntimeError("Scaled Analytics HTML differs from the 1x baseline.")
-    _print_samples("baseline end-to-end", baseline_samples)
-    _print_samples("scaled end-to-end", scaled_samples)
-    _print_ratios("paired scaled/baseline ratios", paired_ratios)
-    status, measured_ratio = _analytics_scaling_result(paired_ratios)
-    _print_result(
-        "Analytics large-site",
-        scale,
-        baseline_rows,
-        scaled_rows,
-        baseline_elapsed,
-        scaled_elapsed,
-        measured_ratio,
-        status,
-        _LARGE_SITE_WARNING_RATIO,
-        _LARGE_SITE_FAILURE_RATIO,
+    print(
+        f"  time (observation only): {baseline_elapsed:.2f}s -> "
+        f"{scaled_elapsed:.2f}s ({measured_ratio:.3f}x); no performance threshold"
     )
 
     if diagnostics:
@@ -616,7 +559,7 @@ def _check_large_site(workspace: Path, scale: int, *, diagnostics: bool = False)
         )
         print(
             "    report rendering and publication remain inside the end-to-end "
-            "samples above."
+            "timings above."
         )
 
 

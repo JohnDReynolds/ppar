@@ -15,6 +15,8 @@ import polars as pl
 # Project Imports
 from ppar.attribution import View
 from ppar.axys_apx import AxysClassificationSources, AxysData, AxysPortfolio
+import ppar.axys_apx.performance_sources as performance_source_module
+import ppar.axys_apx.portfolios as portfolio_module
 from ppar.axys_apx.supporting_sources import combine_classification_sources
 import ppar.schema as cols
 from ppar.errors import PparError
@@ -259,20 +261,127 @@ class TestAxysPipeline(unittest.TestCase):
             self.assertEqual(portfolio.portfolio_code, "P2")
             self.assertEqual(portfolio.portfolio_name, "P2 - Income")
 
-    def test_get_portfolios_scans_each_performance_source_once(self) -> None:
-        """A portfolio and benchmark share one scan of each performance CSV."""
+    def test_get_portfolios_filters_each_source_before_one_materialization(self) -> None:
+        """Both requested codes reach one predicate-pushed query per source."""
         with tempfile.TemporaryDirectory() as temp_dir:
             data = _axys_data(Path(temp_dir))
-            with mock.patch(
-                "ppar.axys_apx.performance_sources.pl.scan_csv",
-                wraps=pl.scan_csv,
-            ) as scan_csv:
+
+            optimized_plans: list[str] = []
+
+            def collect_performance_source(lazy_frame: pl.LazyFrame) -> pl.DataFrame:
+                """Record the optimized source query before materialization."""
+                optimized_plans.append(lazy_frame.explain(optimized=True))
+                return lazy_frame.collect()
+
+            with (
+                mock.patch(
+                    "ppar.axys_apx.performance_sources.pl.scan_csv",
+                    wraps=pl.scan_csv,
+                ) as scan_csv,
+                mock.patch.object(
+                    performance_source_module,
+                    "_collect_performance_source",
+                    side_effect=collect_performance_source,
+                ) as collect_source,
+            ):
                 portfolios = data.get_portfolios(("P1", "P2"))
 
         self.assertEqual(list(portfolios), ["P1", "P2"])
         self.assertEqual(portfolios["P1"].portfolio_name, "P1 - Growth")
         self.assertEqual(portfolios["P2"].portfolio_name, "P2 - Income")
         self.assertEqual(scan_csv.call_count, 2)
+        self.assertEqual(collect_source.call_count, 2)
+        self.assertEqual(len(optimized_plans), 2)
+        for plan in optimized_plans:
+            with self.subTest(plan=plan):
+                self.assertIn("Csv SCAN", plan)
+                self.assertIn("SELECTION:", plan)
+                self.assertIn('"P1"', plan)
+                self.assertIn('"P2"', plan)
+
+    def test_partitioning_preserves_exact_codes_and_source_row_order(self) -> None:
+        """One-time partitions equal exact per-code filters, including leading zeroes."""
+        frame = pl.DataFrame(
+            {
+                cols.PORTFOLIO_CODE: ["001", "1", "001", "A01", "1"],
+                "source_order": [0, 1, 2, 3, 4],
+            }
+        )
+
+        partitions = portfolio_module._partition_by_portfolio_code(frame)
+
+        self.assertEqual(tuple(partitions), ("001", "1", "A01"))
+        for portfolio_code in partitions:
+            with self.subTest(portfolio_code=portfolio_code):
+                expected = frame.filter(
+                    pl.col(cols.PORTFOLIO_CODE) == portfolio_code
+                )
+                self.assertTrue(partitions[portfolio_code].equals(expected))
+
+    def test_get_portfolios_partitions_each_source_once_and_preserves_order(self) -> None:
+        """Repeated requests deduplicate without changing first-request order."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data = _axys_data(Path(temp_dir))
+            with mock.patch.object(
+                portfolio_module,
+                "_partition_by_portfolio_code",
+                wraps=portfolio_module._partition_by_portfolio_code,
+            ) as partition:
+                portfolios = data.get_portfolios(("P2", "P1", "P2"))
+
+        self.assertEqual(tuple(portfolios), ("P2", "P1"))
+        self.assertEqual(partition.call_count, 2)
+
+    def test_get_portfolio_avoids_unnecessary_single_account_partitioning(self) -> None:
+        """A source already filtered to one account needs no additional partition."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data = _axys_data(Path(temp_dir))
+            with mock.patch.object(
+                portfolio_module,
+                "_partition_by_portfolio_code",
+                wraps=portfolio_module._partition_by_portfolio_code,
+            ) as partition:
+                portfolio = data.get_portfolio("P1")
+
+        self.assertEqual(portfolio.portfolio_code, "P1")
+        partition.assert_not_called()
+
+    def test_partitioned_loading_matches_per_account_filtering(self) -> None:
+        """Reconciled outputs remain exact under the former per-account split."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            data = _axys_data(directory)
+            partitioned = data.get_portfolios(("P1", "P2"))
+
+            def filtered_partitions(frame: pl.DataFrame) -> dict[str, pl.DataFrame]:
+                """Reproduce the former repeated-filter account splitting."""
+                codes = frame[cols.PORTFOLIO_CODE].unique(maintain_order=True)
+                return {
+                    portfolio_code: frame.filter(
+                        pl.col(cols.PORTFOLIO_CODE) == portfolio_code
+                    )
+                    for portfolio_code in codes
+                }
+
+            with mock.patch.object(
+                portfolio_module,
+                "_partition_by_portfolio_code",
+                side_effect=filtered_partitions,
+            ):
+                filtered = data.get_portfolios(("P1", "P2"))
+
+        self.assertEqual(tuple(partitioned), tuple(filtered))
+        for portfolio_code in partitioned:
+            with self.subTest(portfolio_code=portfolio_code):
+                self.assertEqual(
+                    partitioned[portfolio_code].portfolio_name,
+                    filtered[portfolio_code].portfolio_name,
+                )
+                self.assertTrue(
+                    partitioned[portfolio_code].security_performance.equals(
+                        filtered[portfolio_code].security_performance
+                    )
+                )
 
     def test_classification_pair_combines_security_display_names(self) -> None:
         """Paired security sources cover holdings from both accounts."""

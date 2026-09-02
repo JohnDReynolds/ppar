@@ -215,8 +215,24 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
 
         # Get the from dates and thru dates for all subperiods that are common between the
         # two Performance objects.
-        self._subperiod_dates, self._subperiod_buckets = self._calculate_subperiod_dates(
+        (
+            self._subperiod_dates,
+            self._subperiod_buckets,
+            source_periods,
+        ) = self._calculate_subperiod_dates(
             f"from {util.date_str(from_date)} to {util.date_str(thru_date)}"
+        )
+
+        # Reuse the period lists materialized during alignment. Applying the same
+        # comparison-window predicate as the row filter below keeps the cached
+        # sequences synchronized without another full-frame unique-and-sort query.
+        source_period_dates = tuple(
+            [
+                period
+                for period in periods
+                if self._from_date() <= period[1] <= self._thru_date()
+            ]
+            for periods in source_periods
         )
 
         # Now that the dates have been firmly established, remove extraneous dates from
@@ -235,7 +251,7 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
 
         # Consolidate multiple subperiods (e.g. daily) into single periods (e.g. monthly) based on
         # self._frequency.
-        self._consolidate_all_subperiods()
+        self._consolidate_all_subperiods(source_period_dates)
 
     def audit(self) -> None:
         """Audit the Analytics instance.
@@ -264,7 +280,11 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
     def _calculate_subperiod_dates(
         self,
         message_suffix: str,
-    ) -> tuple[list[tuple[dt.date, dt.date]], list[int]]:
+    ) -> tuple[
+        list[tuple[dt.date, dt.date]],
+        list[int],
+        tuple[list[tuple[dt.date, dt.date]], list[tuple[dt.date, dt.date]]],
+    ]:
         """Calculate common subperiod dates for portfolio and benchmark data.
 
         Native-frequency periods must match as complete inclusive intervals
@@ -278,8 +298,9 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
 
         Returns:
             Aligned ``(from_date, thru_date)`` tuples and their fixed-frequency
-            bucket identifiers. The bucket list is empty for native-frequency
-            data.
+            bucket identifiers, followed by the ordered source-period lists for
+            the portfolio and benchmark. The bucket list is empty for
+            native-frequency data.
 
         Raises:
             PparError: If no common subperiods can be calculated or source
@@ -404,22 +425,34 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
             raise PparError(f"No common performance periods were found {message_suffix}.")
 
         # Return the common from and thru dates that define the subperiods.
-        return subperiod_dates, subperiod_buckets
+        return subperiod_dates, subperiod_buckets, (source_periods[0], source_periods[1])
 
-    def _consolidate_all_subperiods(self) -> None:
+    def _consolidate_all_subperiods(
+        self,
+        source_period_dates: Sequence[Sequence[tuple[dt.date, dt.date]]],
+    ) -> None:
         """Consolidate portfolio and benchmark data to the aligned subperiods.
 
         For each Performance object, verifies that enough rows exist for the
-        aligned subperiods. Fixed-frequency data is always consolidated so
-        portfolio and benchmark source dates can align by reporting bucket.
+        aligned subperiods. Fixed-frequency data is consolidated unless its
+        complete ordered period boundaries already match the reporting periods
+        exactly.
+
+        Args:
+            source_period_dates: Ordered source-period boundaries for the portfolio
+                and benchmark, already restricted to the common comparison window.
 
         Raises:
             PparError: If a Performance has fewer rows than the calculated subperiod
                 date list.
         """
         # Iterate through the portfolio and benchmark Performance objects.
-        for performance in self._performances:
-            quantity_of_periods = performance.narrow_df.select(cols.DATE_COLUMNS).unique().height
+        for performance, source_periods in zip(
+            self._performances,
+            source_period_dates,
+            strict=True,
+        ):
+            quantity_of_periods = len(source_periods)
             if quantity_of_periods < len(self._subperiod_dates):
                 raise PparError(
                     f"{performance.error_message_context} from "
@@ -428,13 +461,32 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                 )
 
             if (
-                self._frequency != Frequency.AS_OFTEN_AS_POSSIBLE
+                (
+                    self._frequency != Frequency.AS_OFTEN_AS_POSSIBLE
+                    and not self._source_periods_match_reporting_periods(source_periods)
+                )
                 or len(self._subperiod_dates) < quantity_of_periods
             ):
                 performance._replace_calculated_rows(  # pylint: disable=protected-access
                     self._consolidate_subperiods(performance),
                     sort_rows=False,
                 )
+
+    def _source_periods_match_reporting_periods(
+        self,
+        source_periods: Sequence[tuple[dt.date, dt.date]],
+    ) -> bool:
+        """Return whether source periods already equal every reporting period.
+
+        Args:
+            source_periods: Ordered, unique inclusive period boundaries from one
+                performance stream.
+
+        Returns:
+            ``True`` only when period count, order, start dates, and end dates
+            exactly match the aligned reporting-period sequence.
+        """
+        return source_periods == self._subperiod_dates
 
     def _consolidate_subperiods(self, performance: Performance) -> pl.DataFrame:
         """Consolidate a Performance object into the aligned subperiods.

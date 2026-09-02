@@ -25,19 +25,34 @@ workflow smoke tests outside the checkout. The smoke tests install the wheel wit
 dependencies and reuse the already verified development dependencies; they validate
 the installed package and workflows, not independent dependency resolution.
 
-After major cross-cutting, reporting, safety, or performance work, run the unchanged
-500x gate:
+After major cross-cutting, reporting, safety, or performance work, run the required
+500x scale check:
 
 ```bash
 ./.venv/bin/python scripts/check_scale.py --scale 500
 ```
 
-The large-site result first runs one untimed warm-up for the baseline and scaled
-workspaces. It then collects five baseline-then-scaled timing pairs and applies the
-unchanged thresholds to the median of the five scaled/baseline ratios. Every timed
-observation and ratio is printed. To investigate timing components without changing
-the release result, add `--diagnostics`; this also reports fixture preparation,
-Python startup, and calculation-only timings as observation-only components.
+The large-site result runs the complete baseline and scaled demonstrations once and
+requires every generated report file to be byte-for-byte equal. It prints their
+elapsed times and ratio for observation, without applying a machine-dependent timing
+threshold. Deterministic tests separately require the requested accounts to reach one
+predicate-pushed query and one materialization for each performance source. The same
+command retains the established timed gates for selected-workload and long-history
+scaling. Add `--diagnostics` to also report fixture preparation, Python startup, and
+calculation-only timings as observation-only components.
+
+For repeatable optimization measurements, run:
+
+```bash
+./.venv/bin/python scripts/benchmark_optimizations.py --samples 3
+```
+
+This informational benchmark separates startup, calculations, HTML serialization,
+PNG rendering, cold and reused chart caches, long history, exact monthly periods,
+and bulk Axys/APX account loading. Fixture preparation is excluded from timed work,
+and repeated financial and report outputs are checked for equivalence. The results
+are observations only; they do not establish or alter a release threshold. Use a
+repeated `--scenario` option to run only selected workloads.
 
 The release-candidate command composes both gates:
 

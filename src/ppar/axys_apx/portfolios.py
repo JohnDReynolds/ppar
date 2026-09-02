@@ -36,6 +36,31 @@ _PORTFOLIO_NAME_SEPARATOR = " - "
 _PortfolioErrorMessage = Callable[[str, str | None], str]
 
 
+def _partition_by_portfolio_code(
+    performance: pl.DataFrame,
+) -> dict[str, pl.DataFrame]:
+    """Partition performance rows once while retaining exact identity and order.
+
+    Args:
+        performance: Normalized portfolio- or security-performance rows containing
+            validated string portfolio codes.
+
+    Returns:
+        DataFrames keyed by exact portfolio code. Both partition order and row order
+        within each partition follow the source frame.
+    """
+    partitions = performance.partition_by(
+        cols.PORTFOLIO_CODE,
+        maintain_order=True,
+        include_key=True,
+        as_dict=True,
+    )
+    return {
+        cast(str, key[0]): partition
+        for key, partition in partitions.items()
+    }
+
+
 def _portfolio_display_name(
     portfolio_code: str,
     portfolio_performance: pl.DataFrame,
@@ -234,24 +259,44 @@ class AxysPortfolioLoader:  # pylint: disable=too-few-public-methods
         )
         if not load_codes:
             return {}
+        if len(load_codes) == 1:
+            portfolio_code = load_codes[0]
+            security_performance = self._loader.load(
+                self._security_performance_path,
+                "security_performance_columns",
+                load_codes,
+            )
+            return {
+                portfolio_code: self._reconcile_one(
+                    portfolio_code,
+                    portfolio_performance,
+                    security_performance,
+                )
+            }
+
+        portfolio_partitions = _partition_by_portfolio_code(portfolio_performance)
+        del portfolio_performance
+
         security_performance = self._loader.load(
             self._security_performance_path,
             "security_performance_columns",
             load_codes,
         )
+        empty_security_performance = security_performance.clear()
+        security_partitions = _partition_by_portfolio_code(security_performance)
+        del security_performance
 
-        return {
-            portfolio_code: self._reconcile_one(
+        portfolios: dict[str, AxysPortfolio] = {}
+        for portfolio_code in load_codes:
+            portfolios[portfolio_code] = self._reconcile_one(
                 portfolio_code,
-                portfolio_performance.filter(
-                    pl.col(cols.PORTFOLIO_CODE) == portfolio_code
-                ),
-                security_performance.filter(
-                    pl.col(cols.PORTFOLIO_CODE) == portfolio_code
+                portfolio_partitions.pop(portfolio_code),
+                security_partitions.pop(
+                    portfolio_code,
+                    empty_security_performance,
                 ),
             )
-            for portfolio_code in load_codes
-        }
+        return portfolios
 
     def _reconcile_one(
         self,

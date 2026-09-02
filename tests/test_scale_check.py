@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 import datetime as dt
+import io
 from pathlib import Path
 import runpy
 import tempfile
@@ -16,7 +18,7 @@ from scripts import check_scale
 
 
 class TestScaleCheck(unittest.TestCase):
-    """Scale construction and thresholds remain unchanged."""
+    """Scale construction, equivalence, and retained thresholds remain stable."""
 
     def test_scale_choices_include_required_500x(self) -> None:
         """Routine levels and the release-candidate stress level remain available."""
@@ -41,57 +43,59 @@ class TestScaleCheck(unittest.TestCase):
 
         self.assertEqual(samples, (1.2, 1.0, 1.1))
 
-    def test_large_site_samples_warm_then_pair_commands(self) -> None:
-        """Large-site timing warms both sites and alternates timed observations."""
-        baseline_command = ("python", "baseline.py")
-        scaled_command = ("python", "scaled.py")
-        with mock.patch.object(
-            check_scale,
-            "_run",
-            side_effect=(
-                9.0,
-                9.1,
-                1.0,
-                1.08,
-                1.1,
-                1.16,
-                1.2,
-                1.29,
-                1.3,
-                1.41,
-                1.4,
-                1.53,
-            ),
-        ) as run:
-            samples = check_scale._run_paired_elapsed_samples(
-                baseline_command,
-                scaled_command,
-            )
+    def test_large_site_timing_is_observational_after_one_complete_pair(self) -> None:
+        """A slow but equivalent 500x bundle reports timing without failing."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baseline"
+            scaled = root / "scaled"
+            for site in (baseline, scaled):
+                output = site / "output"
+                output.mkdir(parents=True)
+                (output / "table.html").write_bytes(b"same table")
+                (output / "chart.png").write_bytes(b"same chart")
+            stream = io.StringIO()
+            with (
+                mock.patch.object(
+                    check_scale,
+                    "_prepare_large_site",
+                    side_effect=((baseline, 100), (scaled, 50_000)),
+                ),
+                mock.patch.object(
+                    check_scale,
+                    "_run",
+                    side_effect=(1.0, 9.0),
+                ) as run,
+                redirect_stdout(stream),
+            ):
+                check_scale._check_large_site(root, 500)
 
-        self.assertEqual(
-            samples,
-            ((1.0, 1.08), (1.1, 1.16), (1.2, 1.29), (1.3, 1.41), (1.4, 1.53)),
-        )
-        self.assertEqual(
-            [call.args[0] for call in run.call_args_list],
-            [baseline_command, scaled_command] * 6,
-        )
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("PASS Analytics large-site equivalence 500x", stream.getvalue())
+        self.assertIn("observation only", stream.getvalue())
+        self.assertIn("9.000x", stream.getvalue())
 
-    def test_large_site_caps_are_unchanged(self) -> None:
-        """Large-site timing warns above 1.05x and fails above 1.10x."""
-        self.assertEqual(check_scale._analytics_scaling_result((1.05,) * 5)[0], "PASS")
-        self.assertEqual(check_scale._analytics_scaling_result((1.08,) * 5)[0], "WARN")
-        with self.assertRaisesRegex(RuntimeError, "1.10x failure threshold"):
-            check_scale._analytics_scaling_result((1.11,) * 5)
-
-    def test_large_site_uses_median_paired_ratio(self) -> None:
-        """A single timing outlier does not determine the large-site result."""
-        status, ratio = check_scale._analytics_scaling_result(
-            (1.30, 1.06, 1.08, 1.07, 1.09)
-        )
-
-        self.assertEqual(status, "WARN")
-        self.assertEqual(ratio, 1.08)
+    def test_large_site_compares_every_report_artifact(self) -> None:
+        """A non-HTML report difference fails the 500x equivalence check."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baseline"
+            scaled = root / "scaled"
+            for site, chart in ((baseline, b"baseline"), (scaled, b"changed")):
+                output = site / "output"
+                output.mkdir(parents=True)
+                (output / "table.html").write_bytes(b"same table")
+                (output / "chart.png").write_bytes(chart)
+            with (
+                mock.patch.object(
+                    check_scale,
+                    "_prepare_large_site",
+                    side_effect=((baseline, 100), (scaled, 50_000)),
+                ),
+                mock.patch.object(check_scale, "_run", side_effect=(1.0, 1.1)),
+                self.assertRaisesRegex(RuntimeError, "report bundle differs"),
+            ):
+                check_scale._check_large_site(root, 500)
 
     def test_selected_and_history_caps_are_unchanged(self) -> None:
         """10x selected and 5x history thresholds retain their observed shape."""

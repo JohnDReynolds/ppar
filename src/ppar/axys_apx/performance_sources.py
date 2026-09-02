@@ -124,6 +124,11 @@ _FINANCIAL_COLUMNS: Final[
 }
 
 
+def _collect_performance_source(lazy_frame: pl.LazyFrame) -> pl.DataFrame:
+    """Materialize one projected and filtered performance-source query."""
+    return lazy_frame.collect()
+
+
 class AxysPerformanceSourceLoader:
     """Normalize Axys portfolio- and security-performance CSV sources.
 
@@ -228,7 +233,9 @@ class AxysPerformanceSourceLoader:
             lazy_frame = lazy_frame.filter(
                 pl.col(cols.PORTFOLIO_CODE).is_in(portfolio_code)
             )
-        frame = self._date_range.filter_performance(lazy_frame).collect()
+        frame = _collect_performance_source(
+            self._date_range.filter_performance(lazy_frame)
+        )
         if construction is not None:
             frame = with_constructed_security_id(
                 frame,

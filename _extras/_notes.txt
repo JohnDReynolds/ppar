@@ -1,24 +1,5 @@
 
 ################################################################################ OBSOLETE ABOVE HERE
-Please take a look at /Users/johnreynolds/MyStuff/Projects/pr_workflow_common/attribution_addon_ideas.md.
-
-Particularly "**Extracting the reusable attribution core from ppar"**
-
-I would first like to define and design this re-usable core using pandas, not polars.
-It would need to produce everything that the current polars version does, but also be designed to eventually support "additional features" like interaction effect, currency effect, time-series of classification assignments, and possibly special handling for:  cash, fees, financing, derivatives, external flows.
-It should be designed so that this "re-usable core" has well-defined inputs and boundaries so that the core python code could be "plugged into" other products without modification.
-
-The goal would be to use this core in the ppar project to produce the identical numerical results that the current polars version uses.
-That would be the first step.  The "additional features" can wait to be implemented.
-And strive to get the 500x timing as close as possible to the current blazing fast polars implementation.
-
-Ideally, I would like to have this re-usable core accessible to ppar as a "separate path" so that ppar supports both the existing polars path and the new re-usable python path.
-Both paths should produce the same results.
-The question is, where does the path fork.
-
-I am fine with ppar continuing to use polars for everything, but it should also support the "re-usable core" pandas-only path for calculating the analytics results.
-
-Please give me your thoughts, ideas and questions.
 
 
 
@@ -67,56 +48,3 @@ Finished implementation at ../ppar-extras/optimizations/ppar_optimizations_roadm
 
 #################### 5. Code Preferences
 See AGENTS.md
-
-
-
-################################################################################ MISC NOTES
-## -1: ./.venv/bin/python -m cProfile _main.py > profile.txt
-##     Look for all type: ignore, cast(), pylint, pylance, pyright
-##     vulture ppar tests scripts
-##     ./.venv/bin/python scripts/check_project.py --quick
-##     ./.venv/bin/python scripts/check_project.py
-#   1. Potential partners:
-       ###############  ..../portfolio-performance-analytics/docs/audit/validation_partner_strategy.md
-       https://adventguru.com/about/  http://www.isitc.com  https://quartare.com
-       https://www.empaxis.com  https://www.empaxis.com/blog/advent-axys-apx-outsourcing-services
-       https://cssisolutions.com/solutions/advent-upgrades
-#   2. New features:
-#      https://chatgpt.com/share/67d86fd1-39f4-8006-9965-40ef922f8997
-#      A table of classification items with color-coded and sortable risk stats.
-#      Risk/Return scatter plots.
-#      Create pdfs with pillow and reportlab:
-#  97. Here is a good introductory reading on performance attribution:
-#      https://analystprep.com/study-notes/cfa-level-iii/sources-of-portfolio-returns/
-
-Hi Stephen,
-
-I'm wondering if Empaxis might be interested in a library that I have developed for performance auditing and analytics.
-I have attached a PDF file giving an overview of the library, along with some sample output generated from Axys/APX data extracts.
-
-Although I am officially retired, I have been in the portfolio management software business since the late 1980's, and was previously a
-Director Of Product Development for APX.
-
-I'm very impressed with the business that you guys have developed.  I'd love to see if there might be an opportunity to collaborate.
-
-Best,
-John Reynolds
-
-https://www.linkedin.com/in/john-reynolds-6bb2a14/
-https://github.com/JohnDReynolds
-
-
-
-######################################### Advent Documentation #######################################################
-## C:\MyStuff\AdventE6400\AnalyticsDocumentation.zip
-##     (documentation, copied to my_misc_stuff/Advent\Documentation\)
-## C:\MyStuff\AdventE6400\AnalyticsPerformance.zip
-##     (documentation, copied to my_misc_stuff/Advent\Documentation\)
-## C:\MyStuff\AdventE6400\APX.zip
-##     (Source Code, copied to my_misc_stuff/Advent\FinancialCalculations and my_misc_stuff/Advent\FinancialReporting)
-## C:\MyStuff\AdventE6400\BusinessRequirements.zip
-##     (documentation, copied to my_misc_stuff/Advent\Documentation\)
-## C:\MyStuff\AdventE6400\EntirePerfAttrDirectory.zip
-##     (old demo)
-
-

@@ -16,14 +16,17 @@ Attribution instances are normally created by
 from enum import Enum
 import datetime as dt
 from pathlib import Path
-from typing import cast, Iterable, Sequence
+from typing import cast, Iterable, Literal, Sequence
 
 # Third-Party Imports
-import numpy as np
 import polars as pl
 
 # Project Imports
-from ppar._attribution_result import AttributionCalculationResult
+from ppar._attribution_result import (
+    AttributionCalculationResult,
+    overall_summary_from_periods,
+)
+from ppar._perfattr_adapter import calculate_with_perfattr
 from ppar.classification import Classification
 from ppar.frequency import Frequency
 from ppar import tables as html_table
@@ -34,6 +37,7 @@ import ppar.utilities as util
 
 # Constants
 _DEFAULT_OUTPUT_PRECISION = 8
+_AttributionEngine = Literal["polars", "pandas"]
 
 __all__ = ["Attribution", "Chart", "View"]
 
@@ -136,6 +140,7 @@ class Attribution:
         classification_data_source: str | Path | pl.DataFrame | None,
         frequency: Frequency,
         classification_label: str | None = None,
+        engine: str = "polars",
     ):
         """Initialize an attribution calculation.
 
@@ -151,6 +156,8 @@ class Attribution:
             classification_label: Optional label displayed in tables and charts. If
                 supplied, this overrides the classification name for presentation.
                 If omitted, the classification name is used.
+            engine: Calculation engine. ``"polars"`` preserves the existing default;
+                ``"pandas"`` selects the portable ``perfattr`` calculator.
 
         Raises:
             PparError: If classification setup, performance alignment, linking, or
@@ -164,6 +171,7 @@ class Attribution:
             classification_name,
             "classification_name",
         )
+        self._engine = self._normalize_engine(engine)
 
         performance_pair = util.two_item_tuple(performances, "Attribution performances")
 
@@ -197,8 +205,10 @@ class Attribution:
             else classification_label
         )
 
-        # Make sure that portfolio and benchmark include matching identifier rows.
-        self._equalize_columns()
+        # The portable core owns universe equalization. Preserve the existing Polars
+        # equalization only on the original engine path.
+        if self._engine == "polars":
+            self._equalize_columns()
 
         # Establish one numerical-result boundary before presentation is applied.
         self._result = self._calculate_result()
@@ -206,6 +216,16 @@ class Attribution:
         # Attribution is a financial calculation boundary. Run its inexpensive
         # conservation checks before any report can expose the result.
         self.audit()
+
+    @staticmethod
+    def _normalize_engine(engine: str) -> _AttributionEngine:
+        """Validate and narrow the explicitly selected calculation engine."""
+        if engine not in ("polars", "pandas"):
+            raise PparError(
+                "engine must be 'polars' or 'pandas'.",
+                context={"parameter": "engine", "value": engine},
+            )
+        return cast(_AttributionEngine, engine)
 
     def _add_total_row(
         self,
@@ -493,11 +513,14 @@ class Attribution:
         Returns:
             Complete Polars attribution calculation result.
         """
+        if self._engine == "pandas":
+            return calculate_with_perfattr(self._performances)
+
         period_summary, period_detail = self._calculate_attribution()
         return AttributionCalculationResult(
             period_summary=period_summary,
             period_detail=period_detail,
-            overall_summary=self._calculate_df_overall(period_summary),
+            overall_summary=overall_summary_from_periods(period_summary),
             overall_detail=self._calculate_overall_detail(period_detail),
         )
 
@@ -668,47 +691,6 @@ class Attribution:
             .with_columns(self._detail_derived_expressions(include_weight=False))
         )
         return self._sum_columns_and_rows(summary.lazy()).collect(), detail
-
-    def _calculate_df_overall(self, period_summary: pl.DataFrame) -> pl.DataFrame:
-        """Calculate the overall attribution row.
-
-        Args:
-            period_summary: Period totals, linked values, and cumulative values.
-
-        Returns:
-            DataFrame containing one row for the full attribution period.
-        """
-        portfolio_overall_return = cast(
-            float,
-            period_summary[-1, cols.CUMULATIVE_PORTFOLIO_RETURN],
-        )
-        benchmark_overall_return = cast(
-            float,
-            period_summary[-1, cols.CUMULATIVE_BENCHMARK_RETURN],
-        )
-
-        # Start the total row.  Note that sums only apply to the smoothed columns.
-        df_overall = period_summary.sum()
-
-        # Override the total row date columns.
-        df_overall[0, cols.FROM_DATE] = period_summary[cols.FROM_DATE][0]
-        df_overall[0, cols.THRU_DATE] = period_summary[cols.THRU_DATE][-1]
-
-        # Override the total row return columns.
-        df_overall[0, cols.PORTFOLIO_RETURN] = portfolio_overall_return
-        df_overall[0, cols.BENCHMARK_RETURN] = benchmark_overall_return
-        df_overall[0, cols.ACTIVE_RETURN] = portfolio_overall_return - benchmark_overall_return
-
-        # Override the total row cumulative columns.
-        for col_name in cols.ALL_CUMULATIVE_COLUMNS:
-            df_overall[0, col_name] = period_summary[-1, col_name]
-
-        # Override the total row simple columns.
-        for col_name in cols.ALL_SIMPLE_COLUMNS:
-            df_overall[0, col_name] = np.nan
-
-        # Return the instance values.
-        return df_overall
 
     def _calculate_overall_detail(self, period_detail: pl.DataFrame) -> pl.DataFrame:
         """Calculate full-horizon numerical rows for each identifier.

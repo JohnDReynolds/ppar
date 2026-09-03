@@ -114,7 +114,7 @@ class TestPackageMetadata(unittest.TestCase):
             },
         )
         self.assertNotIn("perfaud", " ".join(dependencies).lower())
-        self.assertIn("perfattr>=0.1.0a3,<0.2", dependencies)
+        self.assertIn("perfattr>=0.1.0,<0.2", dependencies)
         self.assertEqual(set(project["optional-dependencies"]), {"dev"})
 
     def test_root_exports_are_exact(self) -> None:

@@ -8,7 +8,8 @@ python __PPAR_DEMO_PATH__
 
 To run with your own data, replace the demonstration CSV files in `input/`, then edit
 `ppar_demo.py` to match their paths, dates, calculation assumptions, classification,
-and selected reports. Reports are written to `output/`.
+and selected reports. Leave `ATTRIBUTION_ENGINE` as `"polars"` for the default
+calculator or set it to `"pandas"` to use perfattr. Reports are written to `output/`.
 
 ## Performance files
 

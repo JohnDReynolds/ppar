@@ -1318,11 +1318,21 @@ class Attribution:
             raise PparError("float_precision must be an integer from 0 through 15.")
         if not 0 <= float_precision <= 15:
             raise PparError("float_precision must be an integer from 0 through 15.")
-        self._fetch_dataframe(
+        output = self._fetch_dataframe(
             view,
             columns_to_sort,
             sort_descendings,
             label_total=True,
+        )
+        float_columns = [
+            name for name, data_type in output.schema.items() if data_type.is_float()
+        ]
+        output.with_columns(
+            pl.when(pl.col(column).round(float_precision) == 0.0)
+            .then(0.0)
+            .otherwise(pl.col(column))
+            .alias(column)
+            for column in float_columns
         ).write_csv(
             Path(file_path),
             float_precision=float_precision,

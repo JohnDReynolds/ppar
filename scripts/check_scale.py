@@ -56,6 +56,12 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run ppar scale checks.")
     parser.add_argument("--scale", type=int, choices=_ALLOWED_SCALES, default=10)
     parser.add_argument(
+        "--engine",
+        choices=("polars", "pandas"),
+        default="polars",
+        help="Attribution engine used by the scale workflows.",
+    )
+    parser.add_argument(
         "--diagnostics",
         action="store_true",
         help="Print observation-only timing components without changing gate policy.",
@@ -343,25 +349,55 @@ def _set_demo_thru_date(demo_path: Path, thru_date: dt.date) -> None:
         )
 
 
-def _copy_template(destination: Path) -> Path:
+def _set_demo_engine(demo_path: Path, engine: str) -> None:
+    """Select and verify one calculation engine in a copied demo script."""
+    pattern = re.compile(
+        r'^(ATTRIBUTION_ENGINE\s*=\s*)["\'](?:polars|pandas)["\']\s*$',
+        re.MULTILINE,
+    )
+    updated, replacement_count = pattern.subn(
+        lambda match: f'{match.group(1)}"{engine}"',
+        demo_path.read_text(encoding="utf-8"),
+    )
+    if replacement_count != 1:
+        raise RuntimeError(
+            "Scale preparation must replace exactly one ATTRIBUTION_ENGINE "
+            f"assignment; found {replacement_count}."
+        )
+    demo_path.write_text(updated, encoding="utf-8")
+    actual = runpy.run_path(str(demo_path)).get("ATTRIBUTION_ENGINE")
+    if actual != engine:
+        raise RuntimeError(f"Scale demo engine is {actual!r}, not {engine!r}.")
+
+
+def _copy_template(destination: Path, engine: str = "polars") -> Path:
     """Copy the packaged Axys/APX workspace into a temporary directory."""
     shutil.copytree(_TEMPLATE, destination)
     (destination / "output").mkdir()
+    _set_demo_engine(destination / "ppar_demo.py", engine)
     return destination
 
 
-def _prepare_large_site(destination: Path, scale: int) -> tuple[Path, int]:
+def _prepare_large_site(
+    destination: Path,
+    scale: int,
+    engine: str = "polars",
+) -> tuple[Path, int]:
     """Create an unselected-portfolio scale workload."""
-    site = _copy_template(destination)
+    site = _copy_template(destination, engine)
     for file_name in ("portperf.csv", "secperf.csv"):
         path = site / "input" / file_name
         _expanded_frame(path, scale).write_csv(path)
     return site, pl.read_csv(site / "input" / "secperf.csv").height
 
 
-def _prepare_selected(destination: Path, scale: int) -> tuple[Path, int]:
+def _prepare_selected(
+    destination: Path,
+    scale: int,
+    engine: str = "polars",
+) -> tuple[Path, int]:
     """Create a selected-security scale workload."""
-    site = _copy_template(destination)
+    site = _copy_template(destination, engine)
     performance_path = site / "input" / "secperf.csv"
     security_master_path = site / "input" / "secmast.csv"
     performance, security_master = _expanded_selected_frames(
@@ -374,9 +410,12 @@ def _prepare_selected(destination: Path, scale: int) -> tuple[Path, int]:
     return site, performance.height
 
 
-def _prepare_history(destination: Path) -> tuple[Path, int, int]:
+def _prepare_history(
+    destination: Path,
+    engine: str = "polars",
+) -> tuple[Path, int, int]:
     """Create the fivefold, gapless calendar-month history workload."""
-    site = _copy_template(destination)
+    site = _copy_template(destination, engine)
     holidays = load_holidays(site / "input" / "holidays.csv")
     rows = 0
     periods = 0
@@ -436,7 +475,10 @@ def _history_reporting_periods(site: Path) -> pl.DataFrame:
     )
 
 
-def _selected_tables(site: Path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+def _selected_tables(
+    site: Path,
+    engine: str = "polars",
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Calculate security, sector, and risk tables for a scale workspace."""
     source = AxysData(site, _AXYS_SOURCE_VALUES)
     security_portfolio = source.get_portfolio("MEGA_ALPHA")
@@ -452,7 +494,8 @@ def _selected_tables(site: Path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFra
             "Security",
             security_portfolio,
             security_benchmark,
-        )
+        ),
+        engine=engine,
     ).to_polars(View.OVERALL_ATTRIBUTION)
     sector_portfolio = source.get_portfolio("MEGA_ALPHA")
     sector_benchmark = source.get_portfolio("MEGA_BENCH")
@@ -469,7 +512,8 @@ def _selected_tables(site: Path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFra
                 "Economic Sector",
                 sector_portfolio,
                 sector_benchmark,
-            )
+            ),
+            engine=engine,
         ).to_polars(View.OVERALL_ATTRIBUTION),
         sector_analytics.risk_statistics().to_polars(),
     )
@@ -515,11 +559,17 @@ def _print_samples(label: str, samples: Sequence[float]) -> None:
     print(f"  {label} samples: [{values}]; median={statistics.median(samples):.3f}s")
 
 
-def _check_large_site(workspace: Path, scale: int, *, diagnostics: bool = False) -> None:
+def _check_large_site(
+    workspace: Path,
+    scale: int,
+    *,
+    diagnostics: bool = False,
+    engine: str = "polars",
+) -> None:
     """Require one equivalent report run and observe its large-site timing."""
     preparation_started = time.perf_counter()
-    baseline, baseline_rows = _prepare_large_site(workspace / "baseline", 1)
-    scaled, scaled_rows = _prepare_large_site(workspace / "scaled", scale)
+    baseline, baseline_rows = _prepare_large_site(workspace / "baseline", 1, engine)
+    scaled, scaled_rows = _prepare_large_site(workspace / "scaled", scale, engine)
     preparation_elapsed = time.perf_counter() - preparation_started
     baseline_command: list[str | Path] = [sys.executable, baseline / "ppar_demo.py"]
     scaled_command: list[str | Path] = [sys.executable, scaled / "ppar_demo.py"]
@@ -545,10 +595,10 @@ def _check_large_site(workspace: Path, scale: int, *, diagnostics: bool = False)
     if diagnostics:
         startup_samples = _run_elapsed_samples((sys.executable, "-c", "pass"))
         calculation_started = time.perf_counter()
-        _selected_tables(baseline)
+        _selected_tables(baseline, engine)
         baseline_calculation = time.perf_counter() - calculation_started
         calculation_started = time.perf_counter()
-        _selected_tables(scaled)
+        _selected_tables(scaled, engine)
         scaled_calculation = time.perf_counter() - calculation_started
         print("  observation-only components (not threshold inputs):")
         print(f"    fixture preparation: {preparation_elapsed:.3f}s")
@@ -563,15 +613,23 @@ def _check_large_site(workspace: Path, scale: int, *, diagnostics: bool = False)
         )
 
 
-def _check_selected(workspace: Path) -> None:
+def _check_selected(workspace: Path, engine: str = "polars") -> None:
     """Run the unchanged selected-security financial and performance gate."""
-    baseline, baseline_rows = _prepare_large_site(workspace / "selected_baseline", 1)
-    scaled, scaled_rows = _prepare_selected(workspace / "selected_scaled", _SELECTED_SCALE)
+    baseline, baseline_rows = _prepare_large_site(
+        workspace / "selected_baseline",
+        1,
+        engine,
+    )
+    scaled, scaled_rows = _prepare_selected(
+        workspace / "selected_scaled",
+        _SELECTED_SCALE,
+        engine,
+    )
     started = time.perf_counter()
-    baseline_security, baseline_sector, baseline_risk = _selected_tables(baseline)
+    baseline_security, baseline_sector, baseline_risk = _selected_tables(baseline, engine)
     baseline_elapsed = time.perf_counter() - started
     started = time.perf_counter()
-    scaled_security, scaled_sector, scaled_risk = _selected_tables(scaled)
+    scaled_security, scaled_sector, scaled_risk = _selected_tables(scaled, engine)
     scaled_elapsed = time.perf_counter() - started
     expected_security_rows = (
         baseline_security.filter(pl.col("Classification_Identifier").is_not_null()).height
@@ -612,12 +670,15 @@ def _check_selected(workspace: Path) -> None:
     )
 
 
-def _check_history(workspace: Path) -> None:
+def _check_history(workspace: Path, engine: str = "polars") -> None:
     """Run the fivefold reporting-history gate through the public demo script."""
     baseline, baseline_security_rows = _prepare_large_site(
-        workspace / "history_baseline", 1
+        workspace / "history_baseline", 1, engine
     )
-    scaled, scaled_rows, periods = _prepare_history(workspace / "history_scaled")
+    scaled, scaled_rows, periods = _prepare_history(
+        workspace / "history_scaled",
+        engine,
+    )
     if periods != _EXPECTED_HISTORY_SOURCE_PERIODS:
         raise RuntimeError(
             f"Expected {_EXPECTED_HISTORY_SOURCE_PERIODS} history periods, "
@@ -680,13 +741,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="ppar_scale_") as directory:
             workspace = Path(directory)
-            _check_large_site(workspace, args.scale, diagnostics=args.diagnostics)
-            _check_selected(workspace)
-            _check_history(workspace)
+            _check_large_site(
+                workspace,
+                args.scale,
+                diagnostics=args.diagnostics,
+                engine=args.engine,
+            )
+            _check_selected(workspace, args.engine)
+            _check_history(workspace, args.engine)
     except (RuntimeError, subprocess.SubprocessError) as error:
         print(f"Scale checks failed: {error}", file=sys.stderr)
         return 1
-    print(f"ppar scale checks passed at {args.scale}x.")
+    engine_label = "" if args.engine == "polars" else f" {args.engine}"
+    print(f"ppar{engine_label} scale checks passed at {args.scale}x.")
     return 0
 
 

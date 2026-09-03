@@ -68,4 +68,6 @@ Duplicate rows are rejected because ppar cannot safely infer whether they are
 accidental duplicates or separate lots requiring a site-specific aggregation rule.
 
 Finally, edit `ppar_demo.py` to select the portfolio, benchmark, dates,
-classification, calculation assumptions, and reports you want to produce.
+classification, calculation assumptions, and reports you want to produce. Leave
+`ATTRIBUTION_ENGINE` as `"polars"` for the default calculator or set it to `"pandas"`
+to use perfattr.

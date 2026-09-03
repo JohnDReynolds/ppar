@@ -23,6 +23,7 @@ import numpy as np
 import polars as pl
 
 # Project Imports
+from ppar._attribution_result import AttributionCalculationResult
 from ppar.classification import Classification
 from ppar.frequency import Frequency
 from ppar import tables as html_table
@@ -199,9 +200,8 @@ class Attribution:
         # Make sure that portfolio and benchmark include matching identifier rows.
         self._equalize_columns()
 
-        # Create the Attribution DataFrames.
-        self._df, self._detail_df = self._calculate_attribution()
-        self._df_overall = self._calculate_df_overall()
+        # Establish one numerical-result boundary before presentation is applied.
+        self._result = self._calculate_result()
 
         # Attribution is a financial calculation boundary. Run its inexpensive
         # conservation checks before any report can expose the result.
@@ -238,10 +238,10 @@ class Attribution:
 
         # Override the returns since they should be linked, not summed.
         if cols.ACTIVE_RETURN in df.columns:
-            total_row[0, cols.PORTFOLIO_RETURN] = self._df_overall.item(
+            total_row[0, cols.PORTFOLIO_RETURN] = self._result.overall_summary.item(
                 0, cols.PORTFOLIO_RETURN
             )
-            total_row[0, cols.BENCHMARK_RETURN] = self._df_overall.item(
+            total_row[0, cols.BENCHMARK_RETURN] = self._result.overall_summary.item(
                 0, cols.BENCHMARK_RETURN
             )
             total_row[0, cols.ACTIVE_RETURN] = (
@@ -286,13 +286,18 @@ class Attribution:
         )
 
         # Assert that df and df_overall have the same columns.
-        if set(self._df.columns) != set(self._df_overall.columns):
+        if set(self._result.period_summary.columns) != set(
+            self._result.overall_summary.columns
+        ):
             raise PparError(
                 "Attribution detail and overall results contain different columns."
             )
 
         # Audit all columns.
-        Attribution._audit_columns(self._df, self._df_overall)
+        Attribution._audit_columns(
+            self._result.period_summary,
+            self._result.overall_summary,
+        )
 
     @staticmethod
     def audit_attributions(attributions: Iterable["Attribution"]) -> None:
@@ -482,6 +487,20 @@ class Attribution:
             ).alias(cols.TOTAL_EFFECT_SMOOTHED),
         ]
 
+    def _calculate_result(self) -> AttributionCalculationResult:
+        """Calculate all numerical frames behind the presentation boundary.
+
+        Returns:
+            Complete Polars attribution calculation result.
+        """
+        period_summary, period_detail = self._calculate_attribution()
+        return AttributionCalculationResult(
+            period_summary=period_summary,
+            period_detail=period_detail,
+            overall_summary=self._calculate_df_overall(period_summary),
+            overall_detail=self._calculate_overall_detail(period_detail),
+        )
+
     def _calculate_attribution(self) -> tuple[pl.DataFrame, pl.DataFrame]:
         """Calculate narrow attribution rows and period summaries.
 
@@ -650,21 +669,30 @@ class Attribution:
         )
         return self._sum_columns_and_rows(summary.lazy()).collect(), detail
 
-    def _calculate_df_overall(self) -> pl.DataFrame:
+    def _calculate_df_overall(self, period_summary: pl.DataFrame) -> pl.DataFrame:
         """Calculate the overall attribution row.
+
+        Args:
+            period_summary: Period totals, linked values, and cumulative values.
 
         Returns:
             DataFrame containing one row for the full attribution period.
         """
-        portfolio_overall_return = cast(float, self._df[-1, cols.CUMULATIVE_PORTFOLIO_RETURN])
-        benchmark_overall_return = cast(float, self._df[-1, cols.CUMULATIVE_BENCHMARK_RETURN])
+        portfolio_overall_return = cast(
+            float,
+            period_summary[-1, cols.CUMULATIVE_PORTFOLIO_RETURN],
+        )
+        benchmark_overall_return = cast(
+            float,
+            period_summary[-1, cols.CUMULATIVE_BENCHMARK_RETURN],
+        )
 
         # Start the total row.  Note that sums only apply to the smoothed columns.
-        df_overall = self._df.sum()
+        df_overall = period_summary.sum()
 
         # Override the total row date columns.
-        df_overall[0, cols.FROM_DATE] = self._df[cols.FROM_DATE][0]
-        df_overall[0, cols.THRU_DATE] = self._df[cols.THRU_DATE][-1]
+        df_overall[0, cols.FROM_DATE] = period_summary[cols.FROM_DATE][0]
+        df_overall[0, cols.THRU_DATE] = period_summary[cols.THRU_DATE][-1]
 
         # Override the total row return columns.
         df_overall[0, cols.PORTFOLIO_RETURN] = portfolio_overall_return
@@ -673,7 +701,7 @@ class Attribution:
 
         # Override the total row cumulative columns.
         for col_name in cols.ALL_CUMULATIVE_COLUMNS:
-            df_overall[0, col_name] = self._df[-1, col_name]
+            df_overall[0, col_name] = period_summary[-1, col_name]
 
         # Override the total row simple columns.
         for col_name in cols.ALL_SIMPLE_COLUMNS:
@@ -681,6 +709,38 @@ class Attribution:
 
         # Return the instance values.
         return df_overall
+
+    def _calculate_overall_detail(self, period_detail: pl.DataFrame) -> pl.DataFrame:
+        """Calculate full-horizon numerical rows for each identifier.
+
+        Args:
+            period_detail: Per-period identifier attribution values.
+
+        Returns:
+            Full-horizon identifier attribution values without presentation names.
+        """
+        portfolio, benchmark = self._performances
+        return (
+            self._overall_performance_rows(
+                portfolio, cols.PORTFOLIO_WEIGHT, cols.PORTFOLIO_RETURN
+            )
+            .join(
+                self._overall_performance_rows(
+                    benchmark, cols.BENCHMARK_WEIGHT, cols.BENCHMARK_RETURN
+                ),
+                on=[*cols.DATE_COLUMNS, cols.CLASSIFICATION_IDENTIFIER],
+            )
+            .join(
+                period_detail.group_by(cols.CLASSIFICATION_IDENTIFIER).agg(
+                    pl.col(cols.PORTFOLIO_CONTRIB_SMOOTHED).sum(),
+                    pl.col(cols.BENCHMARK_CONTRIB_SMOOTHED).sum(),
+                    pl.col(cols.ALLOCATION_EFFECT_SMOOTHED).sum(),
+                    pl.col(cols.SELECTION_EFFECT_SMOOTHED).sum(),
+                ),
+                on=cols.CLASSIFICATION_IDENTIFIER,
+            )
+            .with_columns(self._smoothed_detail_expressions())
+        )
 
     def _construct_df_for_detail_views(self, view: View) -> pl.LazyFrame:
         """Construct the DataFrame used by detailed attribution views.
@@ -698,30 +758,9 @@ class Attribution:
         """
         match view:
             case View.SUBPERIOD_ATTRIBUTION:
-                detail = self._detail_df
+                detail = self._result.period_detail
             case View.OVERALL_ATTRIBUTION:
-                portfolio, benchmark = self._performances
-                detail = (
-                    self._overall_performance_rows(
-                        portfolio, cols.PORTFOLIO_WEIGHT, cols.PORTFOLIO_RETURN
-                    )
-                    .join(
-                        self._overall_performance_rows(
-                            benchmark, cols.BENCHMARK_WEIGHT, cols.BENCHMARK_RETURN
-                        ),
-                        on=[*cols.DATE_COLUMNS, cols.CLASSIFICATION_IDENTIFIER],
-                    )
-                    .join(
-                        self._detail_df.group_by(cols.CLASSIFICATION_IDENTIFIER).agg(
-                            pl.col(cols.PORTFOLIO_CONTRIB_SMOOTHED).sum(),
-                            pl.col(cols.BENCHMARK_CONTRIB_SMOOTHED).sum(),
-                            pl.col(cols.ALLOCATION_EFFECT_SMOOTHED).sum(),
-                            pl.col(cols.SELECTION_EFFECT_SMOOTHED).sum(),
-                        ),
-                        on=cols.CLASSIFICATION_IDENTIFIER,
-                    )
-                    .with_columns(self._smoothed_detail_expressions())
-                )
+                detail = self._result.overall_detail
             case _:
                 raise PparError(f"Unsupported attribution view: {view!r}.")
 
@@ -904,7 +943,7 @@ class Attribution:
         # Get the base dataframe associated with the view.
         match view:
             case View.CUMULATIVE_ATTRIBUTION | View.SUBPERIOD_SUMMARY:
-                lf = self._df.lazy()
+                lf = self._result.period_summary.lazy()
             case _:  # View.SUBPERIOD_ATTRIBUTION | View.OVERALL_ATTRIBUTION
                 lf = self._construct_df_for_detail_views(view)
 

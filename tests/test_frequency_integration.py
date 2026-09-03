@@ -372,7 +372,9 @@ class TestFrequencyIntegration(unittest.TestCase):
         self.assertTrue(util.are_near(output[cols.PORTFOLIO_RETURN].item(8), 0.2401702546346276))
         self.assertTrue(
             util.are_near(
-                attribution._df[cols.TOTAL_EFFECT_SMOOTHED].item(3),
+                attribution._result.period_summary[
+                    cols.TOTAL_EFFECT_SMOOTHED
+                ].item(3),
                 -0.0027455892808818704,
             )
         )

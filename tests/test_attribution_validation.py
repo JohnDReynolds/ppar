@@ -89,7 +89,8 @@ class TestAttributionValidation(unittest.TestCase):
         )
         attribution = Analytics(portfolio, benchmark).attribution()
         # pylint: disable-next=protected-access
-        attribution._df_overall = attribution._df_overall.with_columns(
+        result = attribution._result
+        result.overall_summary = result.overall_summary.with_columns(
             (pl.col(cols.TOTAL_EFFECT_SMOOTHED) + 0.01).alias(
                 cols.TOTAL_EFFECT_SMOOTHED
             )

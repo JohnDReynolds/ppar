@@ -12,6 +12,7 @@ import polars as pl
 
 # Project Imports
 from ppar import Analytics
+from ppar._attribution_result import AttributionCalculationResult
 from ppar.attribution import Attribution, View
 from ppar.frequency import Frequency
 from ppar.performance import Performance
@@ -55,6 +56,44 @@ class TestAnalyticsContracts(unittest.TestCase):
 
         self.assertTrue((summary[cols.ACTIVE_RETURN] == 0.0).all())
         self.assertTrue((summary[cols.TOTAL_EFFECT_SIMPLE] == 0.0).all())
+
+    def test_calculation_result_is_the_numerical_source_for_every_view(self) -> None:
+        """Presentation views should consume the shared numerical-result boundary."""
+        attribution = Analytics(_two_asset_performance()).attribution()
+        # The test intentionally characterizes the internal engine boundary.
+        # pylint: disable-next=protected-access
+        result = attribution._result
+
+        self.assertIsInstance(result, AttributionCalculationResult)
+        cases = (
+            (View.SUBPERIOD_SUMMARY, result.period_summary, False),
+            (View.CUMULATIVE_ATTRIBUTION, result.period_summary, True),
+            (View.SUBPERIOD_ATTRIBUTION, result.period_detail, False),
+            (View.OVERALL_ATTRIBUTION, result.overall_detail, True),
+        )
+        for view, numerical_frame, has_total_row in cases:
+            with self.subTest(view=view):
+                presented = attribution.to_polars(view)
+                if has_total_row:
+                    presented = presented[:-1]
+                if cols.CLASSIFICATION_NAME in presented.columns:
+                    presented = presented.drop(cols.CLASSIFICATION_NAME)
+                expected = numerical_frame.select(presented.columns)
+                if cols.CLASSIFICATION_IDENTIFIER in expected.columns:
+                    expected = expected.sort(
+                        [cols.FROM_DATE, cols.CLASSIFICATION_IDENTIFIER]
+                        if cols.FROM_DATE in expected.columns
+                        else cols.CLASSIFICATION_IDENTIFIER
+                    )
+                self.assertTrue(presented.equals(expected))
+
+        overall_total = attribution.to_polars(View.OVERALL_ATTRIBUTION)[-1]
+        for column in cols.RETURN_COLUMNS:
+            with self.subTest(overall_total=column):
+                self.assertEqual(
+                    overall_total.item(0, column),
+                    result.overall_summary.item(0, column),
+                )
 
     def test_constructor_keeps_only_data_sources_positional(self) -> None:
         """Names, dates, frequency, calendars, and risk inputs are keyword-only."""

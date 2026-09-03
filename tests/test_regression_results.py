@@ -221,13 +221,17 @@ class TestRegressionResults(unittest.TestCase):
         )
         self.assertTrue(
             util.are_near(
-                economic_sector._df[cols.TOTAL_EFFECT_SMOOTHED][3],
+                economic_sector._result.period_summary.item(
+                    3, cols.TOTAL_EFFECT_SMOOTHED
+                ),
                 0.16511216121906178,
             )
         )
         self.assertTrue(
             util.are_near(
-                economic_sector._df[cols.ACTIVE_CONTRIB_SMOOTHED][3],
+                economic_sector._result.period_summary.item(
+                    3, cols.ACTIVE_CONTRIB_SMOOTHED
+                ),
                 0.15015080069710046,
             )
         )

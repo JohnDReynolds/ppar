@@ -99,7 +99,11 @@ def _to_portable_input(performance: Performance) -> pd.DataFrame:
     rows = performance.narrow_df.select(_INPUT_COLUMNS).rename(
         {cols.QUANTITY_OF_DAYS: "quantity_of_days"}
     )
-    return pd.DataFrame(rows.to_dict(as_series=False))
+    return pd.DataFrame(
+        # Keep the one-time boundary conversion columnar instead of first
+        # materializing every column as a Python list.
+        {column: rows[column].to_numpy() for column in rows.columns}
+    )
 
 
 def _to_polars(
@@ -110,7 +114,9 @@ def _to_polars(
     """Translate one portable result frame without requiring PyArrow."""
     renamed = frame.rename(columns=names)
     translated = pl.DataFrame(
-        {column: renamed[column].tolist() for column in columns}
+        # NumPy arrays avoid Python-list materialization while retaining the
+        # no-PyArrow boundary.
+        {column: renamed[column].to_numpy(copy=False) for column in columns}
     ).with_columns(pl.col(cols.DATE_COLUMNS).cast(pl.Date))
     nullable_returns = [
         column for column in cols.RETURN_COLUMNS if column in translated.columns

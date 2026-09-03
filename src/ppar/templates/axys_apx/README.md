@@ -69,5 +69,4 @@ accidental duplicates or separate lots requiring a site-specific aggregation rul
 
 Finally, edit `ppar_demo.py` to select the portfolio, benchmark, dates,
 classification, calculation assumptions, and reports you want to produce. Leave
-`ATTRIBUTION_ENGINE` as `"polars"` for the default calculator or set it to `"pandas"`
-to use perfattr.
+Attribution calculations use the portable `perfattr` core.

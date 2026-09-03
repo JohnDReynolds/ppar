@@ -192,7 +192,7 @@ def _period_summary(result: AttributionResult) -> pl.DataFrame:
 def calculate_with_perfattr(
     performances: Sequence[Performance],
 ) -> AttributionCalculationResult:
-    """Calculate prepared ppar performance rows with the portable pandas engine.
+    """Calculate prepared ppar performance rows with the portable core.
 
     Args:
         performances: Portfolio and benchmark performance streams after all ppar

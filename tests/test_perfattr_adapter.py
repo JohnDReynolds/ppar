@@ -1,14 +1,10 @@
-"""Verify the opt-in perfattr engine at ppar's numerical-result boundary."""
+"""Verify ppar's permanent perfattr numerical-result boundary."""
 
-from collections.abc import Callable, Sequence
-from contextlib import redirect_stdout
+from collections.abc import Sequence
 from dataclasses import dataclass
 import datetime as dt
-import io
 from pathlib import Path
 import random
-import runpy
-import tempfile
 from typing import cast
 import unittest
 from unittest import mock
@@ -17,19 +13,14 @@ import polars as pl
 from polars.testing import assert_frame_equal
 
 from ppar import Analytics
+import ppar.attribution as attribution_module
 from ppar.attribution import Attribution, View
-from ppar.errors import PparError
 from ppar.frequency import Frequency
 import ppar.schema as cols
 from tests import helpers as test_util
 
 
 _TOLERANCE = 1e-12
-_ROOT = Path(__file__).resolve().parents[1]
-_DEMO_DIRECTORIES = (
-    _ROOT / "src" / "ppar" / "templates" / "generic",
-    _ROOT / "src" / "ppar" / "templates" / "axys_apx",
-)
 
 
 @dataclass
@@ -41,50 +32,24 @@ class _Sources:
     mapping_data_sources: Sequence[str | Path | pl.DataFrame | None] | None = None
 
 
-def _assert_engine_parity(
+def _calculate_all_views(
     test_case: unittest.TestCase,
     analytics: Analytics,
     classification_name: str | None = None,
     classification_data_source: str | Path | pl.DataFrame | None = None,
     mapping_data_sources: Sequence[str | Path | pl.DataFrame | None] | None = None,
-    *,
-    compare_csv: bool = False,
-) -> tuple[Attribution, Attribution]:
-    """Compare every public attribution view and its HTML presentation."""
-    polars_result = analytics.attribution(
+) -> Attribution:
+    """Calculate one attribution and exercise every public tabular view."""
+    result = analytics.attribution(
         classification_name,
         classification_data_source,
         mapping_data_sources,
-    )
-    pandas_result = analytics.attribution(
-        classification_name,
-        classification_data_source,
-        mapping_data_sources,
-        engine="pandas",
     )
     for view in View:
         with test_case.subTest(view=view):
-            assert_frame_equal(
-                polars_result.to_polars(view),
-                pandas_result.to_polars(view),
-                rel_tol=_TOLERANCE,
-                abs_tol=_TOLERANCE,
-            )
-            test_case.assertEqual(
-                polars_result.to_html(view),
-                pandas_result.to_html(view),
-            )
-            if compare_csv:
-                with tempfile.TemporaryDirectory() as directory:
-                    polars_path = Path(directory) / "polars.csv"
-                    pandas_path = Path(directory) / "pandas.csv"
-                    polars_result.write_csv(view, polars_path)
-                    pandas_result.write_csv(view, pandas_path)
-                    test_case.assertEqual(
-                        polars_path.read_bytes(),
-                        pandas_path.read_bytes(),
-                    )
-    return polars_result, pandas_result
+            test_case.assertFalse(result.to_polars(view).is_empty())
+            test_case.assertIn("<table", result.to_html(view))
+    return result
 
 
 def _random_performance(
@@ -155,27 +120,11 @@ def _assert_financial_invariants(
     test_case.assertLessEqual(final_cumulative_error, _TOLERANCE)
 
 
-def _demo_artifacts(directory: Path, engine: str, output: Path) -> dict[str, bytes]:
-    """Run one packaged demonstration with an explicitly selected engine."""
-    values = runpy.run_path(str(directory / "ppar_demo.py"))
-    main = cast(Callable[[], int], values["main"])
-    main.__globals__["ATTRIBUTION_ENGINE"] = engine
-    main.__globals__["OUTPUT_DIRECTORY"] = output
-    with redirect_stdout(io.StringIO()):
-        if main() != 0:
-            raise AssertionError(f"{directory.name} demonstration returned nonzero")
-    return {
-        path.name: path.read_bytes()
-        for path in sorted(output.iterdir())
-        if path.is_file()
-    }
-
-
 class TestPerfattrAdapter(unittest.TestCase):
-    """Exercise engine selection, translation, and cross-engine parity."""
+    """Exercise portable calculation translation and financial invariants."""
 
-    def test_all_views_match_for_asymmetric_multi_period_holdings(self) -> None:
-        """The adapter preserves rows, schemas, nulls, order, and numerical values."""
+    def test_all_views_support_asymmetric_multi_period_holdings(self) -> None:
+        """The adapter preserves asymmetric rows across every public view."""
         periods = (
             (dt.date(2024, 1, 1), dt.date(2024, 1, 31)),
             (dt.date(2024, 2, 1), dt.date(2024, 2, 29)),
@@ -196,10 +145,11 @@ class TestPerfattrAdapter(unittest.TestCase):
             },
         )
 
-        _assert_engine_parity(self, Analytics(portfolio, benchmark))
+        result = _calculate_all_views(self, Analytics(portfolio, benchmark))
+        _assert_financial_invariants(self, result)
 
     def test_consolidated_zero_net_group_preserves_authoritative_contribution(self) -> None:
-        """Mapped null returns and nonzero contributions survive both boundaries."""
+        """Mapped null returns and nonzero contributions survive the boundary."""
         periods = (
             (dt.date(2024, 1, 1), dt.date(2024, 1, 31)),
             (dt.date(2024, 2, 1), dt.date(2024, 2, 29)),
@@ -238,27 +188,17 @@ class TestPerfattrAdapter(unittest.TestCase):
             frequency=Frequency.QUARTERLY,
         )
 
-        _assert_engine_parity(
-            self,
-            analytics,
-            "Strategy",
-            classification,
-            (mapping, mapping),
-        )
-        pandas_detail = analytics.attribution(
-            "Strategy",
-            classification,
-            (mapping, mapping),
-            engine="pandas",
+        detail = _calculate_all_views(
+            self, analytics, "Strategy", classification, (mapping, mapping)
         ).to_polars(View.SUBPERIOD_ATTRIBUTION)
-        hedge = pandas_detail.filter(
+        hedge = detail.filter(
             pl.col(cols.CLASSIFICATION_IDENTIFIER) == "HEDGE"
         )
         self.assertIsNone(hedge[cols.PORTFOLIO_RETURN].item())
         self.assertNotEqual(hedge[cols.PORTFOLIO_CONTRIB_SIMPLE].item(), 0.0)
 
-    def test_project_fixture_matches_for_security_and_sector(self) -> None:
-        """Real rounded weights preserve parity through classification mapping."""
+    def test_project_fixture_runs_for_security_and_sector(self) -> None:
+        """Real rounded weights cross the boundary after classification mapping."""
         analytics = Analytics(
             test_util.performance_data_path("Mega-Cap Portfolio"),
             test_util.performance_data_path("Large-Cap Portfolio"),
@@ -271,16 +211,15 @@ class TestPerfattrAdapter(unittest.TestCase):
 
         for classification_name in ("Security", "Economic Sector"):
             with self.subTest(classification_name=classification_name):
-                _assert_engine_parity(
+                _calculate_all_views(
                     self,
                     analytics,
                     classification_name,
                     test_util.classification_data_path(classification_name),
                     test_util.mapping_data_paths(analytics, classification_name),
-                    compare_csv=True,
                 )
 
-    def test_randomized_valid_inputs_preserve_parity_and_invariants(self) -> None:
+    def test_randomized_valid_inputs_preserve_invariants(self) -> None:
         """Deterministic random portfolios exercise broad valid numerical inputs."""
         periods = (
             (dt.date(2024, 1, 1), dt.date(2024, 1, 31)),
@@ -302,15 +241,14 @@ class TestPerfattrAdapter(unittest.TestCase):
                     periods,
                     ("B", "C", "D", "E", "F"),
                 )
-                polars_result, pandas_result = _assert_engine_parity(
+                result = _calculate_all_views(
                     self,
                     Analytics(portfolio, benchmark),
                 )
-                _assert_financial_invariants(self, polars_result)
-                _assert_financial_invariants(self, pandas_result)
+                _assert_financial_invariants(self, result)
 
-    def test_signed_weights_and_near_minus_one_returns_preserve_parity(self) -> None:
-        """Linking remains equivalent near its lower limit with short exposure."""
+    def test_signed_weights_and_near_minus_one_returns_preserve_invariants(self) -> None:
+        """Linking remains reconciled near its lower limit with short exposure."""
         periods = (
             (dt.date(2024, 1, 1), dt.date(2024, 1, 31)),
             (dt.date(2024, 2, 1), dt.date(2024, 2, 29)),
@@ -330,11 +268,10 @@ class TestPerfattrAdapter(unittest.TestCase):
             },
         )
 
-        results = _assert_engine_parity(self, Analytics(portfolio, benchmark))
-        for result in results:
-            _assert_financial_invariants(self, result)
+        result = _calculate_all_views(self, Analytics(portfolio, benchmark))
+        _assert_financial_invariants(self, result)
 
-    def test_input_row_permutation_does_not_change_either_engine(self) -> None:
+    def test_input_row_permutation_does_not_change_results(self) -> None:
         """Canonical result ordering is independent of caller row ordering."""
         periods = (
             (dt.date(2024, 1, 1), dt.date(2024, 1, 31)),
@@ -346,17 +283,15 @@ class TestPerfattrAdapter(unittest.TestCase):
         reversed_analytics = Analytics(portfolio.reverse(), benchmark.reverse())
         original_analytics = Analytics(portfolio, benchmark)
 
-        for engine in ("polars", "pandas"):
-            with self.subTest(engine=engine):
-                original = original_analytics.attribution(engine=engine)
-                reversed_result = reversed_analytics.attribution(engine=engine)
-                for view in View:
-                    assert_frame_equal(
-                        original.to_polars(view),
-                        reversed_result.to_polars(view),
-                        rel_tol=_TOLERANCE,
-                        abs_tol=_TOLERANCE,
-                    )
+        original = original_analytics.attribution()
+        reversed_result = reversed_analytics.attribution()
+        for view in View:
+            assert_frame_equal(
+                original.to_polars(view),
+                reversed_result.to_polars(view),
+                rel_tol=_TOLERANCE,
+                abs_tol=_TOLERANCE,
+            )
 
     def test_classification_split_does_not_change_group_results(self) -> None:
         """Splitting one group into equivalent holdings preserves mapped results."""
@@ -414,74 +349,43 @@ class TestPerfattrAdapter(unittest.TestCase):
             benchmark_classification_name="Security",
         )
 
-        for engine in ("polars", "pandas"):
-            with self.subTest(engine=engine):
-                base = base_analytics.attribution(
-                    "Group",
-                    classification,
-                    engine=engine,
-                )
-                split = split_analytics.attribution(
-                    "Group",
-                    classification,
-                    (mapping, mapping),
-                    engine=engine,
-                )
-                for view in View:
-                    assert_frame_equal(
-                        base.to_polars(view),
-                        split.to_polars(view),
-                        rel_tol=_TOLERANCE,
-                        abs_tol=_TOLERANCE,
-                    )
+        base = base_analytics.attribution("Group", classification)
+        split = split_analytics.attribution(
+            "Group",
+            classification,
+            (mapping, mapping),
+        )
+        for view in View:
+            assert_frame_equal(
+                base.to_polars(view),
+                split.to_polars(view),
+                rel_tol=_TOLERANCE,
+                abs_tol=_TOLERANCE,
+            )
 
-    def test_packaged_demo_artifacts_match_across_engines(self) -> None:
-        """Generic and Axys/APX demos render identical HTML and PNG bundles."""
-        for demo_directory in _DEMO_DIRECTORIES:
-            with self.subTest(demo=demo_directory.name):
-                with tempfile.TemporaryDirectory() as directory:
-                    temporary = Path(directory)
-                    polars_artifacts = _demo_artifacts(
-                        demo_directory,
-                        "polars",
-                        temporary / "polars",
-                    )
-                    pandas_artifacts = _demo_artifacts(
-                        demo_directory,
-                        "pandas",
-                        temporary / "pandas",
-                    )
-                self.assertEqual(polars_artifacts, pandas_artifacts)
-
-    def test_default_engine_does_not_invoke_adapter(self) -> None:
-        """Existing callers remain on the original Polars implementation."""
+    def test_attribution_uses_perfattr_boundary(self) -> None:
+        """Every attribution calculation invokes the permanent portable boundary."""
         performance = test_util.make_performance_df(
             ((dt.date(2024, 1, 1), dt.date(2024, 1, 31)),),
             {"A": ([0.01], [1.0])},
         )
-        with mock.patch("ppar.attribution.calculate_with_perfattr") as adapter:
+        with mock.patch.object(
+            attribution_module,
+            "calculate_with_perfattr",
+            wraps=attribution_module.calculate_with_perfattr,
+        ) as adapter:
             Analytics(performance).attribution()
 
-        adapter.assert_not_called()
+        adapter.assert_called_once()
 
-    def test_attribution_for_forwards_pandas_engine(self) -> None:
-        """Bundled classification sources can select the portable calculation path."""
+    def test_attribution_for_uses_portable_calculation(self) -> None:
+        """Bundled classification sources use the permanent calculation path."""
         performance = test_util.make_performance_df(
             ((dt.date(2024, 1, 1), dt.date(2024, 1, 31)),),
             {"A": ([0.01], [1.0])},
         )
         sources = _Sources()
 
-        result = Analytics(performance).attribution_for(sources, engine="pandas")
+        result = Analytics(performance).attribution_for(sources)
 
         self.assertFalse(result.to_polars(View.SUBPERIOD_SUMMARY).is_empty())
-
-    def test_unknown_engine_is_rejected(self) -> None:
-        """Misspelled engines fail explicitly rather than changing calculation paths."""
-        performance = test_util.make_performance_df(
-            ((dt.date(2024, 1, 1), dt.date(2024, 1, 31)),),
-            {"A": ([0.01], [1.0])},
-        )
-
-        with self.assertRaisesRegex(PparError, "engine must be"):
-            Analytics(performance).attribution(engine="other")

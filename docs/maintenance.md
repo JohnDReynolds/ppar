@@ -43,12 +43,7 @@ retains its established timed gate. Add `--diagnostics` to also report fixture
 preparation, Python startup, and calculation-only timings as observation-only
 components.
 
-After changing the optional perfattr adapter, run the same unchanged scale scenarios
-through that engine as an additional integration check:
-
-```bash
-./.venv/bin/python scripts/check_scale.py --scale 500 --engine pandas
-```
+The attribution scenarios exercise the permanent `perfattr` calculation boundary.
 
 The release-candidate command composes both gates:
 

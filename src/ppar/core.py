@@ -671,7 +671,6 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
         classification_data_source: str | Path | pl.DataFrame | None = None,
         mapping_data_sources: Sequence[str | Path | pl.DataFrame | None] | None = None,
         classification_label: str | None = None,
-        engine: str = "polars",
     ) -> Attribution:
         """Return an Attribution instance for the requested classification.
 
@@ -691,8 +690,6 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                 classification.
             classification_label: Optional label displayed in tables and charts. If
                 supplied, this overrides the classification name for presentation.
-            engine: Calculation engine. ``"polars"`` is the existing default;
-                ``"pandas"`` selects the portable ``perfattr`` calculator.
 
         Data Parameters:
             Example ``classification_data_source`` for a Security classification::
@@ -795,14 +792,12 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
             classification_data_source,
             self._frequency,
             classification_label,
-            engine,
         )
 
     def attribution_for(
         self,
         sources: AttributionSources,
         classification_label: str | None = None,
-        engine: str = "polars",
     ) -> Attribution:
         """Return an Attribution instance from a bundled source object.
 
@@ -813,7 +808,6 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
             classification_label: Optional label displayed in tables and charts. If
                 supplied, this overrides the classification name from ``sources`` for
                 presentation.
-            engine: Calculation engine passed to :meth:`attribution`.
 
         Returns:
             Attribution instance associated with ``sources.classification_name``.
@@ -827,7 +821,6 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
             classification_data_source=sources.classification_data_source,
             mapping_data_sources=sources.mapping_data_sources,
             classification_label=classification_label,
-            engine=engine,
         )
 
     def risk_statistics(self) -> RiskStatistics:

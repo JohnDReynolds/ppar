@@ -32,14 +32,13 @@ Performance, classification, and mapping table inputs accept only a CSV path or 
 Polars DataFrame. Focused types and lower-level APIs live in `ppar.attribution`,
 `ppar.frequency`, `ppar.risk`, and `ppar.axys_apx`.
 
-Attribution uses the existing Polars calculator by default. Pass `engine="pandas"` to
-`Analytics.attribution()` or `Analytics.attribution_for()` to explicitly select the
-portable `perfattr` calculator; both engines return the same `Attribution` object and
-reuse the same Polars, HTML, PNG, and CSV presentation path.
+Attribution uses the portable `perfattr` calculator. Prepared Polars rows cross one
+internal numerical boundary and return to ppar's established Polars, HTML, PNG, and
+CSV presentation path.
 
 The adapter requests a `5e-9` reconciliation tolerance to match ppar's established
-eight-decimal input weight validation. This does not alter calculation formulas;
-cross-engine result parity remains `1e-12`.
+eight-decimal input weight validation. This affects validation only and does not alter
+calculation formulas.
 
 ### Results and files
 

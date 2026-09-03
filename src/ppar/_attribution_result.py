@@ -1,4 +1,4 @@
-"""Internal numerical-result boundary for attribution calculation engines."""
+"""Internal numerical-result boundary between calculation and presentation."""
 
 from dataclasses import dataclass
 

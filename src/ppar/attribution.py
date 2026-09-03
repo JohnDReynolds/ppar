@@ -16,16 +16,12 @@ Attribution instances are normally created by
 from enum import Enum
 import datetime as dt
 from pathlib import Path
-from typing import cast, Iterable, Literal, Sequence
+from typing import cast, Iterable, Sequence
 
 # Third-Party Imports
 import polars as pl
 
 # Project Imports
-from ppar._attribution_result import (
-    AttributionCalculationResult,
-    overall_summary_from_periods,
-)
 from ppar._perfattr_adapter import calculate_with_perfattr
 from ppar.classification import Classification
 from ppar.frequency import Frequency
@@ -37,7 +33,6 @@ import ppar.utilities as util
 
 # Constants
 _DEFAULT_OUTPUT_PRECISION = 8
-_AttributionEngine = Literal["polars", "pandas"]
 
 __all__ = ["Attribution", "Chart", "View"]
 
@@ -140,7 +135,6 @@ class Attribution:
         classification_data_source: str | Path | pl.DataFrame | None,
         frequency: Frequency,
         classification_label: str | None = None,
-        engine: str = "polars",
     ):
         """Initialize an attribution calculation.
 
@@ -156,8 +150,6 @@ class Attribution:
             classification_label: Optional label displayed in tables and charts. If
                 supplied, this overrides the classification name for presentation.
                 If omitted, the classification name is used.
-            engine: Calculation engine. ``"polars"`` preserves the existing default;
-                ``"pandas"`` selects the portable ``perfattr`` calculator.
 
         Raises:
             PparError: If classification setup, performance alignment, linking, or
@@ -171,8 +163,6 @@ class Attribution:
             classification_name,
             "classification_name",
         )
-        self._engine = self._normalize_engine(engine)
-
         performance_pair = util.two_item_tuple(performances, "Attribution performances")
 
         # Attribution owns independent calculated performances. Identifier
@@ -205,27 +195,12 @@ class Attribution:
             else classification_label
         )
 
-        # The portable core owns universe equalization. Preserve the existing Polars
-        # equalization only on the original engine path.
-        if self._engine == "polars":
-            self._equalize_columns()
-
         # Establish one numerical-result boundary before presentation is applied.
-        self._result = self._calculate_result()
+        self._result = calculate_with_perfattr(self._performances)
 
         # Attribution is a financial calculation boundary. Run its inexpensive
         # conservation checks before any report can expose the result.
         self.audit()
-
-    @staticmethod
-    def _normalize_engine(engine: str) -> _AttributionEngine:
-        """Validate and narrow the explicitly selected calculation engine."""
-        if engine not in ("polars", "pandas"):
-            raise PparError(
-                "engine must be 'polars' or 'pandas'.",
-                context={"parameter": "engine", "value": engine},
-            )
-        return cast(_AttributionEngine, engine)
 
     def _add_total_row(
         self,
@@ -418,312 +393,6 @@ class Attribution:
         """
         return cast(dt.date, self._performances[0].narrow_df[cols.FROM_DATE].item(0))
 
-    @staticmethod
-    def _attribution_performance_rows(
-        performance: Performance,
-        weight_column: str,
-        return_column: str,
-        contribution_column: str,
-    ) -> pl.DataFrame:
-        """Return narrow performance inputs under attribution column names.
-
-        Args:
-            performance: Performance stream to reshape for attribution.
-            weight_column: Output weight column name.
-            return_column: Output return column name.
-            contribution_column: Output simple contribution column name.
-
-        Returns:
-            Narrow attribution input rows aligned by period and identifier.
-        """
-        calculated_return = pl.col(cols.RETURN)
-        if performance.subperiods_have_been_consolidated:
-            calculated_return = (
-                pl.when(pl.col(cols.WEIGHT) != 0.0)
-                .then(pl.col(cols.CONTRIBUTION) / pl.col(cols.WEIGHT))
-                .otherwise(pl.col(cols.RETURN))
-            )
-        return performance.narrow_df.select(
-            *cols.DATE_COLUMNS,
-            pl.col(cols.IDENTIFIER).alias(cols.CLASSIFICATION_IDENTIFIER),
-            pl.col(cols.WEIGHT).alias(weight_column),
-            calculated_return.alias(return_column),
-            pl.col(cols.CONTRIBUTION).alias(contribution_column),
-        )
-
-    @staticmethod
-    def _detail_derived_expressions(include_weight: bool = True) -> list[pl.Expr]:
-        """Return expressions for active and total detail measures.
-
-        Args:
-            include_weight: Whether the source rows contain weight columns.
-
-        Returns:
-            Polars expressions for measures derived from portfolio and benchmark
-            values.
-        """
-        expressions = [
-            (pl.col(cols.PORTFOLIO_RETURN) - pl.col(cols.BENCHMARK_RETURN)).alias(
-                cols.ACTIVE_RETURN
-            ),
-            (
-                pl.col(cols.PORTFOLIO_CONTRIB_SIMPLE) - pl.col(cols.BENCHMARK_CONTRIB_SIMPLE)
-            ).alias(cols.ACTIVE_CONTRIB_SIMPLE),
-            (
-                pl.col(cols.PORTFOLIO_CONTRIB_SMOOTHED)
-                - pl.col(cols.BENCHMARK_CONTRIB_SMOOTHED)
-            ).alias(cols.ACTIVE_CONTRIB_SMOOTHED),
-            (
-                pl.col(cols.ALLOCATION_EFFECT_SIMPLE) + pl.col(cols.SELECTION_EFFECT_SIMPLE)
-            ).alias(cols.TOTAL_EFFECT_SIMPLE),
-            (
-                pl.col(cols.ALLOCATION_EFFECT_SMOOTHED) + pl.col(cols.SELECTION_EFFECT_SMOOTHED)
-            ).alias(cols.TOTAL_EFFECT_SMOOTHED),
-        ]
-        if include_weight:
-            expressions.append(
-                (pl.col(cols.PORTFOLIO_WEIGHT) - pl.col(cols.BENCHMARK_WEIGHT)).alias(
-                    cols.ACTIVE_WEIGHT
-                )
-            )
-        return expressions
-
-    @staticmethod
-    def _smoothed_detail_expressions() -> list[pl.Expr]:
-        """Return derived expressions required by the overall detail view."""
-        return [
-            (pl.col(cols.PORTFOLIO_RETURN) - pl.col(cols.BENCHMARK_RETURN)).alias(
-                cols.ACTIVE_RETURN
-            ),
-            (pl.col(cols.PORTFOLIO_WEIGHT) - pl.col(cols.BENCHMARK_WEIGHT)).alias(
-                cols.ACTIVE_WEIGHT
-            ),
-            (
-                pl.col(cols.PORTFOLIO_CONTRIB_SMOOTHED)
-                - pl.col(cols.BENCHMARK_CONTRIB_SMOOTHED)
-            ).alias(cols.ACTIVE_CONTRIB_SMOOTHED),
-            (
-                pl.col(cols.ALLOCATION_EFFECT_SMOOTHED) + pl.col(cols.SELECTION_EFFECT_SMOOTHED)
-            ).alias(cols.TOTAL_EFFECT_SMOOTHED),
-        ]
-
-    def _calculate_result(self) -> AttributionCalculationResult:
-        """Calculate all numerical frames behind the presentation boundary.
-
-        Returns:
-            Complete Polars attribution calculation result.
-        """
-        if self._engine == "pandas":
-            return calculate_with_perfattr(self._performances)
-
-        period_summary, period_detail = self._calculate_attribution()
-        return AttributionCalculationResult(
-            period_summary=period_summary,
-            period_detail=period_detail,
-            overall_summary=overall_summary_from_periods(period_summary),
-            overall_detail=self._calculate_overall_detail(period_detail),
-        )
-
-    def _calculate_attribution(self) -> tuple[pl.DataFrame, pl.DataFrame]:
-        """Calculate narrow attribution rows and period summaries.
-
-        Returns:
-            A tuple containing period-level summaries and identifier-level
-            detail rows.
-
-        Raises:
-            PparError: If a linking coefficient cannot be calculated for the
-                portfolio or benchmark returns.
-        """
-        portfolio, benchmark = self._performances
-        period_returns = (
-            portfolio.narrow_df.select(*cols.DATE_COLUMNS, cols.TOTAL_RETURN)
-            .unique()
-            .rename({cols.TOTAL_RETURN: cols.PORTFOLIO_RETURN})
-            .join(
-                benchmark.narrow_df.select(*cols.DATE_COLUMNS, cols.TOTAL_RETURN)
-                .unique()
-                .rename({cols.TOTAL_RETURN: cols.BENCHMARK_RETURN}),
-                on=cols.DATE_COLUMNS,
-            )
-            .sort(cols.THRU_DATE)
-        )
-        portfolio_overall_return = cast(
-            float, (period_returns[cols.PORTFOLIO_RETURN] + 1).product() - 1
-        )
-        benchmark_overall_return = cast(
-            float, (period_returns[cols.BENCHMARK_RETURN] + 1).product() - 1
-        )
-        active_denominator = util.carino_linking_coefficient(
-            portfolio_overall_return, benchmark_overall_return
-        )
-        period_factors = period_returns.with_columns(
-            pl.Series(
-                "_portfolio_linking_coefficient",
-                util.logarithmic_linking_coefficients(
-                    portfolio_overall_return, period_returns[cols.PORTFOLIO_RETURN]
-                ),
-            ),
-            pl.Series(
-                "_benchmark_linking_coefficient",
-                util.logarithmic_linking_coefficients(
-                    benchmark_overall_return, period_returns[cols.BENCHMARK_RETURN]
-                ),
-            ),
-            pl.Series(
-                "_active_linking_coefficient",
-                [
-                    util.carino_linking_coefficient(portfolio_return, benchmark_return)
-                    / active_denominator
-                    for portfolio_return, benchmark_return in zip(
-                        period_returns[cols.PORTFOLIO_RETURN],
-                        period_returns[cols.BENCHMARK_RETURN],
-                    )
-                ],
-            ),
-        )
-
-        detail = (
-            self._attribution_performance_rows(
-                portfolio,
-                cols.PORTFOLIO_WEIGHT,
-                cols.PORTFOLIO_RETURN,
-                cols.PORTFOLIO_CONTRIB_SIMPLE,
-            )
-            .join(
-                self._attribution_performance_rows(
-                    benchmark,
-                    cols.BENCHMARK_WEIGHT,
-                    cols.BENCHMARK_RETURN,
-                    cols.BENCHMARK_CONTRIB_SIMPLE,
-                ),
-                on=[*cols.DATE_COLUMNS, cols.CLASSIFICATION_IDENTIFIER],
-            )
-            .join(period_factors, on=cols.DATE_COLUMNS, suffix="_period")
-            .with_columns(
-                (
-                    pl.when(pl.col(cols.BENCHMARK_RETURN).is_not_null())
-                    .then(
-                        (pl.col(cols.PORTFOLIO_WEIGHT) - pl.col(cols.BENCHMARK_WEIGHT))
-                        * (
-                            pl.col(cols.BENCHMARK_RETURN)
-                            - pl.col(f"{cols.BENCHMARK_RETURN}_period")
-                        )
-                    )
-                    .otherwise(0.0)
-                ).alias(cols.ALLOCATION_EFFECT_SIMPLE),
-                (
-                    pl.col(cols.PORTFOLIO_CONTRIB_SIMPLE)
-                    - pl.col(cols.BENCHMARK_CONTRIB_SIMPLE)
-                    - (
-                        (pl.col(cols.PORTFOLIO_WEIGHT) - pl.col(cols.BENCHMARK_WEIGHT))
-                        * pl.col(f"{cols.BENCHMARK_RETURN}_period")
-                    )
-                ).alias(cols.TOTAL_EFFECT_SIMPLE),
-                (
-                    pl.col(cols.PORTFOLIO_CONTRIB_SIMPLE)
-                    * pl.col("_portfolio_linking_coefficient")
-                ).alias(cols.PORTFOLIO_CONTRIB_SMOOTHED),
-                (
-                    pl.col(cols.BENCHMARK_CONTRIB_SIMPLE)
-                    * pl.col("_benchmark_linking_coefficient")
-                ).alias(cols.BENCHMARK_CONTRIB_SMOOTHED),
-            )
-            .with_columns(
-                (
-                    pl.col(cols.TOTAL_EFFECT_SIMPLE)
-                    - pl.col(cols.ALLOCATION_EFFECT_SIMPLE)
-                ).alias(cols.SELECTION_EFFECT_SIMPLE),
-                (
-                    pl.col(cols.ALLOCATION_EFFECT_SIMPLE)
-                    * pl.col("_active_linking_coefficient")
-                ).alias(cols.ALLOCATION_EFFECT_SMOOTHED),
-                (
-                    pl.col(cols.TOTAL_EFFECT_SIMPLE)
-                    * pl.col("_active_linking_coefficient")
-                ).alias(cols.TOTAL_EFFECT_SMOOTHED),
-            )
-            .with_columns(
-                (
-                    pl.col(cols.TOTAL_EFFECT_SMOOTHED)
-                    - pl.col(cols.ALLOCATION_EFFECT_SMOOTHED)
-                ).alias(cols.SELECTION_EFFECT_SMOOTHED),
-            )
-            .with_columns(self._detail_derived_expressions())
-            .select(
-                *cols.DATE_COLUMNS,
-                cols.CLASSIFICATION_IDENTIFIER,
-                cols.PORTFOLIO_WEIGHT,
-                cols.PORTFOLIO_RETURN,
-                cols.PORTFOLIO_CONTRIB_SIMPLE,
-                cols.PORTFOLIO_CONTRIB_SMOOTHED,
-                cols.BENCHMARK_WEIGHT,
-                cols.BENCHMARK_RETURN,
-                cols.BENCHMARK_CONTRIB_SIMPLE,
-                cols.BENCHMARK_CONTRIB_SMOOTHED,
-                cols.ACTIVE_WEIGHT,
-                cols.ACTIVE_RETURN,
-                cols.ACTIVE_CONTRIB_SIMPLE,
-                cols.ACTIVE_CONTRIB_SMOOTHED,
-                cols.ALLOCATION_EFFECT_SIMPLE,
-                cols.SELECTION_EFFECT_SIMPLE,
-                cols.TOTAL_EFFECT_SIMPLE,
-                cols.ALLOCATION_EFFECT_SMOOTHED,
-                cols.SELECTION_EFFECT_SMOOTHED,
-                cols.TOTAL_EFFECT_SMOOTHED,
-            )
-            .sort([cols.THRU_DATE, cols.CLASSIFICATION_IDENTIFIER])
-        )
-        summary = (
-            detail.group_by(cols.DATE_COLUMNS)
-            .agg(
-                pl.col(cols.PORTFOLIO_CONTRIB_SIMPLE).sum(),
-                pl.col(cols.BENCHMARK_CONTRIB_SIMPLE).sum(),
-                pl.col(cols.PORTFOLIO_CONTRIB_SMOOTHED).sum(),
-                pl.col(cols.BENCHMARK_CONTRIB_SMOOTHED).sum(),
-                pl.col(cols.ALLOCATION_EFFECT_SIMPLE).sum(),
-                pl.col(cols.SELECTION_EFFECT_SIMPLE).sum(),
-                pl.col(cols.ALLOCATION_EFFECT_SMOOTHED).sum(),
-                pl.col(cols.SELECTION_EFFECT_SMOOTHED).sum(),
-            )
-            .join(period_returns, on=cols.DATE_COLUMNS)
-            .sort(cols.THRU_DATE)
-            .with_columns(self._detail_derived_expressions(include_weight=False))
-        )
-        return self._sum_columns_and_rows(summary.lazy()).collect(), detail
-
-    def _calculate_overall_detail(self, period_detail: pl.DataFrame) -> pl.DataFrame:
-        """Calculate full-horizon numerical rows for each identifier.
-
-        Args:
-            period_detail: Per-period identifier attribution values.
-
-        Returns:
-            Full-horizon identifier attribution values without presentation names.
-        """
-        portfolio, benchmark = self._performances
-        return (
-            self._overall_performance_rows(
-                portfolio, cols.PORTFOLIO_WEIGHT, cols.PORTFOLIO_RETURN
-            )
-            .join(
-                self._overall_performance_rows(
-                    benchmark, cols.BENCHMARK_WEIGHT, cols.BENCHMARK_RETURN
-                ),
-                on=[*cols.DATE_COLUMNS, cols.CLASSIFICATION_IDENTIFIER],
-            )
-            .join(
-                period_detail.group_by(cols.CLASSIFICATION_IDENTIFIER).agg(
-                    pl.col(cols.PORTFOLIO_CONTRIB_SMOOTHED).sum(),
-                    pl.col(cols.BENCHMARK_CONTRIB_SMOOTHED).sum(),
-                    pl.col(cols.ALLOCATION_EFFECT_SMOOTHED).sum(),
-                    pl.col(cols.SELECTION_EFFECT_SMOOTHED).sum(),
-                ),
-                on=cols.CLASSIFICATION_IDENTIFIER,
-            )
-            .with_columns(self._smoothed_detail_expressions())
-        )
-
     def _construct_df_for_detail_views(self, view: View) -> pl.LazyFrame:
         """Construct the DataFrame used by detailed attribution views.
 
@@ -759,37 +428,6 @@ class Attribution:
             .sort(cols.FROM_DATE, cols.CLASSIFICATION_IDENTIFIER)
         )
 
-    @staticmethod
-    def _overall_performance_rows(
-        performance: Performance, weight_column: str, return_column: str
-    ) -> pl.DataFrame:
-        """Calculate overall identifier returns and weights from narrow rows.
-
-        Args:
-            performance: Performance stream to summarize.
-            weight_column: Output weight column name.
-            return_column: Output return column name.
-
-        Returns:
-            One overall-period row per identifier.
-        """
-        return (
-            performance.df_overall()
-            .rename(
-                {
-                    cols.IDENTIFIER: cols.CLASSIFICATION_IDENTIFIER,
-                    cols.RETURN: return_column,
-                    cols.WEIGHT: weight_column,
-                }
-            )
-            .select(
-                *cols.DATE_COLUMNS,
-                cols.CLASSIFICATION_IDENTIFIER,
-                return_column,
-                weight_column,
-            )
-        )
-
     def _thru_date(self) -> dt.date:
         """Return the last thru date in the attribution period.
 
@@ -797,41 +435,6 @@ class Attribution:
             Overall thru date.
         """
         return cast(dt.date, self._performances[0].narrow_df[cols.THRU_DATE].item(-1))
-
-    def _equalize_columns(self) -> None:
-        """Equalize portfolio and benchmark identifier rows.
-
-        Missing identifiers are added to the opposite performance with zero-valued
-        return, weight, and contribution rows so narrow row joins use matching
-        identifier sets.
-        """
-        portfolio, benchmark = self._performances
-        row_key = [*cols.DATE_COLUMNS, cols.IDENTIFIER]
-        for target, source in ((portfolio, benchmark), (benchmark, portfolio)):
-            missing_keys = source.narrow_df.select(row_key).join(
-                target.narrow_df.select(row_key),
-                on=row_key,
-                how="anti",
-            )
-            if missing_keys.is_empty():
-                continue
-            periods = target.narrow_df.select(
-                *cols.DATE_COLUMNS,
-                cols.QUANTITY_OF_DAYS,
-                cols.TOTAL_RETURN,
-            ).unique()
-            missing_rows = (
-                missing_keys.join(periods, on=cols.DATE_COLUMNS)
-                .with_columns(
-                    pl.lit(0.0).alias(cols.RETURN),
-                    pl.lit(0.0).alias(cols.WEIGHT),
-                    pl.lit(0.0).alias(cols.CONTRIBUTION),
-                )
-                .select(target.narrow_df.columns)
-            )
-            target._replace_calculated_rows(  # pylint: disable=protected-access
-                pl.concat([target.narrow_df, missing_rows])
-            )
 
     def _fetch_dataframe(
         self,
@@ -952,89 +555,6 @@ class Attribution:
 
         # Return the dataframe.
         return df
-
-    def _sum_columns_and_rows(
-        self,
-        lf: pl.LazyFrame,
-    ) -> pl.LazyFrame:
-        """Add cumulative columns to period-level attribution summaries.
-
-        Args:
-            lf: LazyFrame containing one summarized attribution row per period.
-
-        Returns:
-            LazyFrame with cumulative return, contribution, and attribution columns.
-        """
-        # Vertically accumulate the cumulative columns.
-        lf = lf.with_columns(
-            [
-                # CUMULATIVE_PORTFOLIO_RETURN
-                pl.col(cols.PORTFOLIO_RETURN)
-                .add(1)
-                .cum_prod()
-                .sub(1)
-                .alias(cols.CUMULATIVE_PORTFOLIO_RETURN),
-                # CUMULATIVE_BENCHMARK_RETURN
-                pl.col(cols.BENCHMARK_RETURN)
-                .add(1)
-                .cum_prod()
-                .sub(1)
-                .alias(cols.CUMULATIVE_BENCHMARK_RETURN),
-                # CUMULATIVE_PORTFOLIO_CONTRIB
-                pl.col(cols.PORTFOLIO_CONTRIB_SMOOTHED)
-                .cum_sum()
-                .alias(cols.CUMULATIVE_PORTFOLIO_CONTRIB),
-                # CUMULATIVE_BENCHMARK_CONTRIB
-                pl.col(cols.BENCHMARK_CONTRIB_SMOOTHED)
-                .cum_sum()
-                .alias(cols.CUMULATIVE_BENCHMARK_CONTRIB),
-                # CUMULATIVE_ALLOCATION_EFFECT
-                pl.col(cols.ALLOCATION_EFFECT_SMOOTHED)
-                .cum_sum()
-                .alias(cols.CUMULATIVE_ALLOCATION_EFFECT),
-                # CUMULATIVE_SELECTION_EFFECT
-                pl.col(cols.SELECTION_EFFECT_SMOOTHED)
-                .cum_sum()
-                .alias(cols.CUMULATIVE_SELECTION_EFFECT),
-                # CUMULATIVE_TOTAL_EFFECT
-                pl.col(cols.TOTAL_EFFECT_SMOOTHED).cum_sum().alias(cols.CUMULATIVE_TOTAL_EFFECT),
-            ]
-        )
-
-        # Calculate the active columns.
-        # You cannot subtract 2 lazyframe columns, so you need to collect first.
-        df = lf.collect()
-        lf = (
-            df.lazy().with_columns(
-                [
-                    # Active return (no distinction between simple and smoothed)
-                    (df[cols.PORTFOLIO_RETURN] - df[cols.BENCHMARK_RETURN]).alias(
-                        cols.ACTIVE_RETURN
-                    ),
-                    # Cumulative active return
-                    (
-                        df[cols.CUMULATIVE_PORTFOLIO_RETURN] - df[cols.CUMULATIVE_BENCHMARK_RETURN]
-                    ).alias(cols.CUMULATIVE_ACTIVE_RETURN),
-                    # Simple active contribution
-                    (df[cols.PORTFOLIO_CONTRIB_SIMPLE] - df[cols.BENCHMARK_CONTRIB_SIMPLE]).alias(
-                        cols.ACTIVE_CONTRIB_SIMPLE
-                    ),
-                    # Smoothed (log-linked) active contribution
-                    (
-                        df[cols.PORTFOLIO_CONTRIB_SMOOTHED] - df[cols.BENCHMARK_CONTRIB_SMOOTHED]
-                    ).alias(cols.ACTIVE_CONTRIB_SMOOTHED),
-                ]
-            )
-            # Cumulative active contribution
-            .with_columns(
-                pl.col(cols.ACTIVE_CONTRIB_SMOOTHED)
-                .cum_sum()
-                .alias(cols.CUMULATIVE_ACTIVE_CONTRIB)
-            )
-        )
-
-        # Return the resulting LazyFrame
-        return lf
 
     def _title_lines(self, chart_or_view: Chart | View) -> tuple[str, str]:
         """Return title and subtitle text for a chart or view.

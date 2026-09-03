@@ -28,13 +28,8 @@ class TestScaleCheck(unittest.TestCase):
             with self.subTest(scale=scale), self.assertRaises(SystemExit):
                 check_scale._parse_args(["--scale", str(scale)])
         self.assertFalse(check_scale._parse_args(["--scale", "500"]).diagnostics)
-        self.assertEqual(check_scale._parse_args(["--scale", "500"]).engine, "polars")
         self.assertTrue(
             check_scale._parse_args(["--scale", "500", "--diagnostics"]).diagnostics
-        )
-        self.assertEqual(
-            check_scale._parse_args(["--scale", "500", "--engine", "pandas"]).engine,
-            "pandas",
         )
 
     def test_timing_samples_retain_each_observation(self) -> None:
@@ -209,25 +204,6 @@ class TestScaleCheck(unittest.TestCase):
             demo_path.write_text("import datetime as dt\n", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "exactly one THRU_DATE"):
                 check_scale._set_demo_thru_date(demo_path, expected)
-
-    def test_demo_engine_update_is_checked_and_executable(self) -> None:
-        """Scale copies select pandas without changing the packaged default."""
-        with tempfile.TemporaryDirectory() as directory:
-            demo_path = Path(directory) / "ppar_demo.py"
-            demo_path.write_text(
-                'ATTRIBUTION_ENGINE = "polars"\n',
-                encoding="utf-8",
-            )
-
-            check_scale._set_demo_engine(demo_path, "pandas")
-
-            self.assertEqual(
-                runpy.run_path(str(demo_path))["ATTRIBUTION_ENGINE"],
-                "pandas",
-            )
-            demo_path.write_text("", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "exactly one ATTRIBUTION_ENGINE"):
-                check_scale._set_demo_engine(demo_path, "pandas")
 
     def test_history_periods_cover_leap_weekend_and_holiday_endpoints(self) -> None:
         """Synthetic months are gapless and use the configured business endpoints."""

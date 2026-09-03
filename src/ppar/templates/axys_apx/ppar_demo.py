@@ -41,10 +41,6 @@ CLASSIFICATION = "Economic Sector"
 # but omits the risk statistics report because that report requires a fixed frequency.
 FREQUENCY = Frequency.QUARTERLY
 
-# Attribution uses ppar's original Polars calculator by default. Set this to
-# "pandas" to run the same prepared data and reports through perfattr.
-ATTRIBUTION_ENGINE = "polars"
-
 # holidays.csv is headerless and contains one YYYY-MM-DD date per line. Holidays
 # let ppar recognize the actual business-day endpoint of a month, quarter, or year.
 HOLIDAYS = DIRECTORY / "input" / "holidays.csv"
@@ -263,7 +259,6 @@ def _build_analytics() -> tuple[Analytics, Attribution, Attribution]:
             portfolio,
             benchmark,
         ),
-        engine=ATTRIBUTION_ENGINE,
     )
 
     # 3. Create classification attribution. This rolls holdings into CLASSIFICATION
@@ -275,7 +270,6 @@ def _build_analytics() -> tuple[Analytics, Attribution, Attribution]:
             portfolio,
             benchmark,
         ),
-        engine=ATTRIBUTION_ENGINE,
     )
     return analytics, security_attribution, classification_attribution
 

@@ -16,7 +16,7 @@ import polars as pl
 
 # Project Imports
 from ppar.attribution import Attribution
-from ppar._perfattr_adapter import prepare_performances
+from ppar._perfattr_adapter import prepare_performance_sources, prepare_performances
 from ppar.frequency import Frequency, load_holidays
 from ppar.performance import Performance
 from ppar.risk import RiskStatistics
@@ -164,29 +164,16 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
         # Initialize the cached risk calculation.
         self._riskstatistics: RiskStatistics | None = None
 
-        # Load each host source, then perform all portable alignment and consolidation
-        # at the single perfattr boundary.
-        source_performances = (
-            # Portfolio
-            Performance(
-                portfolio_data_source,
-                name=portfolio_name,
-                classification_name=portfolio_classification_name,
-                from_date=from_date,
-                thru_date=thru_date,
+        # Load both host sources, then align and consolidate them in one portable call.
+        self._performances = prepare_performance_sources(
+            (portfolio_data_source, benchmark_data_source),
+            names=(portfolio_name, benchmark_name),
+            classification_names=(
+                portfolio_classification_name,
+                benchmark_classification_name,
             ),
-            # Benchmark
-            Performance(
-                benchmark_data_source,
-                name=benchmark_name,
-                classification_name=benchmark_classification_name,
-                from_date=from_date,
-                thru_date=thru_date,
-            ),
-        )
-
-        self._performances = prepare_performances(
-            source_performances,
+            from_date=from_date,
+            thru_date=thru_date,
             frequency=self._frequency,
             holidays=self._holidays,
         )

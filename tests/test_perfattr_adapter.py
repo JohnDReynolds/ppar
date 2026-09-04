@@ -392,7 +392,10 @@ class TestPerfattrAdapter(unittest.TestCase):
         ) as portable:
             Analytics(performance)
 
-        self.assertEqual(portable.call_count, 3)
+        # Analytics prepares the portfolio/benchmark pair once. Preparing each side
+        # against itself first would repeat validation and consolidation without
+        # adding a financial check.
+        self.assertEqual(portable.call_count, 1)
 
     def test_attribution_for_uses_portable_calculation(self) -> None:
         """Bundled classification sources use the permanent calculation path."""

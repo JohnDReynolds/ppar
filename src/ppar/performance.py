@@ -93,6 +93,47 @@ class Performance:
         duplicate._df_overall = self._df_overall.clone()  # pylint: disable=protected-access
         return duplicate
 
+    @classmethod
+    def _from_prepared_rows(
+        cls,
+        frame: pl.DataFrame,
+        *,
+        data_source: util.PerformanceDataSource,
+        name: str | None,
+        classification_name: str | None,
+        classification_items: pl.DataFrame,
+    ) -> "Performance":
+        """Construct a host container from an already prepared portable side.
+
+        Args:
+            frame: Prepared rows translated to ppar's established schema.
+            data_source: Original source retained for host error context.
+            name: Optional stream display name.
+            classification_name: Optional classification represented by the rows.
+            classification_items: Optional identifier/name presentation metadata.
+
+        Returns:
+            Host container that owns independent copies of its rows and metadata.
+
+        Notes:
+            The caller must supply rows produced by the trusted portable boundary.
+        """
+        result = cls.__new__(cls)
+        result.classification_name = classification_name
+        result.error_message_context = (
+            f"in the file {data_source}"
+            if isinstance(data_source, str | Path)
+            else f"in the dataframe {name}"
+        )
+        if name is None and isinstance(data_source, str | Path):
+            name = util.file_basename_without_extension(data_source)
+        result.name = name
+        result.classification_items = classification_items.clone()
+        result.narrow_df = frame.clone()
+        result.identifiers = sorted(frame[cols.IDENTIFIER].unique().to_list())
+        result._df_overall = pl.DataFrame()
+        return result
+
     def audit(self) -> None:
         """Validate the translated ppar representation of portable prepared rows.
 

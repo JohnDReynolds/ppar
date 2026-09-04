@@ -1,7 +1,9 @@
 
 ################################################################################ OBSOLETE ABOVE HERE
+Do this in the context of re-assessing _extras/optimizations/ppar_optimizations_roadmap.md.
 
 
+Think about removing polars and going 100% pandas.
 
 ################################################################################ OVERHEAD
 https://chatgpt.com/codex/cloud/settings/analytics             # To see how much codex credits you have left.
@@ -22,24 +24,22 @@ Then follow the directions that it shows you.
 
 ################################################################# CODEX REVIEWS #####################################################
 
-
-#################### 1. Cleanup (Extra High)
-Can you do a read-only review of the entire project for dead code, unnecessary backward-compatibility, inconsistencies, opportunities for simplification, opportunities for 80/20 refactoring, unsupported features, etc.
-Use the lenses of "less is more" and "keep it simple stupid".
-Take your time, be thorough.  Just report your findings, do not change anything.
-
-Finished implementation at ../ppar-extras/cleanup/ppar_cleanup_roadmap.md
+#################### 1. Optimizations (Extra High)
+Do you see any places in this project where the execution times could be substantially increased?
+I'm looking for simple 80/20 wins, not micro-optimizations or complicated re-factors.
 
 #################### 2. Correctness (Extra High)
 Can you do a read-only review of this project for obvious bugs, especially mathematical or logic issues?
 
 Finished implementation at ../ppar-extras/correctness/ppar_correctness_roadmap.md
 
-#################### 3. Optimizations (Extra High)
-Do you see any places in this project where the execution times could be substantially increased?
-I'm looking for simple 80/20 wins, not micro-optimizations or complicated re-factors.
-
 Finished implementation at ../ppar-extras/optimizations/ppar_optimizations_roadmap.md
+
+#################### 3. Cleanup (Extra High)
+Can you do a read-only review of the entire project for dead code, unnecessary backward-compatibility, inconsistencies, opportunities for simplification, opportunities for 80/20 refactoring, unsupported features, etc.
+Use the lenses of "less is more" and "keep it simple stupid".
+
+Finished implementation at ../ppar-extras/cleanup/ppar_cleanup_roadmap.md
 
 #################### 4. User View (Extra High)
 Approach the project as a user.  Look at documentation, workflow, user API, outputs.  What would a user think?

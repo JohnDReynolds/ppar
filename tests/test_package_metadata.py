@@ -32,7 +32,7 @@ class TestPackageMetadata(unittest.TestCase):
         """Distribution metadata names only the independent Analytics product."""
         project = _pyproject()["project"]
         self.assertEqual(project["name"], "ppar")
-        self.assertEqual(project["version"], "0.3.0")
+        self.assertEqual(project["version"], "0.3.1")
         self.assertEqual(project["requires-python"], ">=3.11.9,<3.15")
         self.assertEqual(project["scripts"], {"ppar": "ppar.cli:main"})
         self.assertEqual(
@@ -114,7 +114,7 @@ class TestPackageMetadata(unittest.TestCase):
             },
         )
         self.assertNotIn("perfaud", " ".join(dependencies).lower())
-        self.assertIn("perfattr>=0.1.0,<0.2", dependencies)
+        self.assertIn("perfattr>=0.2.1,<0.3", dependencies)
         self.assertEqual(set(project["optional-dependencies"]), {"dev"})
 
     def test_root_exports_are_exact(self) -> None:

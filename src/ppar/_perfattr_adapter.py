@@ -204,6 +204,82 @@ def _translate_identity_error(
     return _translate_preparation_error(error)
 
 
+def _load_performance_input(
+    data_source: str | Path | pl.DataFrame,
+) -> tuple[pd.DataFrame, pl.DataFrame]:
+    """Load one source-neutral input and retain optional display names.
+
+    Args:
+        data_source: Canonical performance CSV path or narrow Polars frame.
+
+    Returns:
+        A pandas input for portable preparation and separate host display metadata.
+
+    Raises:
+        PparError: If the host source type or canonical columns are invalid.
+        PreparationError: If the portable CSV reader rejects a canonical file.
+
+    Notes:
+        This helper translates container types only. Financial normalization,
+        validation, alignment, and consolidation occur in the subsequent public
+        ``perfattr`` call.
+    """
+    if isinstance(data_source, str | Path):
+        source = read_performance_csv(
+            data_source,
+            reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
+        )
+    elif isinstance(data_source, pl.DataFrame):
+        source_frame = data_source.clone()
+        required = (*cols.DATE_COLUMNS, cols.IDENTIFIER, cols.RETURN, cols.WEIGHT)
+        missing = [column for column in required if column not in source_frame.columns]
+        if missing:
+            raise PparError(f"Missing required performance columns {missing}.")
+        selected = [*required]
+        selected.extend(
+            column
+            for column in (cols.CONTRIBUTION, cols.NAME)
+            if column in source_frame.columns
+        )
+        try:
+            source_frame = source_frame.select(selected).with_columns(
+                pl.col(cols.DATE_COLUMNS).cast(pl.Date),
+                pl.col((cols.WEIGHT, cols.RETURN)).cast(pl.Float64),
+                pl.col(cols.IDENTIFIER).cast(pl.String),
+            )
+            if cols.CONTRIBUTION in source_frame.columns:
+                source_frame = source_frame.with_columns(
+                    pl.col(cols.CONTRIBUTION).cast(pl.Float64)
+                )
+            if cols.NAME in source_frame.columns:
+                source_frame = source_frame.with_columns(
+                    pl.col(cols.NAME).cast(pl.String).str.strip_chars()
+                )
+        except pl.exceptions.PolarsError as error:
+            raise PparError(f"Cannot normalize performance columns: {error}") from error
+        source = _polars_to_pandas(source_frame)
+    else:
+        raise PparError(
+            "Performance data source must be a CSV path or Polars DataFrame."
+        )
+
+    names = pl.DataFrame()
+    if "name" in source.columns:
+        named = source.loc[:, ["thru_date", "identifier", "name"]].copy(deep=True)
+        named["identifier"] = named["identifier"].astype("string").str.strip()
+        named["name"] = named["name"].astype("string").str.strip()
+        named = named.sort_values(
+            ["thru_date", "identifier"], kind="stable"
+        ).drop_duplicates("identifier", keep="last")
+        names = pl.DataFrame(
+            {
+                cols.CLASSIFICATION_IDENTIFIER: named["identifier"].to_numpy(),
+                cols.CLASSIFICATION_NAME: named["name"].to_numpy(),
+            }
+        )
+    return source, names
+
+
 def load_performance_source(
     data_source: str | Path | pl.DataFrame,
     *,
@@ -217,60 +293,7 @@ def load_performance_source(
     ``perfattr``.
     """
     try:
-        if isinstance(data_source, str | Path):
-            source = read_performance_csv(
-                data_source,
-                reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
-            )
-        elif isinstance(data_source, pl.DataFrame):
-            source_frame = data_source.clone()
-            required = (*cols.DATE_COLUMNS, cols.IDENTIFIER, cols.RETURN, cols.WEIGHT)
-            missing = [column for column in required if column not in source_frame.columns]
-            if missing:
-                raise PparError(f"Missing required performance columns {missing}.")
-            selected = [*required]
-            selected.extend(
-                column
-                for column in (cols.CONTRIBUTION, cols.NAME)
-                if column in source_frame.columns
-            )
-            try:
-                source_frame = source_frame.select(selected).with_columns(
-                    pl.col(cols.DATE_COLUMNS).cast(pl.Date),
-                    pl.col((cols.WEIGHT, cols.RETURN)).cast(pl.Float64),
-                    pl.col(cols.IDENTIFIER).cast(pl.String),
-                )
-                if cols.CONTRIBUTION in source_frame.columns:
-                    source_frame = source_frame.with_columns(
-                        pl.col(cols.CONTRIBUTION).cast(pl.Float64)
-                    )
-                if cols.NAME in source_frame.columns:
-                    source_frame = source_frame.with_columns(
-                        pl.col(cols.NAME).cast(pl.String).str.strip_chars()
-                    )
-            except pl.exceptions.PolarsError as error:
-                raise PparError(f"Cannot normalize performance columns: {error}") from error
-            source = _polars_to_pandas(source_frame)
-        else:
-            raise PparError(
-                "Performance data source must be a CSV path or Polars DataFrame."
-            )
-
-        names = pl.DataFrame()
-        if "name" in source.columns:
-            named = source.loc[:, ["thru_date", "identifier", "name"]].copy(deep=True)
-            named["identifier"] = named["identifier"].astype("string").str.strip()
-            named["name"] = named["name"].astype("string").str.strip()
-            named = named.sort_values(
-                ["thru_date", "identifier"], kind="stable"
-            ).drop_duplicates("identifier", keep="last")
-            names = pl.DataFrame(
-                {
-                    cols.CLASSIFICATION_IDENTIFIER: named["identifier"].to_numpy(),
-                    cols.CLASSIFICATION_NAME: named["name"].to_numpy(),
-                }
-            )
-
+        source, names = _load_performance_input(data_source)
         prepared = prepare_attribution(
             source,
             source,
@@ -281,6 +304,81 @@ def load_performance_source(
         return _prepared_to_polars(prepared.portfolio), names
     except (PreparationError, TypeError, ValueError) as error:
         raise _translate_identity_error(error, "Performance") from error
+
+
+def prepare_performance_sources(
+    data_sources: Sequence[str | Path | pl.DataFrame],
+    *,
+    names: Sequence[str | None],
+    classification_names: Sequence[str | None],
+    from_date: dt.date,
+    thru_date: dt.date,
+    frequency: object,
+    holidays: Collection[dt.date],
+) -> tuple[Performance, Performance]:
+    """Load and prepare an Analytics pair with one portable pipeline call.
+
+    Args:
+        data_sources: Portfolio and benchmark canonical data sources.
+        names: Optional host display names in portfolio/benchmark order.
+        classification_names: Optional source classifications in the same order.
+        from_date: Earliest requested source-period endpoint.
+        thru_date: Latest requested source-period endpoint.
+        frequency: Host reporting frequency translated at the boundary.
+        holidays: Nonbusiness dates used for fixed-frequency endpoints.
+
+    Returns:
+        Prepared host containers in portfolio/benchmark order.
+
+    Raises:
+        PparError: If pair metadata is malformed or portable preparation fails.
+
+    Notes:
+        This avoids independently preparing each raw side before the pair is aligned.
+        Direct ``Performance`` construction continues to use the single-source
+        boundary.
+    """
+    sources = tuple(data_sources)
+    source_names = tuple(names)
+    source_classifications = tuple(classification_names)
+    metadata = (sources, source_names, source_classifications)
+    if not all(len(values) == 2 for values in metadata):
+        raise PparError("Analytics performance source metadata must contain two items.")
+
+    try:
+        loaded = tuple(_load_performance_input(source) for source in sources)
+        prepared = prepare_attribution(
+            loaded[0][0],
+            loaded[1][0],
+            frequency=_portable_frequency(frequency),
+            holidays=holidays,
+            from_date=None if from_date == dt.date.min else from_date,
+            thru_date=None if thru_date == dt.date.max else thru_date,
+            reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
+        )
+    except (PreparationError, TypeError, ValueError) as error:
+        raise _translate_identity_error(error, "Performance") from error
+
+    from ppar.performance import Performance  # pylint: disable=import-outside-toplevel
+
+    results = tuple(
+        Performance._from_prepared_rows(  # pylint: disable=protected-access
+            _prepared_to_polars(frame),
+            data_source=source,
+            name=name,
+            classification_name=classification_name,
+            classification_items=metadata[1],
+        )
+        for source, name, classification_name, metadata, frame in zip(
+            sources,
+            source_names,
+            source_classifications,
+            loaded,
+            (prepared.portfolio, prepared.benchmark),
+            strict=True,
+        )
+    )
+    return results[0], results[1]
 
 
 def normalize_mapping_source(

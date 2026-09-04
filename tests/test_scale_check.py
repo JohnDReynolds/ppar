@@ -278,12 +278,17 @@ class TestScaleCheck(unittest.TestCase):
             site, _, _ = check_scale._prepare_history(Path(directory) / "site")
             with mock.patch.object(
                 core_module,
+                "prepare_performance_sources",
+                wraps=core_module.prepare_performance_sources,
+            ) as prepare_sources, mock.patch.object(
+                core_module,
                 "prepare_performances",
                 wraps=core_module.prepare_performances,
             ) as prepare_performances:
                 check_scale._history_reporting_periods(site)
 
-        self.assertEqual(prepare_performances.call_count, 2)
+        self.assertEqual(prepare_sources.call_count, 1)
+        self.assertEqual(prepare_performances.call_count, 1)
 
 
 if __name__ == "__main__":

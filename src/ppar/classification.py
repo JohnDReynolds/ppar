@@ -6,6 +6,7 @@ country, or another user-defined grouping.
 """
 
 # Python Imports
+from pathlib import Path
 from typing import Sequence
 
 # Third-Party Imports
@@ -40,7 +41,7 @@ class Classification:
     def __init__(
         self,
         name: str | None,
-        data_source: util.ClassificationDataSource | None,
+        data_source: str | Path | pl.DataFrame | None,
         performances: Sequence[Performance] | None = None,
     ):
         """Initialize a classification from a data source or performances.

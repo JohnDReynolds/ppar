@@ -1,8 +1,9 @@
 # ppar Cleanup and Simplification Roadmap
 
-Status: Complete; Phases 0–5 complete  
-Assessment date: September 2, 2026  
-Assessment revision: `44dd4d1f74dd076a0004d5632ff2c9569fe45336`
+Status: Complete (September 4, 2026); Phases 0–9 complete
+Original assessment date: September 2, 2026
+Post-v0.3.1 reassessment date: September 4, 2026
+Current assessment revision: `5d5d15682b49784c26b9a6aa53756de53f54f3e9`
 
 The previously completed roadmap is preserved as
 [`ppar_cleanup_roadmap_completed_2026-09-01.md`](ppar_cleanup_roadmap_completed_2026-09-01.md).
@@ -47,6 +48,9 @@ release contracts interact.
 - Prefer deletion or direct library behavior over a new helper layer.
 - Preserve public APIs, financial results, report names and order, output schemas, and
   the selected 11-report demonstration bundle.
+- Treat the documented supported surface as the compatibility contract. Any reduction
+  of an importable but undocumented interface still requires an explicit phase decision
+  and complete boundary validation.
 - Never weaken a tolerance, invariant, warning threshold, benchmark threshold, or
   release gate merely to make cleanup pass.
 - Keep the 500x scale check in the release-candidate workflow.
@@ -87,6 +91,28 @@ The slowest current tests also identify disproportionate maintenance work:
 | Three backend subprocess tests | 1.51 s | Can shrink with the cache module |
 
 These values are observations, not new thresholds.
+
+## September 4 post-v0.3.1 reassessment
+
+The adoption of `perfattr` after the original assessment materially changed the cleanup
+boundary. The project is already substantially smaller than revision `44dd4d1`, and a
+production duplicate-code scan is clean. Broad module splitting, shared fixture
+frameworks, dependency removal, or presentation rewrites would add churn without an
+80/20 payoff.
+
+The remaining worthwhile work is concentrated in four places:
+
+1. Remove dead compatibility paths and tests that preserve only deletion history.
+2. Decide whether importable but undocumented `Performance`, audit, Axys override, and
+   chart-sorting interfaces still earn compatibility cost.
+3. Retain ppar boundary, regression, financial, workflow, and scale tests while removing
+   exhaustive algorithm matrices already owned by `perfattr`.
+4. Run the complete release-candidate and 500x gates after those cross-cutting changes.
+
+The reassessment used the current working tree, including the existing correctness work.
+Before Phase 6, 378 tests and 524 subtests passed in 28.08 seconds; Mypy, Pyright, focused
+unused/deprecated/unreachable Pylint checks, and the production duplicate-code scan were
+clean.
 
 ## Findings and decisions
 
@@ -208,6 +234,10 @@ The following recent code is comparatively large but earns its keep:
 | 3 | Normalize Axys/APX source text in one lazy pass | Sol High |
 | 4 | Remove redundant slow journeys and prose gates | Sol Medium |
 | 5 | Integrated validation and final accounting | Sol High |
+| 6 | Remove dead compatibility and archaeological residue | Sol Medium |
+| 7 | Narrow undocumented compatibility surfaces | Sol High |
+| 8 | Consolidate tests delegated to `perfattr` | Sol High |
+| 9 | Integrated validation and final accounting | Sol High |
 
 ## Phase 0: Record the current reassessment
 
@@ -353,3 +383,106 @@ rubric.
 
 Acceptance criterion: the project is materially smaller or more direct, every
 supported workflow and gate passes unchanged, and the roadmap can be marked complete.
+
+## Phase 6: Remove dead compatibility and archaeological residue
+
+Recommended Codex level: **GPT-5.6 Sol Medium**
+
+Status: Complete (September 4, 2026)
+
+Implementation evidence is recorded in
+[`ppar_cleanup_phase_6_implementation.md`](ppar_cleanup_phase_6_implementation.md).
+
+1. Remove the unused standalone `Performance` overall-result calculation, its cache,
+   and its test-only adapter path.
+2. Remove the unused date-formatting helper and redundant internal data-source aliases.
+3. Remove tests whose only purpose is to prove that previously deleted conversion and
+   mutation APIs remain absent.
+4. Remove obsolete output-policy prose assertions that protect historical wording
+   rather than current behavior.
+5. Keep chart archaeology comments because changing `charts.py` solely for prose churn
+   does not earn another generated-image change.
+6. Preserve automatic financial audits, public results, schemas, report inventories,
+   and every active release threshold.
+
+Acceptance result: 67 production lines and 180 test lines were removed net. The focused
+suite, complete 368-test/522-subtest suite, static analysis, README image provenance,
+wheel checks, and both installed 11-report demonstrations passed.
+
+## Phase 7: Narrow undocumented compatibility surfaces
+
+Recommended Codex level: **GPT-5.6 Sol High**
+
+Status: Complete (September 4, 2026)
+
+Implementation evidence is recorded in
+[`ppar_cleanup_phase_7_implementation.md`](ppar_cleanup_phase_7_implementation.md).
+
+1. Designate `Performance` as an internal prepared-data type behind `Analytics`. Its
+   direct source-loading constructor and dependent algorithm tests were removed
+   together in Phase 8, avoiding temporary private test plumbing between phases.
+2. Describe the supported `Analytics` inputs directly in the Python API guide instead
+   of implying that `Performance` is part of the supported surface.
+3. Keep automatic inexpensive audits while removing `Analytics.audit()` and
+   `Attribution.audit_attributions()` and making the remaining attribution audit
+   entry point private.
+4. Remove the individual `AxysData` performance-path overrides in favor of the existing
+   `values["files"]` configuration.
+5. Narrow `AxysPortfolio.to_analytics()` to an optional `AxysPortfolio` benchmark plus
+   the frequency, holiday, and risk options exercised by the supported workflow.
+6. Remove custom sorting from `Attribution.to_chart()` and the underlying heatmap
+   renderer. Preserve each standard chart's established ordering and retain sorting
+   on tabular Polars, HTML, and CSV output.
+7. Preserve the complete documented API, automatic financial checks, financial
+   results, and output schemas.
+
+Acceptance result: the supported surface is internally consistent, normal generic and
+Axys workflows are more direct, and the complete project gate passed with 367 tests and
+517 subtests. The required 500x result is recorded in the implementation report.
+
+## Phase 8: Consolidate tests delegated to perfattr
+
+Recommended Codex level: **GPT-5.6 Sol High**
+
+Status: Complete (September 4, 2026)
+
+Implementation evidence and the test-ownership map are recorded in
+[`ppar_cleanup_phase_8_implementation.md`](ppar_cleanup_phase_8_implementation.md).
+
+1. Mapped ppar normalization, alignment, consolidation, mapping, and attribution
+   edge-case tests to named `perfattr` tests before removing their duplicates.
+2. Retained CSV and Polars translation, error translation, representative frequency
+   and mapping integration, output schema, regression, metamorphic, user-workflow, and
+   scale coverage in ppar.
+3. Removed the single-source `Performance` loader and direct constructor alongside
+   tests of that internal compatibility route. `Performance` containers are now
+   created only from the aligned portable result used by `Analytics`.
+4. Reduced the broad performance-normalization module to seven ppar-owned source and
+   presentation boundary tests and removed direct internal-container tests elsewhere.
+5. Left small independent financial fixtures in place where they protect distinct
+   public invariants.
+
+Acceptance result: the current `perfattr` suite passed all 240 tests, ppar's complete
+product gate passed with 330 tests and 501 subtests, and the unchanged 500x scale gate
+passed. The 37-test and 16-subtest net reduction is confined to mapped dependency
+algorithms and unsupported internal-container contracts.
+
+## Phase 9: Integrated validation and final accounting
+
+Recommended Codex level: **GPT-5.6 Sol High**
+
+Status: Complete (September 4, 2026)
+
+Implementation evidence is recorded in
+[`ppar_cleanup_phase_9_implementation.md`](ppar_cleanup_phase_9_implementation.md).
+
+The complete release-candidate command and its composed product and 500x scale gates
+passed. From revision `5d5d156` to the final integrated working tree, production,
+scripts, and tests added 466 lines and removed 1,424, for a net reduction of 958 lines.
+The complete suite passed 330 tests and 501 subtests; both installed workflows produced
+the ordered 11-report inventory.
+
+Acceptance result: every retained contract and unchanged gate passes, generated images
+are pixel-identical to the baseline apart from refreshed provenance, the documented
+supported surface matches runtime behavior, and no further cleanup phase has an
+evidence-backed 80/20 case. This roadmap is complete.

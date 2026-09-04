@@ -15,6 +15,20 @@ The complete supported Python surface is:
 Other modules, classes, and helpers are implementation details. In particular,
 `ppar.tables` and `ppar.utilities` are not supported application interfaces.
 
+The normal object-acquisition paths are deliberately narrower than that supported
+surface:
+
+- Construct `Analytics` for ordinary CSV or Polars inputs and `AxysData` for Axys/APX
+  exports.
+- Receive `Attribution` from `Analytics.attribution()` or `attribution_for()`.
+- Receive `AxysPortfolio` and `AxysClassificationSources` from `AxysData` methods.
+- Construct `RiskStatistics` directly only for a portfolio/benchmark pair of NumPy
+  arrays; `Analytics.risk_statistics()` supplies named and dated results otherwise.
+
+See [Reports and results](reports.md) for the complete `View` and `Chart` catalog,
+column and risk-metric glossary, format choices, and generated-program upgrade
+guidance.
+
 ppar has no complete-workspace `run()` API. The setup-generated `ppar_demo.py` shows
 the full executable workflow with Python values.
 
@@ -28,19 +42,14 @@ The portfolio and optional benchmark are the only positional constructor argumen
 Names, classifications, dates, frequency, holidays, and risk assumptions are
 keyword-only so their meaning remains visible at each call site.
 
-Performance, classification, and mapping table inputs accept only a CSV path or a
-Polars DataFrame. Focused types and lower-level APIs live in `ppar.attribution`,
+Portfolio-return, classification, and mapping table inputs accept only a CSV path or
+a Polars DataFrame. Focused types and lower-level APIs live in `ppar.attribution`,
 `ppar.frequency`, `ppar.risk`, and `ppar.axys_apx`.
 
-Source-neutral validation, period alignment, classification mapping, frequency
-consolidation, and attribution calculations use `perfattr`. Polars rows cross one
-internal translation boundary and return to ppar's established Polars, HTML, PNG, and
-CSV presentation path. Vendor loading, risk analytics, and presentation remain in
-ppar.
-
-The adapter requests a `5e-9` reconciliation tolerance to match ppar's established
-eight-decimal input weight validation. This affects validation only and does not alter
-calculation formulas.
+ppar validates and aligns source periods, applies classification mappings and reporting
+frequency, and checks that attribution results reconcile. The
+[Methodology](methodology.md) guide describes the financial behavior without requiring
+application code to use implementation-level objects.
 
 ### Results and files
 
@@ -88,7 +97,7 @@ as unavailable. Every periodic return must be greater than -100%. Accepted integ
 and floating arrays are normalized to `float64` before calculation, and risk statistics
 require a fixed monthly, quarterly, or yearly frequency. Arrays contain no names or
 dates, so their HTML uses `Portfolio` and `Benchmark` and omits the date range. Use
-`Performance` inputs when source names and dates should appear.
+`Analytics.risk_statistics()` when source names and dates should appear.
 
 Risk-ratio denominators use the floating-point resolution of their source returns,
 not a fixed absolute cutoff. Small observable volatility, downside deviation,
@@ -114,14 +123,29 @@ source-path override dictionaries are not part of the Axys/APX API. Use generic
 `Analytics` classification and mapping inputs when independent lookup files are
 required. The generated Axys/APX demonstration contains the complete focused example.
 
+Generic `Analytics.attribution(..., mapping_data_sources=...)` accepts either static
+two-column mappings (`identifier, classification_identifier`) or effective-dated
+four-column mappings (`from_date, thru_date, identifier,
+classification_identifier`). CSV mappings are headerless; Polars mappings are
+positional. Effective dates are closed and inclusive, and each source period for a
+mapped identifier must fit wholly within one assignment. `ppar` translates the host
+container, then validates assignments and reconciles the resulting attribution data.
+
+Axys/APX mapping remains static because its configured classification source is one
+undated security-master snapshot. `ppar` does not invent historical assignments from
+that snapshot. Use the generic mapping input only when an authoritative dated mapping
+source is available.
+
 `AxysData.get_classification_sources_for_pair()` combines classification names and
 portfolio/benchmark mappings for two reconciled Axys portfolios. Its
 `AxysClassificationSources` result can be passed directly to
 `Analytics.attribution_for()`. The Axys/APX demonstration uses this explicit pairing
 for both its security-level and selected-classification reports. For portfolio-only
 analytics, use `AxysData.get_classification_sources()` with the one reconciled
-portfolio. `AxysPortfolio.to_analytics()` accepts an optional positional benchmark;
-all remaining options are keyword-only.
+portfolio. `AxysPortfolio.to_analytics()` accepts an optional reconciled
+`AxysPortfolio` benchmark; frequency, holiday, and risk assumptions are keyword-only.
+Select the reporting date window when loading both portfolios with
+`AxysData.get_portfolio()` or `get_portfolios()`.
 
 Surrounding whitespace is removed from portfolio codes and names, and values that are
 then blank are rejected. A portfolio rename is permitted across periods;

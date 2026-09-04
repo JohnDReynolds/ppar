@@ -44,6 +44,10 @@ _INPUT_COLUMNS = (
     cols.QUANTITY_OF_DAYS,
 )
 _PPAR_RECONCILIATION_TOLERANCE = 5e-9
+_MAPPING_COLUMNS_BY_WIDTH = {
+    2: ("identifier", "classification_identifier"),
+    4: ("from_date", "thru_date", "identifier", "classification_identifier"),
+}
 _PPAR_PERFORMANCE_COLUMNS = (
     *cols.DATE_COLUMNS,
     cols.QUANTITY_OF_DAYS,
@@ -169,9 +173,46 @@ def _portable_frequency(frequency: object) -> PortableFrequency:
         raise PparError(f"Unsupported reporting frequency: {value!r}.") from error
 
 
-def _translate_preparation_error(error: Exception) -> PparError:
-    """Preserve ppar's public error type at the portable boundary."""
-    return PparError(f"perfattr preparation failed: {error}")
+def _translate_preparation_error(
+    error: Exception,
+    source_description: str = "Portfolio analytics",
+) -> PparError:
+    """Translate a portable preparation failure into ppar terminology."""
+    return PparError(
+        f"Cannot prepare {source_description.lower()}: {error}",
+        context={"boundary": source_description},
+    )
+
+
+def _translate_csv_error(
+    error: Exception,
+    source_description: str,
+    path: str | Path,
+) -> PparError | None:
+    """Translate a CSV-reader failure unless identity handling is more specific."""
+    message = str(error)
+    if any(
+        marker in message
+        for marker in (
+            "multiple classifications",
+            "multiple names",
+            "empty string",
+            "non-null strings",
+        )
+    ):
+        return None
+    path_text = str(path)
+    context = {"boundary": source_description, "path": path_text}
+    if "path must identify an existing local regular file" in message:
+        return PparError(
+            f"{source_description} path must identify an existing local file: "
+            f"{path_text!r}.",
+            context=context,
+        )
+    return PparError(
+        f"Cannot load {source_description.lower()} from {path_text!r}: {error}",
+        context=context,
+    )
 
 
 def _translate_identity_error(
@@ -201,19 +242,19 @@ def _translate_identity_error(
             f"after surrounding whitespace is removed. {message}",
             context={"boundary": source, "field": field},
         )
-    return _translate_preparation_error(error)
+    return _translate_preparation_error(error, source)
 
 
 def _load_performance_input(
     data_source: str | Path | pl.DataFrame,
-) -> tuple[pd.DataFrame, pl.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load one source-neutral input and retain optional display names.
 
     Args:
         data_source: Canonical performance CSV path or narrow Polars frame.
 
     Returns:
-        A pandas input for portable preparation and separate host display metadata.
+        A pandas input for portable preparation and separate dated display metadata.
 
     Raises:
         PparError: If the host source type or canonical columns are invalid.
@@ -222,13 +263,21 @@ def _load_performance_input(
     Notes:
         This helper translates container types only. Financial normalization,
         validation, alignment, and consolidation occur in the subsequent public
-        ``perfattr`` call.
+        ``perfattr`` call. A caller-supplied generic contribution is deliberately
+        excluded because ppar's public contract derives it from weight and return.
     """
     if isinstance(data_source, str | Path):
-        source = read_performance_csv(
-            data_source,
-            reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
-        )
+        try:
+            source = read_performance_csv(
+                data_source,
+                reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
+            )
+        except (PreparationError, TypeError) as error:
+            translated = _translate_csv_error(error, "Performance CSV", data_source)
+            if translated is not None:
+                raise translated from error
+            raise
+        source = source.drop(columns=["contribution"], errors="ignore")
     elif isinstance(data_source, pl.DataFrame):
         source_frame = data_source.clone()
         required = (*cols.DATE_COLUMNS, cols.IDENTIFIER, cols.RETURN, cols.WEIGHT)
@@ -236,21 +285,14 @@ def _load_performance_input(
         if missing:
             raise PparError(f"Missing required performance columns {missing}.")
         selected = [*required]
-        selected.extend(
-            column
-            for column in (cols.CONTRIBUTION, cols.NAME)
-            if column in source_frame.columns
-        )
+        if cols.NAME in source_frame.columns:
+            selected.append(cols.NAME)
         try:
             source_frame = source_frame.select(selected).with_columns(
                 pl.col(cols.DATE_COLUMNS).cast(pl.Date),
                 pl.col((cols.WEIGHT, cols.RETURN)).cast(pl.Float64),
                 pl.col(cols.IDENTIFIER).cast(pl.String),
             )
-            if cols.CONTRIBUTION in source_frame.columns:
-                source_frame = source_frame.with_columns(
-                    pl.col(cols.CONTRIBUTION).cast(pl.Float64)
-                )
             if cols.NAME in source_frame.columns:
                 source_frame = source_frame.with_columns(
                     pl.col(cols.NAME).cast(pl.String).str.strip_chars()
@@ -263,47 +305,54 @@ def _load_performance_input(
             "Performance data source must be a CSV path or Polars DataFrame."
         )
 
-    names = pl.DataFrame()
+    names = pd.DataFrame()
     if "name" in source.columns:
-        named = source.loc[:, ["thru_date", "identifier", "name"]].copy(deep=True)
-        named["identifier"] = named["identifier"].astype("string").str.strip()
-        named["name"] = named["name"].astype("string").str.strip()
-        named = named.sort_values(
-            ["thru_date", "identifier"], kind="stable"
-        ).drop_duplicates("identifier", keep="last")
-        names = pl.DataFrame(
-            {
-                cols.CLASSIFICATION_IDENTIFIER: named["identifier"].to_numpy(),
-                cols.CLASSIFICATION_NAME: named["name"].to_numpy(),
-            }
-        )
+        names = source.loc[
+            :, ["from_date", "thru_date", "identifier", "name"]
+        ].copy(deep=True)
     return source, names
 
 
-def load_performance_source(
-    data_source: str | Path | pl.DataFrame,
-    *,
-    from_date: dt.date | None,
-    thru_date: dt.date | None,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Load and prepare one canonical ppar performance source through perfattr.
+def _classification_items_for_prepared(
+    dated_names: pd.DataFrame,
+    prepared: pd.DataFrame,
+) -> pl.DataFrame:
+    """Select latest display names from periods retained by preparation.
 
-    The second return value contains optional identifier/name metadata retained by
-    the host presentation layer. Numerical normalization and validation belong to
-    ``perfattr``.
+    Args:
+        dated_names: Optional raw names with their source-period identity.
+        prepared: Financial rows retained by portable preparation.
+
+    Returns:
+        Host classification metadata containing at most one row per retained
+        identifier.
+
+    Notes:
+        Name selection follows financial date filtering and pair alignment so
+        excluded history cannot affect report labels or create false conflicts.
     """
-    try:
-        source, names = _load_performance_input(data_source)
-        prepared = prepare_attribution(
-            source,
-            source,
-            from_date=from_date,
-            thru_date=thru_date,
-            reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
-        )
-        return _prepared_to_polars(prepared.portfolio), names
-    except (PreparationError, TypeError, ValueError) as error:
-        raise _translate_identity_error(error, "Performance") from error
+    if dated_names.empty or prepared.empty:
+        return pl.DataFrame()
+
+    normalized_names = dated_names.copy(deep=True)
+    normalized_names["identifier"] = (
+        normalized_names["identifier"].astype("string").str.strip()
+    )
+    normalized_names["name"] = normalized_names["name"].astype("string").str.strip()
+    accepted = normalized_names.loc[
+        normalized_names["from_date"].ge(prepared["from_date"].min())
+        & normalized_names["thru_date"].le(prepared["thru_date"].max())
+        & normalized_names["identifier"].isin(prepared["identifier"].unique())
+    ].copy(deep=True)
+    accepted = accepted.sort_values(
+        ["thru_date", "from_date", "identifier"], kind="stable"
+    ).drop_duplicates("identifier", keep="last")
+    return pl.DataFrame(
+        {
+            cols.CLASSIFICATION_IDENTIFIER: accepted["identifier"].to_numpy(),
+            cols.CLASSIFICATION_NAME: accepted["name"].to_numpy(),
+        }
+    )
 
 
 def prepare_performance_sources(
@@ -335,8 +384,7 @@ def prepare_performance_sources(
 
     Notes:
         This avoids independently preparing each raw side before the pair is aligned.
-        Direct ``Performance`` construction continues to use the single-source
-        boundary.
+        ``Performance`` containers are created only from the aligned portable result.
     """
     sources = tuple(data_sources)
     source_names = tuple(names)
@@ -367,7 +415,7 @@ def prepare_performance_sources(
             data_source=source,
             name=name,
             classification_name=classification_name,
-            classification_items=metadata[1],
+            classification_items=_classification_items_for_prepared(metadata[1], frame),
         )
         for source, name, classification_name, metadata, frame in zip(
             sources,
@@ -386,17 +434,45 @@ def normalize_mapping_source(
     *,
     source_description: str = "Mapping data",
 ) -> pd.DataFrame:
-    """Normalize a host mapping through the public portable boundary."""
+    """Normalize a host mapping through the public portable boundary.
+
+    Args:
+        data_source: Headerless canonical CSV path or positional Polars frame using
+            the static two-column or effective-dated four-column mapping schema.
+        source_description: Host source label included in translated errors.
+
+    Returns:
+        The normalized pandas mapping owned by ``perfattr``.
+
+    Raises:
+        PparError: If the source type, width, values, or temporal assignments violate
+            the supported mapping contract.
+
+    Notes:
+        This function translates only the host container and positional column names.
+        Effective-date validation and assignment remain exclusively in ``perfattr``.
+    """
     try:
         if isinstance(data_source, str | Path):
-            return read_mapping_csv(data_source)
+            try:
+                return read_mapping_csv(data_source)
+            except (PreparationError, TypeError) as error:
+                translated = _translate_csv_error(
+                    error,
+                    f"{source_description} CSV",
+                    data_source,
+                )
+                if translated is not None:
+                    raise translated from error
+                raise
         if not isinstance(data_source, pl.DataFrame):
             raise PparError("Mapping data must be a CSV path or Polars DataFrame.")
-        if len(data_source.columns) != 2:
-            raise PparError("Mapping data must contain exactly two columns.")
+        columns = _MAPPING_COLUMNS_BY_WIDTH.get(len(data_source.columns))
+        if columns is None:
+            raise PparError("Mapping data must contain exactly two or four columns.")
         frame = _polars_to_pandas(data_source)
-        frame.columns = ["identifier", "classification_identifier"]
-        for column in frame.columns:
+        frame.columns = list(columns)
+        for column in ("identifier", "classification_identifier"):
             frame[column] = frame[column].astype("string").astype(object)
         return normalize_mapping(frame)
     except (PreparationError, TypeError, ValueError) as error:
@@ -411,7 +487,17 @@ def normalize_classification_source(
     """Normalize host display metadata through the public portable boundary."""
     try:
         if isinstance(data_source, str | Path):
-            return read_classification_csv(data_source)
+            try:
+                return read_classification_csv(data_source)
+            except (PreparationError, TypeError) as error:
+                translated = _translate_csv_error(
+                    error,
+                    f"{source_description} CSV",
+                    data_source,
+                )
+                if translated is not None:
+                    raise translated from error
+                raise
         if not isinstance(data_source, pl.DataFrame):
             raise PparError(
                 "Classification data must be a CSV path or Polars DataFrame."
@@ -475,40 +561,6 @@ def prepare_performances(
             result.classification_name = classification_name
         results.append(result)
     return results[0], results[1]
-
-
-def overall_performance(performance: Performance) -> pl.DataFrame:
-    """Return ppar-compatible overall rows calculated by the portable core."""
-    try:
-        result = calculate_attribution(
-            _to_portable_input(performance),
-            _to_portable_input(performance),
-            reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
-        )
-    except AttributionError as error:
-        raise PparError(f"perfattr calculation failed: {error}") from error
-
-    detail = result.overall_detail.rename(
-        columns={
-            "portfolio_weight": "weight",
-            "portfolio_return": "return",
-            "linked_portfolio_contribution": "contribution",
-        }
-    ).loc[
-        :,
-        [
-            "from_date",
-            "thru_date",
-            "identifier",
-            "weight",
-            "return",
-            "contribution",
-        ],
-    ]
-    detail["quantity_of_days"] = int(
-        performance.period_totals()[cols.QUANTITY_OF_DAYS].sum()
-    )
-    return _prepared_to_polars(detail)
 
 
 def _to_polars(
@@ -618,7 +670,10 @@ def calculate_with_perfattr(
             reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
         )
     except AttributionError as error:
-        raise PparError(f"perfattr calculation failed: {error}") from error
+        raise PparError(
+            f"Cannot calculate attribution: {error}",
+            context={"boundary": "Attribution calculation"},
+        ) from error
 
     period_summary = _period_summary(portable_result)
     return AttributionCalculationResult(

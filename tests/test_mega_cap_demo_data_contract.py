@@ -120,7 +120,12 @@ class TestMegaCapDemoDataContract(unittest.TestCase):
                     text=True,
                 )
                 output_lines = completed.stdout.splitlines()
-                self.assertEqual(output_lines[0], "Output files:")
+                self.assertEqual(output_lines[0], "Generating reports...")
+                self.assertEqual(
+                    output_lines[1],
+                    f"Created 11 report files in {directory / 'output'}.",
+                )
+                self.assertEqual(output_lines[2], "Output files:")
                 self.assertNotIn("Output directory:", completed.stdout)
                 artifacts = {
                     path.name for path in (directory / "output").iterdir() if path.is_file()

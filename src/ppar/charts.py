@@ -162,8 +162,6 @@ def heatmap(
     df: pl.DataFrame,
     column_name: str,
     title_lines: Sequence[str],
-    columns_to_sort: str | Sequence[str] | None = None,
-    sort_descendings: bool | Sequence[bool] = False,
 ) -> bytes:
     """Return a heatmap chart as PNG bytes.
 
@@ -173,13 +171,6 @@ def heatmap(
             and the requested value column.
         column_name: Name of the metric column to display in the heatmap cells.
         title_lines: Main title and subtitle to display above the chart.
-        columns_to_sort: Column name, or sequence of column names, used to
-            choose the heatmap row ordering. Only the first value is used when
-            a sequence is supplied.
-        sort_descendings: Sort direction, or sequence of sort directions,
-            corresponding to ``columns_to_sort``. Only the first value is used
-            when a sequence is supplied.
-
     Returns:
         PNG image bytes for the rendered heatmap.
 
@@ -204,27 +195,6 @@ def heatmap(
     # becomes a duplicate later in the reporting period.
     df = _prepare_heatmap_rows(df, column_name)
 
-    # Sorting can only be done on one column name, so if they have passed sequences, then just use
-    # the first one.
-    column_name_to_sort = (
-        None
-        if columns_to_sort is None
-        else columns_to_sort if isinstance(columns_to_sort, str) else columns_to_sort[0]
-    )
-    sort_descending = (
-        sort_descendings if isinstance(sort_descendings, bool) else sort_descendings[0]
-    )
-
-    # The default sort should be on column_name descending.
-    if column_name_to_sort is None:
-        column_name_to_sort = column_name
-        sort_descending = True
-
-    # The only 2 columns that the heatmap can be sorted on are: cols.Classification_Name and
-    # column_name.  Sort on cols.CLASSIFICATION_NAME here, and on column_name below.
-    if column_name_to_sort != column_name:
-        df = df.sort("classification_label", descending=False)
-
     # Set the figure width and height
     fig_width = len(set(df["date_label"])) * 0.7
     fig_height = len(set(df["classification_label"])) * 0.4
@@ -244,16 +214,15 @@ def heatmap(
     date_columns = [
         name for name in heatmap_data.columns if name != "classification_label"
     ]
-    if column_name_to_sort == column_name:
-        heatmap_data = (
-            heatmap_data.with_columns(
-                pl.sum_horizontal(
-                    [pl.col(name).fill_nan(0.0) for name in date_columns]
-                ).alias("_row_total")
-            )
-            .sort("_row_total", descending=sort_descending)
-            .drop("_row_total")
+    heatmap_data = (
+        heatmap_data.with_columns(
+            pl.sum_horizontal(
+                [pl.col(name).fill_nan(0.0) for name in date_columns]
+            ).alias("_row_total")
         )
+        .sort("_row_total", descending=True)
+        .drop("_row_total")
+    )
 
     # Use the familiar financial convention of muted red for negative values and
     # green for positive values. Every cell remains numerically annotated so color

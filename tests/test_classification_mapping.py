@@ -9,30 +9,24 @@ import polars as pl
 
 from ppar import Analytics
 from ppar.attribution import Chart, View
-from ppar.classification import Classification
 import ppar.schema as cols
 from ppar.errors import PparError
-from ppar.performance import Performance
 
 
 def _named_performance(
     a_name: str = "Alpha",
     b_name: str = "Beta",
-    classification_name: str = "Security",
-) -> Performance:
+) -> pl.DataFrame:
     """Return a minimal named performance data set for classification tests."""
-    return Performance(
-        pl.DataFrame(
-            {
-                cols.FROM_DATE: [dt.date(2024, 1, 1)] * 2,
-                cols.THRU_DATE: [dt.date(2024, 2, 1)] * 2,
-                cols.IDENTIFIER: ["A", "B"],
-                cols.RETURN: [0.10, -0.05],
-                cols.WEIGHT: [0.60, 0.40],
-                cols.NAME: [a_name, b_name],
-            }
-        ),
-        classification_name=classification_name,
+    return pl.DataFrame(
+        {
+            cols.FROM_DATE: [dt.date(2024, 1, 1)] * 2,
+            cols.THRU_DATE: [dt.date(2024, 2, 1)] * 2,
+            cols.IDENTIFIER: ["A", "B"],
+            cols.RETURN: [0.10, -0.05],
+            cols.WEIGHT: [0.60, 0.40],
+            cols.NAME: [a_name, b_name],
+        }
     )
 
 
@@ -49,24 +43,71 @@ def _narrow_performance() -> pl.DataFrame:
     )
 
 
+def _monthly_performance() -> pl.DataFrame:
+    """Return three monthly periods whose identifiers can change classification."""
+    return pl.DataFrame(
+        {
+            cols.FROM_DATE: [
+                dt.date(2024, 1, 1),
+                dt.date(2024, 1, 1),
+                dt.date(2024, 2, 1),
+                dt.date(2024, 2, 1),
+                dt.date(2024, 3, 1),
+                dt.date(2024, 3, 1),
+            ],
+            cols.THRU_DATE: [
+                dt.date(2024, 1, 31),
+                dt.date(2024, 1, 31),
+                dt.date(2024, 2, 29),
+                dt.date(2024, 2, 29),
+                dt.date(2024, 3, 31),
+                dt.date(2024, 3, 31),
+            ],
+            cols.IDENTIFIER: ["A", "B"] * 3,
+            cols.RETURN: [0.05, 0.025, 0.04, 0.02, -0.025, 0.03],
+            cols.WEIGHT: [0.60, 0.40] * 3,
+        }
+    )
+
+
+def _effective_mapping() -> pl.DataFrame:
+    """Return positional dated assignments in the public Polars source shape."""
+    return pl.DataFrame(
+        {
+            "start": [dt.date(2024, 1, 1), dt.date(2024, 2, 1), dt.date(2024, 1, 1)],
+            "end": [dt.date(2024, 1, 31), dt.date(2024, 3, 31), dt.date(2024, 3, 31)],
+            "source": ["A", "A", "B"],
+            "target": ["EQ", "FI", "BOND"],
+        }
+    )
+
+
 def _pairs(values: dict[str, str]) -> pl.DataFrame:
     """Return a two-column Polars source from a compact test mapping."""
     return pl.DataFrame({"key": list(values), "value": list(values.values())})
 
 
 class ClassificationTests(unittest.TestCase):
-    """Verify classification inference and explicit classification sources."""
+    """Verify ppar's public classification presentation boundary."""
 
     def test_classification_is_inferred_from_named_performances(self) -> None:
         """Matching named inputs provide an inferred classification."""
-        portfolio = _named_performance()
-        benchmark = _named_performance()
+        attribution = Analytics(
+            _named_performance(),
+            _named_performance(),
+            portfolio_classification_name="Security",
+            benchmark_classification_name="Security",
+        ).attribution()
+        detail = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
 
-        classification = Classification("", None, (portfolio, benchmark))
-
-        self.assertEqual(classification.name, "Security")
         self.assertEqual(
-            classification.df.sort(cols.CLASSIFICATION_IDENTIFIER).to_dict(as_series=False),
+            detail.select(
+                cols.CLASSIFICATION_IDENTIFIER,
+                cols.CLASSIFICATION_NAME,
+            )
+            .unique()
+            .sort(cols.CLASSIFICATION_IDENTIFIER)
+            .to_dict(as_series=False),
             {
                 cols.CLASSIFICATION_IDENTIFIER: ["A", "B"],
                 cols.CLASSIFICATION_NAME: ["Alpha", "Beta"],
@@ -75,40 +116,39 @@ class ClassificationTests(unittest.TestCase):
 
     def test_inferred_classification_rejects_conflicting_names(self) -> None:
         """Portfolio and benchmark cannot assign different names to one identifier."""
-        portfolio = _named_performance(a_name="Portfolio Alpha")
-        benchmark = _named_performance(a_name="Benchmark Alpha")
-
         with self.assertRaisesRegex(PparError, "conflicting values.*A"):
-            Classification("", None, (portfolio, benchmark))
-
-    def test_inferred_classification_is_empty_when_names_differ(self) -> None:
-        """Different input classification names prevent implicit classification."""
-        portfolio = _named_performance(classification_name="Security")
-        benchmark = _named_performance(classification_name="Holding")
-
-        classification = Classification("", None, (portfolio, benchmark))
-
-        self.assertIsNone(classification.name)
-        self.assertEqual(classification.df.columns, list(cols.CLASSIFICATION_COLUMNS))
-        self.assertTrue(classification.df.is_empty())
+            Analytics(
+                _named_performance(a_name="Portfolio Alpha"),
+                _named_performance(a_name="Benchmark Alpha"),
+                portfolio_classification_name="Security",
+                benchmark_classification_name="Security",
+            ).attribution()
 
     def test_explicit_classification_accepts_exact_duplicate_pairs(self) -> None:
         """Exact duplicate names collapse deterministically after filtering."""
         source = pl.DataFrame(
             {
-                "identifier": ["A", "A", "B", "UNUSED"],
-                "name": ["Alpha", "Alpha", "Beta", "Unused"],
+                "identifier": [" A ", "A", " B ", "UNUSED"],
+                "name": [" Alpha ", "Alpha", " Beta ", "Unused"],
             }
         )
 
-        classification = Classification(
+        detail = Analytics(
+            _named_performance(),
+            portfolio_classification_name="Security",
+        ).attribution(
             "Security",
             source,
-            (_named_performance(), _named_performance()),
-        )
+        ).to_polars(View.SUBPERIOD_ATTRIBUTION)
 
         self.assertEqual(
-            classification.df.sort(cols.CLASSIFICATION_IDENTIFIER).to_dict(as_series=False),
+            detail.select(
+                cols.CLASSIFICATION_IDENTIFIER,
+                cols.CLASSIFICATION_NAME,
+            )
+            .unique()
+            .sort(cols.CLASSIFICATION_IDENTIFIER)
+            .to_dict(as_series=False),
             {
                 cols.CLASSIFICATION_IDENTIFIER: ["A", "B"],
                 cols.CLASSIFICATION_NAME: ["Alpha", "Beta"],
@@ -121,7 +161,7 @@ class ClassificationTests(unittest.TestCase):
         """Conflicting names fail identically for Polars and headerless CSV sources."""
         source = pl.DataFrame(
             {
-                "identifier": ["A", "A", "B"],
+                "identifier": ["A", " A ", "B"],
                 "name": ["Alpha", "Alternate Alpha", "Beta"],
             }
         )
@@ -131,70 +171,27 @@ class ClassificationTests(unittest.TestCase):
             for data_source in (source, source.reverse(), path):
                 with self.subTest(source_type=type(data_source).__name__):
                     with self.assertRaisesRegex(PparError, "conflicting values.*A"):
-                        Classification(
+                        Analytics(
+                            _named_performance(),
+                            portfolio_classification_name="Security",
+                        ).attribution(
                             "Security",
                             data_source,
-                            (_named_performance(), _named_performance()),
                         )
-
-    def test_classification_dataframe_is_a_defensive_copy(self) -> None:
-        """Mutating a returned classification table cannot alter stored metadata."""
-        classification = Classification(
-            "Security",
-            _pairs({"A": "Alpha", "B": "Beta"}),
-            (_named_performance(), _named_performance()),
-        )
-        returned = classification.df
-        returned[0, cols.CLASSIFICATION_NAME] = "Changed"
-
-        self.assertEqual(
-            classification.df.sort(cols.CLASSIFICATION_IDENTIFIER)[
-                cols.CLASSIFICATION_NAME
-            ].to_list(),
-            ["Alpha", "Beta"],
-        )
 
     def test_one_column_classification_source_is_rejected(self) -> None:
         """Explicit classification sources must supply identifier and name columns."""
         source = pl.DataFrame({"identifier": ["A", "B"]})
 
         with self.assertRaises(PparError):
-            Classification("Security", source, (_named_performance(), _named_performance()))
+            Analytics(
+                _named_performance(),
+                portfolio_classification_name="Security",
+            ).attribution("Security", source)
 
 
 class MappingTests(unittest.TestCase):
     """Verify portable mapping through ppar's public attribution workflow."""
-
-    def test_classification_trims_surrounding_whitespace(self) -> None:
-        """Classification identifiers and display names are normalized together."""
-        performance = _named_performance()
-        source = pl.DataFrame(
-            {"identifier": [" A ", " B "], "name": [" Alpha ", " Beta "]}
-        )
-
-        classification = Classification(
-            "Security",
-            source,
-            (performance, performance),
-        )
-
-        self.assertEqual(
-            classification.df.to_dict(as_series=False),
-            {
-                cols.CLASSIFICATION_IDENTIFIER: ["A", "B"],
-                cols.CLASSIFICATION_NAME: ["Alpha", "Beta"],
-            },
-        )
-
-    def test_classification_rejects_conflicts_created_by_trimming(self) -> None:
-        """Normalized duplicate identifiers cannot retain conflicting names."""
-        performance = _named_performance()
-        source = pl.DataFrame(
-            {"identifier": ["A", " A ", "B"], "name": ["Alpha", "Other", "Beta"]}
-        )
-
-        with self.assertRaisesRegex(PparError, "conflicting values.*A"):
-            Classification("Security", source, (performance, performance))
 
     def test_mapped_attribution_rollup_preserves_portfolio_contribution(self) -> None:
         """Mapped attribution totals retain underlying portfolio contribution."""
@@ -217,6 +214,72 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(details[cols.CLASSIFICATION_NAME].item(), "Technology")
         self.assertAlmostEqual(details[cols.PORTFOLIO_WEIGHT].item(), 1.0)
         self.assertAlmostEqual(details[cols.PORTFOLIO_CONTRIB_SIMPLE].item(), 0.04)
+
+    def test_effective_mapping_csv_and_polars_sources_have_identical_results(
+        self,
+    ) -> None:
+        """The existing generic workflow should expose portable dated assignment.
+
+        Identifier A belongs to EQ only in January and to FI in February and March;
+        B remains in BOND. The test compares every public attribution field from a
+        headerless CSV with the corresponding positional Polars input, proving that
+        ppar performs only container translation and delegates temporal assignment and
+        financial calculation to ``perfattr``.
+        """
+        analytics = Analytics(
+            _monthly_performance(),
+            _monthly_performance(),
+            portfolio_classification_name="Security",
+            benchmark_classification_name="Security",
+        )
+        classification = _pairs(
+            {"BOND": "Bonds", "EQ": "Equity", "FI": "Fixed Income"}
+        )
+        mapping = _effective_mapping()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "effective_mapping.csv"
+            mapping.write_csv(path, include_header=False)
+            polars_result = analytics.attribution(
+                "Sector",
+                classification,
+                (mapping, mapping),
+            ).to_polars(View.SUBPERIOD_ATTRIBUTION)
+            csv_result = analytics.attribution(
+                "Sector",
+                classification,
+                (path, path),
+            ).to_polars(View.SUBPERIOD_ATTRIBUTION)
+
+        self.assertTrue(polars_result.equals(csv_result))
+        self.assertEqual(
+            polars_result.select(
+                cols.THRU_DATE,
+                cols.CLASSIFICATION_IDENTIFIER,
+            ).rows(),
+            [
+                (dt.date(2024, 1, 31), "BOND"),
+                (dt.date(2024, 1, 31), "EQ"),
+                (dt.date(2024, 2, 29), "BOND"),
+                (dt.date(2024, 2, 29), "FI"),
+                (dt.date(2024, 3, 31), "BOND"),
+                (dt.date(2024, 3, 31), "FI"),
+            ],
+        )
+
+    def test_mapping_polars_source_rejects_unsupported_width(self) -> None:
+        """The host adapter should accept only portable two- or four-column forms."""
+        analytics = Analytics(
+            _narrow_performance(),
+            portfolio_classification_name="Security",
+        )
+        mapping = pl.DataFrame({"one": ["A"], "two": ["EQ"], "three": ["extra"]})
+
+        with self.assertRaisesRegex(PparError, "exactly two or four columns"):
+            analytics.attribution(
+                "Sector",
+                mapping_data_sources=(mapping, mapping),
+            )
 
     def test_zero_net_mapped_group_preserves_contribution_and_effects(self) -> None:
         """Undefined group returns do not erase contribution or attribution effects."""

@@ -4,6 +4,7 @@
 import datetime as dt
 from collections.abc import Sequence
 import inspect
+from pathlib import Path
 import unittest
 from unittest import mock
 
@@ -15,8 +16,6 @@ from ppar import Analytics
 from ppar._attribution_result import AttributionCalculationResult
 from ppar.attribution import Attribution, View
 from ppar.frequency import Frequency
-from ppar.performance import Performance
-from ppar.utilities import MappingDataSource
 import ppar.schema as cols
 from ppar.errors import PparError
 
@@ -172,25 +171,12 @@ class TestAnalyticsContracts(unittest.TestCase):
             portfolio_classification_name="Security",
         )
 
-        with mock.patch.object(Attribution, "audit", autospec=True) as audit:
+        with mock.patch.object(Attribution, "_audit", autospec=True) as audit:
             first = analytics.attribution()
             second = analytics.attribution()
 
         self.assertIsNot(first, second)
         self.assertEqual(audit.call_count, 2)
-
-    def test_analytics_audit_checks_its_performance_pair(self) -> None:
-        """Analytics audit remains independent of previously returned results."""
-        analytics = Analytics(
-            _two_asset_performance(),
-            portfolio_classification_name="Security",
-        )
-        attribution = analytics.attribution()
-
-        with mock.patch.object(attribution, "audit") as attribution_audit:
-            analytics.audit()
-
-        attribution_audit.assert_not_called()
 
     def test_mapping_sources_require_exact_portfolio_benchmark_pair(self) -> None:
         """Mapping setup rejects missing and silently ignored extra sources."""
@@ -198,7 +184,7 @@ class TestAnalyticsContracts(unittest.TestCase):
             _two_asset_performance(),
             portfolio_classification_name="Security",
         )
-        invalid_sources: tuple[Sequence[MappingDataSource | None], ...] = (
+        invalid_sources: tuple[Sequence[str | Path | pl.DataFrame | None], ...] = (
             (),
             (pl.DataFrame({"from": ["A"], "to": ["TECH"]}),),
             (None, None, None),
@@ -320,32 +306,10 @@ class TestAnalyticsContracts(unittest.TestCase):
 
     def test_attribution_is_audited_when_created(self) -> None:
         """Normal attribution construction executes production invariants."""
-        with mock.patch.object(Attribution, "audit", autospec=True) as audit:
+        with mock.patch.object(Attribution, "_audit", autospec=True) as audit:
             attribution = Analytics(_two_asset_performance()).attribution()
 
         audit.assert_called_once_with(attribution)
-
-    def test_attribution_does_not_mutate_caller_performances(self) -> None:
-        """Identifier alignment operates on attribution-owned calculation copies."""
-        portfolio = Performance(_two_asset_performance().head(2))
-        benchmark = Performance(
-            _two_asset_performance()
-            .head(2)
-            .filter(pl.col(cols.IDENTIFIER) == "A")
-            .with_columns(pl.lit(1.0).alias(cols.WEIGHT))
-        )
-        portfolio_before = portfolio.narrow_df.clone()
-        benchmark_before = benchmark.narrow_df.clone()
-
-        Attribution(
-            (portfolio, benchmark),
-            classification_name=None,
-            classification_data_source=None,
-            frequency=Frequency.AS_OFTEN_AS_POSSIBLE,
-        )
-
-        self.assertTrue(portfolio.narrow_df.equals(portfolio_before))
-        self.assertTrue(benchmark.narrow_df.equals(benchmark_before))
 
     def test_total_rows_are_appended_only_to_aggregate_views(self) -> None:
         """Cumulative and overall views end in totals; detail views do not."""

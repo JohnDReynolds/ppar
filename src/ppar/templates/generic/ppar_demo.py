@@ -77,11 +77,18 @@ BENCHMARK_PERFORMANCE = DIRECTORY / "input/performance/Mega-Cap Benchmark.csv"
 # loop over their portfolio codes, and pass each filtered portfolio and benchmark
 # pair to Analytics.
 
-# Classification and mapping CSVs are headerless and have exactly two columns:
+# Classification CSVs and static mapping CSVs are headerless and have two columns:
 #
 #   Security.csv: security identifier, security display name
 #   <classification>.csv: classification identifier, display name
 #   mapping CSV: security identifier, classification identifier
+#
+# An effective-dated mapping instead has four positional columns:
+#
+#   from_date, thru_date, security identifier, classification identifier
+#
+# Effective dates are inclusive. Each security source period must fit wholly within
+# one assignment; ppar does not split a period at a classification boundary.
 #
 # Every identifier in the performance files must be named in Security.csv and
 # mapped when classification reports are requested.
@@ -134,6 +141,8 @@ def main() -> int:
         PparError: If source validation or an analytics calculation fails.
         OSError: If an input or output file cannot be accessed.
     """
+    print("Generating reports...", flush=True)
+
     # Load and calculate the shared analytics once before rendering any reports.
     analytics, security_attribution, classification_attribution = _build_analytics()
 
@@ -180,6 +189,7 @@ def main() -> int:
         )
         output_paths.append(output_path)
 
+    print(f"Created {len(output_paths)} report files in {OUTPUT_DIRECTORY}.")
     print("Output files:")
     # List the reports in the same order in which they were produced.
     for output_path in output_paths:

@@ -90,11 +90,12 @@ _MINIMUM_QUANTITY_OF_RETURNS = 2
 class RiskStatistics:
     """Calculate ex-post risk statistics for portfolio and benchmark returns.
 
-    The class accepts either two ``Performance`` instances or two NumPy arrays
-    of periodic returns. Direct arrays contain no dates or display names, so
-    their output uses ``Portfolio`` and ``Benchmark`` and omits a date range.
-    It calculates the statistics enumerated by ``_Statistic`` and stores the
-    formatted results in a Polars DataFrame.
+    Public callers supply two NumPy arrays of periodic returns. Analytics supplies
+    its internal prepared performances so names and dates remain available in its
+    results. Direct arrays contain no dates or display names, so their output uses
+    ``Portfolio`` and ``Benchmark`` and omits a date range. The class calculates
+    the statistics enumerated by ``_Statistic`` and stores the formatted results in
+    a Polars DataFrame.
 
     Notes:
         Accepted NumPy integer and floating return arrays are normalized to
@@ -129,8 +130,8 @@ class RiskStatistics:
         """Initialize and calculate risk statistics.
 
         Args:
-            returns: Either a sequence of two ``Performance`` instances or a
-                sequence of two NumPy arrays of periodic returns. Index ``0`` is
+            returns: Sequence of two NumPy arrays of periodic returns. Analytics
+                internally supplies its prepared performance pair. Index ``0`` is
                 the portfolio and index ``1`` is the benchmark.
             frequency: Frequency of the portfolio and benchmark returns.
                 Supported values are ``Frequency.MONTHLY``,
@@ -367,14 +368,22 @@ class RiskStatistics:
             is already undefined.
 
         Raises:
-            PparError: If a finite periodic value at or below -100% would be
-                geometrically compounded.
+            PparError: If a finite periodic value cannot be geometrically
+                annualized to a finite result.
         """
         # Cannot annualize if you do not have at least a years worth of returns, so return np.nan.
-        if self._quantity_of_returns < qty_periods_per_year or not math.isfinite(
+        if self._quantity_of_returns < qty_periods_per_year or math.isnan(
             mean_frequency_return
         ):
             return np.nan
+        if not math.isfinite(mean_frequency_return):
+            raise PparError(
+                f"{statistic_name} periodic value must be finite for annualization.",
+                context={
+                    "statistic": statistic_name,
+                    "periodic_return": mean_frequency_return,
+                },
+            )
         if mean_frequency_return <= -1.0:
             raise PparError(
                 f"{statistic_name} periodic value must exceed -100% for "
@@ -384,7 +393,29 @@ class RiskStatistics:
                     "periodic_return": mean_frequency_return,
                 },
             )
-        return ((1.0 + mean_frequency_return) ** qty_periods_per_year) - 1.0
+        try:
+            annualized_return = math.pow(
+                1.0 + float(mean_frequency_return), qty_periods_per_year
+            ) - 1.0
+        except OverflowError as error:
+            raise PparError(
+                f"{statistic_name} cannot be annualized to a finite value.",
+                context={
+                    "statistic": statistic_name,
+                    "periodic_return": mean_frequency_return,
+                    "periods_per_year": qty_periods_per_year,
+                },
+            ) from error
+        if not math.isfinite(annualized_return):
+            raise PparError(
+                f"{statistic_name} cannot be annualized to a finite value.",
+                context={
+                    "statistic": statistic_name,
+                    "periodic_return": mean_frequency_return,
+                    "periods_per_year": qty_periods_per_year,
+                },
+            )
+        return annualized_return
 
     def _audit(self) -> None:
         """Audit the source performance pair.

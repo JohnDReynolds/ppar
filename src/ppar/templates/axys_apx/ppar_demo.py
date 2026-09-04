@@ -167,6 +167,8 @@ def main() -> int:
         PparError: If source validation or an analytics calculation fails.
         OSError: If an input or output file cannot be accessed.
     """
+    print("Generating reports...", flush=True)
+
     # Load and calculate the shared analytics once before rendering any reports.
     analytics, security_attribution, classification_attribution = _build_analytics()
 
@@ -213,6 +215,7 @@ def main() -> int:
         )
         output_paths.append(output_path)
 
+    print(f"Created {len(output_paths)} report files in {OUTPUT_DIRECTORY}.")
     print("Output files:")
     # List the reports in the same order in which they were produced.
     for output_path in output_paths:

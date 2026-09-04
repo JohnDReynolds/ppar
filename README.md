@@ -45,9 +45,8 @@ my_ppar/
 ```
 
 The extensively commented `ppar_demo.py` is both a tutorial and the executable
-workflow. Edit its Python values to choose input paths, calculation
-assumptions, and reports, then replace the demonstration files under `input/` with your
-data.
+workflow. Edit its Python values to choose input paths, calculation assumptions, and
+reports, then replace the demonstration files under `input/` with your data.
 
 ## What it produces
 
@@ -114,8 +113,9 @@ as Polars DataFrames, HTML text, PNG bytes, or CSV files.
 ## Documentation
 
 - [Methodology](docs/methodology.md)
+- [Reports and results](docs/reports.md)
 - [Python API](docs/python_api.md)
-- [Maintenance](docs/maintenance.md)
+- [Contributor maintenance](docs/maintenance.md)
 
 Downloading, installing, accessing, copying, or using ppar constitutes acceptance of
 the [license](LICENSE).

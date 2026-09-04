@@ -32,7 +32,7 @@ class TestPackageMetadata(unittest.TestCase):
         """Distribution metadata names only the independent Analytics product."""
         project = _pyproject()["project"]
         self.assertEqual(project["name"], "ppar")
-        self.assertEqual(project["version"], "0.3.1")
+        self.assertEqual(project["version"], "0.4.0")
         self.assertEqual(project["requires-python"], ">=3.11.9,<3.15")
         self.assertEqual(project["scripts"], {"ppar": "ppar.cli:main"})
         self.assertEqual(
@@ -97,6 +97,79 @@ class TestPackageMetadata(unittest.TestCase):
         self.assertIn("Attribution.to_html(view)", api_guide)
         self.assertIn("Attribution.to_chart(chart)", api_guide)
 
+    def test_reports_guide_orients_every_supported_report(self) -> None:
+        """One guide owns report selection, interpretation, formats, and upgrades."""
+        guide = (_ROOT / "docs/reports.md").read_text(encoding="utf-8")
+        readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+        api_guide = (_ROOT / "docs/python_api.md").read_text(encoding="utf-8")
+
+        for report_type in (*ppar.attribution.View, *ppar.attribution.Chart):
+            with self.subTest(report_type=report_type.name):
+                self.assertIn(f"`{report_type.name}`", guide)
+
+        risk_statistics = (
+            "Return Range",
+            "Mean Return",
+            "Annualized Mean Return",
+            "Standard Deviation",
+            "Annualized Standard Deviation",
+            "Downside Probability",
+            "Expected Downside Value",
+            "Downside Deviation",
+            "Annualized Downside Deviation",
+            "Value At Risk",
+            "Correlation",
+            "R-Squared",
+            "Tracking Error",
+            "Annualized Tracking Error",
+            "Sharpe Ratio",
+            "Annualized Sharpe Ratio",
+            "Sortino Ratio",
+            "Annualized Sortino Ratio",
+            "Information Ratio",
+            "M-Squared",
+            "Treynor Ratio",
+            "Beta",
+            "Alpha",
+            "Annualized Alpha",
+            "Jensen's Alpha",
+            "Annualized Jensen's Alpha",
+        )
+        for statistic in risk_statistics:
+            with self.subTest(statistic=statistic):
+                self.assertIn(statistic, guide)
+
+        for required in (
+            "Portfolio_Contribution_Simple",
+            "Allocation_Effect_Simple",
+            "Names ending in `_Smoothed`",
+            "Names beginning with `Cumulative_`",
+            "numeric missing-value representation",
+            "attribution.write_csv",
+            "does not change when ppar is upgraded",
+        ):
+            self.assertIn(required, guide)
+
+        csv_example = guide.split("```python\n", maxsplit=1)[1].split(
+            "```", maxsplit=1
+        )[0]
+        compile(csv_example, "reports guide CSV example", "exec")
+
+        self.assertIn("[Reports and results](docs/reports.md)", readme)
+        self.assertIn("[Contributor maintenance](docs/maintenance.md)", readme)
+        self.assertIn("[Reports and results](reports.md)", api_guide)
+        self.assertIn("Receive `Attribution`", api_guide)
+        self.assertNotIn("perfattr", api_guide)
+
+    def test_public_result_docstrings_explain_normal_acquisition(self) -> None:
+        """Interactive help distinguishes entry points from returned result types."""
+        self.assertIn("returned by Analytics", ppar.attribution.Attribution.__doc__ or "")
+        self.assertIn("returned by AxysData", ppar.axys_apx.AxysPortfolio.__doc__ or "")
+        self.assertIn(
+            "returned by AxysData",
+            ppar.axys_apx.AxysClassificationSources.__doc__ or "",
+        )
+
     def test_runtime_dependencies_are_complete_and_independent(self) -> None:
         """The base install contains both workflows without product extras."""
         project = _pyproject()["project"]
@@ -114,7 +187,7 @@ class TestPackageMetadata(unittest.TestCase):
             },
         )
         self.assertNotIn("perfaud", " ".join(dependencies).lower())
-        self.assertIn("perfattr>=0.2.2,<0.3", dependencies)
+        self.assertIn("perfattr>=0.3.0a1,<0.4", dependencies)
         self.assertEqual(set(project["optional-dependencies"]), {"dev"})
 
     def test_root_exports_are_exact(self) -> None:
@@ -182,11 +255,6 @@ class TestPackageMetadata(unittest.TestCase):
             "Common setup errors include",
         ):
             self.assertIn(expected, generic_readme)
-        for obsolete_output_claim in (
-            "atomically replaces",
-            "replaces the complete `output/` directory",
-        ):
-            self.assertNotIn(obsolete_output_claim, generic_readme)
         axys_readme = templates.joinpath("axys_apx", "README.md").read_text(
             encoding="utf-8"
         )
@@ -199,6 +267,13 @@ class TestPackageMetadata(unittest.TestCase):
             "ppar reconciles the security-level performance",
         ):
             self.assertIn(expected, axys_readme)
+        self.assertTrue(
+            axys_readme.endswith(
+                "classification, calculation assumptions, and reports you want to "
+                "produce.\n"
+            )
+        )
+        self.assertNotIn("perfattr", axys_readme)
 
     def test_templates_keep_shared_workflow_in_sync(self) -> None:
         """Common demo settings and direct report writing remain equivalent."""

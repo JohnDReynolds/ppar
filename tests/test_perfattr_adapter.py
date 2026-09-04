@@ -16,6 +16,7 @@ from ppar import Analytics
 import ppar._perfattr_adapter as adapter_module
 import ppar.attribution as attribution_module
 from ppar.attribution import Attribution, View
+from ppar.errors import PparError
 from ppar.frequency import Frequency
 import ppar.schema as cols
 from tests import helpers as test_util
@@ -396,6 +397,56 @@ class TestPerfattrAdapter(unittest.TestCase):
         # against itself first would repeat validation and consolidation without
         # adding a financial check.
         self.assertEqual(portable.call_count, 1)
+
+    def test_preparation_error_uses_ppar_terminology(self) -> None:
+        """Portable preparation detail remains useful without branding the boundary."""
+        performance = test_util.make_performance_df(
+            ((dt.date(2024, 1, 1), dt.date(2024, 1, 31)),),
+            {"A": ([0.01], [1.0])},
+        )
+        with (
+            mock.patch.object(
+                adapter_module,
+                "prepare_attribution",
+                side_effect=adapter_module.PreparationError("periods do not align"),
+            ),
+            self.assertRaises(PparError) as context,
+        ):
+            Analytics(performance)
+
+        self.assertEqual(
+            str(context.exception),
+            "Cannot prepare performance: periods do not align",
+        )
+        self.assertEqual(context.exception.context, {"boundary": "Performance"})
+        self.assertNotIn("perfattr", str(context.exception))
+
+    def test_calculation_error_uses_ppar_terminology(self) -> None:
+        """Portable calculation detail remains useful without branding the boundary."""
+        performance = test_util.make_performance_df(
+            ((dt.date(2024, 1, 1), dt.date(2024, 1, 31)),),
+            {"A": ([0.01], [1.0])},
+        )
+        analytics = Analytics(performance)
+        with (
+            mock.patch.object(
+                adapter_module,
+                "calculate_attribution",
+                side_effect=adapter_module.AttributionError("effects do not reconcile"),
+            ),
+            self.assertRaises(PparError) as context,
+        ):
+            analytics.attribution()
+
+        self.assertEqual(
+            str(context.exception),
+            "Cannot calculate attribution: effects do not reconcile",
+        )
+        self.assertEqual(
+            context.exception.context,
+            {"boundary": "Attribution calculation"},
+        )
+        self.assertNotIn("perfattr", str(context.exception))
 
     def test_attribution_for_uses_portable_calculation(self) -> None:
         """Bundled classification sources use the permanent calculation path."""

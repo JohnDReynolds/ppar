@@ -1,18 +1,16 @@
-"""Provide ppar's compatibility container for perfattr-prepared performance."""
+"""Provide ppar's internal container for perfattr-prepared performance."""
 
 from __future__ import annotations
 
 import copy as copy_module
 import datetime as dt
 from pathlib import Path
-from typing import Sequence, cast
+from typing import Sequence
 
 import polars as pl
 
 from ppar._perfattr_adapter import (
     _PPAR_PERFORMANCE_COLUMNS,
-    load_performance_source,
-    overall_performance,
 )
 from ppar.errors import PparError
 import ppar.schema as cols
@@ -22,10 +20,10 @@ import ppar.utilities as util
 class Performance:
     """Hold one translated performance stream prepared by ``perfattr``.
 
-    This class preserves ppar's supported Polars-facing object boundary. Source-neutral
-    loading, validation, date filtering, contribution derivation, and preparation are
-    delegated to ``perfattr``; this host container owns only translated rows, display
-    metadata, and output checks.
+    This class preserves ppar's internal Polars-facing object boundary. The adapter
+    delegates source loading, validation, date filtering, contribution derivation, and
+    preparation to ``perfattr`` before constructing this container. It owns only
+    translated rows, display metadata, and output checks.
 
     Attributes:
         classification_name: Optional classification represented by the rows.
@@ -36,53 +34,16 @@ class Performance:
         narrow_df: Prepared rows in ppar's established Polars schema.
     """
 
-    def __init__(
-        self,
-        data_source: util.PerformanceDataSource,
-        name: str | None = None,
-        classification_name: str | None = None,
-        from_date: str | dt.date = dt.date.min,
-        thru_date: str | dt.date = dt.date.max,
-    ) -> None:
-        """Load one canonical source through the portable preparation boundary.
+    classification_name: str | None
+    classification_items: pl.DataFrame
+    error_message_context: str
+    identifiers: list[str]
+    name: str | None
+    narrow_df: pl.DataFrame
 
-        Args:
-            data_source: Canonical CSV path or narrow Polars DataFrame.
-            name: Optional descriptive performance name. A CSV defaults to its stem.
-            classification_name: Optional source classification name.
-            from_date: Earliest source-period ``thru_date`` to retain.
-            thru_date: Latest source-period ``thru_date`` to retain.
-
-        Raises:
-            PparError: If host arguments or portable preparation are invalid.
-        """
-        name = util.normalize_optional_string(name, "name")
-        self.classification_name = util.normalize_optional_string(
-            classification_name,
-            "classification_name",
-        )
-        normalized_from = util.convert_to_date(from_date)
-        normalized_thru = util.convert_to_date(thru_date)
-        self.error_message_context = (
-            f"in the file {data_source}"
-            if isinstance(data_source, str | Path)
-            else f"in the dataframe {name}"
-        )
-        if normalized_from > normalized_thru:
-            raise PparError(
-                f"{self.error_message_context}: From date {normalized_from} is after "
-                f"thru date {normalized_thru}."
-            )
-        if name is None and isinstance(data_source, str | Path):
-            name = util.file_basename_without_extension(data_source)
-        self.name = name
-        self.narrow_df, self.classification_items = load_performance_source(
-            data_source,
-            from_date=None if normalized_from == dt.date.min else normalized_from,
-            thru_date=None if normalized_thru == dt.date.max else normalized_thru,
-        )
-        self.identifiers = sorted(self.narrow_df[cols.IDENTIFIER].unique().to_list())
-        self._df_overall = pl.DataFrame()
+    def __init__(self) -> None:
+        """Prevent construction outside the trusted prepared-data factory."""
+        raise TypeError("Performance is an internal prepared-data container.")
 
     def copy(self) -> "Performance":
         """Return an independent copy of this translated performance stream."""
@@ -90,7 +51,6 @@ class Performance:
         duplicate.classification_items = self.classification_items.clone()
         duplicate.narrow_df = self.narrow_df.clone()
         duplicate.identifiers = list(self.identifiers)
-        duplicate._df_overall = self._df_overall.clone()  # pylint: disable=protected-access
         return duplicate
 
     @classmethod
@@ -98,7 +58,7 @@ class Performance:
         cls,
         frame: pl.DataFrame,
         *,
-        data_source: util.PerformanceDataSource,
+        data_source: str | Path | pl.DataFrame,
         name: str | None,
         classification_name: str | None,
         classification_items: pl.DataFrame,
@@ -118,7 +78,7 @@ class Performance:
         Notes:
             The caller must supply rows produced by the trusted portable boundary.
         """
-        result = cls.__new__(cls)
+        result = object.__new__(cls)
         result.classification_name = classification_name
         result.error_message_context = (
             f"in the file {data_source}"
@@ -131,7 +91,6 @@ class Performance:
         result.classification_items = classification_items.clone()
         result.narrow_df = frame.clone()
         result.identifiers = sorted(frame[cols.IDENTIFIER].unique().to_list())
-        result._df_overall = pl.DataFrame()
         return result
 
     def audit(self) -> None:
@@ -214,16 +173,6 @@ class Performance:
             .sort(cols.THRU_DATE)
         )
 
-    def df_overall(self) -> pl.DataFrame:
-        """Return independently owned portable overall rows in the ppar schema."""
-        if self._df_overall.is_empty():
-            self._df_overall = overall_performance(self)
-        return self._df_overall.clone()
-
-    def overall_return(self) -> float:
-        """Return the portable linked total return for the full period."""
-        return cast(float, self.df_overall()[cols.TOTAL_RETURN].item(0))
-
     def _replace_calculated_rows(
         self,
         df: pl.DataFrame,
@@ -240,6 +189,5 @@ class Performance:
         replacement = df.select(_PPAR_PERFORMANCE_COLUMNS).clone()
         if sort_rows:
             replacement = replacement.sort([cols.THRU_DATE, cols.IDENTIFIER])
-        self._df_overall = pl.DataFrame()
         self.narrow_df = replacement
         self.identifiers = sorted(self.narrow_df[cols.IDENTIFIER].unique().to_list())

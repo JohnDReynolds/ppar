@@ -162,12 +162,7 @@ class TestRegressionResults(unittest.TestCase):
 
             if classification_name == "Economic Sector":
                 for chart in Chart:
-                    columns_to_sort = None
-                    sort_descendings = False
-                    if chart == Chart.OVERALL_ATTRIBUTION:
-                        columns_to_sort = [cols.CLASSIFICATION_NAME]
-                        sort_descendings = True
-                    attribution.to_chart(chart, columns_to_sort, sort_descendings)
+                    attribution.to_chart(chart)
 
     def test_selected_attribution_values(self) -> None:
         """Selected classified attribution values remain stable across report views."""

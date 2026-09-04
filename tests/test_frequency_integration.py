@@ -19,7 +19,6 @@ from ppar import Analytics
 from ppar.attribution import View
 import ppar.schema as cols
 from ppar.frequency import Frequency, load_holidays
-from ppar.performance import Performance
 from ppar.errors import PparError
 import ppar.utilities as util
 
@@ -479,31 +478,6 @@ class TestFrequencyIntegration(unittest.TestCase):
                     holidays_path.write_text(invalid_text, encoding="utf-8")
                     with self.assertRaises(PparError):
                         load_holidays(holidays_path)
-
-    def test_specify_dates(self) -> None:
-        """Explicit dates filter the fixture performance rows inclusively."""
-        performance_source = test_util.make_performance_df(
-            (
-                (dt.date(2023, 3, 2), dt.date(2023, 3, 31)),
-                (dt.date(2023, 1, 2), dt.date(2023, 1, 31)),
-                (dt.date(2023, 2, 14), dt.date(2023, 2, 28)),
-                (dt.date(2023, 2, 2), dt.date(2023, 2, 12)),
-            ),
-            {"A": ([0.01] * 4, [1.0] * 4)},
-        )
-        performance = Performance(
-            performance_source,
-            from_date="2023-01-31",
-            thru_date="2023-02-28",
-        )
-
-        self.assertEqual(
-            performance.period_totals()[cols.FROM_DATE].item(0), dt.date(2023, 1, 2)
-        )
-        self.assertEqual(
-            performance.period_totals()[cols.THRU_DATE].to_list(),
-            [dt.date(2023, 1, 31), dt.date(2023, 2, 12), dt.date(2023, 2, 28)],
-        )
 
 
 if __name__ == "__main__":

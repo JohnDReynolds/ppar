@@ -133,7 +133,6 @@ def _rendered_metric_rows(
             df,
             column_name,
             ("Portfolio vs Benchmark", "Attribution"),
-            columns_to_sort=cols.CLASSIFICATION_NAME,
         )
 
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
@@ -183,10 +182,7 @@ def _rendered_attribution_rows(chart: Chart) -> dict[str, list[float]]:
     axis = MagicMock()
     axis.get_yticklabels.return_value = []
     with patch.object(charts.sns, "heatmap", return_value=axis) as render:
-        png = _zero_net_attribution().to_chart(
-            chart,
-            columns_to_sort=cols.CLASSIFICATION_NAME,
-        )
+        png = _zero_net_attribution().to_chart(chart)
 
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     matrix = np.asarray(render.call_args.args[0])

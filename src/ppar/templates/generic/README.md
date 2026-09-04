@@ -33,14 +33,25 @@ select periods by `thru_date`, including both boundaries.
 
 ## Classifications and mappings
 
-Files in `input/classifications/` and `input/mappings/` are headerless CSV files with
-exactly two columns:
+Files in `input/classifications/` and `input/mappings/` are headerless CSV files.
+Classification files and ordinary static mappings contain exactly two columns:
 
 | File | First column | Second column |
 | --- | --- | --- |
 | `Security.csv` | Performance identifier | Display name |
 | Classification file | Classification identifier | Display name |
 | Mapping file | Performance identifier | Classification identifier |
+
+A mapping file may instead contain four columns in this order:
+
+```text
+from_date, thru_date, performance identifier, classification identifier
+```
+
+The effective dates are closed and inclusive. Every nonblank mapping record in one
+file must use the same width, and each source period for a mapped identifier must fit
+wholly within one dated assignment. A source period is never split at a classification
+boundary.
 
 For the demonstrated reports, every performance identifier must be named in
 `Security.csv` and mapped to an identifier in the selected classification file.

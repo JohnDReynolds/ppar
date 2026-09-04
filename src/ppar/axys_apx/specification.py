@@ -97,28 +97,20 @@ class _AxysSpecification:
 
     def performance_path(
         self,
-        argument_path: util.PathLike | None,
         specification_key: Literal[
             "portfolio_performance",
             "security_performance",
         ],
     ) -> Path:
-        """Resolve an explicit, configured, or conventional performance path.
+        """Resolve a configured or conventional performance path.
 
         Args:
-            argument_path: Explicit source path provided to ``AxysData``, if
-                any.
             specification_key: Dataset key inside the ``files`` section.
 
         Returns:
             Resolved portfolio- or security-performance source path.
         """
-        file_path = (
-            self.file_path(specification_key)
-            if argument_path is None
-            else argument_path
-        )
-        return self.resolve_path(file_path)
+        return self.resolve_path(self.file_path(specification_key))
 
     def file_path(self, file_name: str) -> str:
         """Return a configured or conventional source-file path.

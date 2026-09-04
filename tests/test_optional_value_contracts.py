@@ -9,9 +9,8 @@ import polars as pl
 
 # Project imports
 from ppar import Analytics
-from ppar.attribution import Chart, View
+from ppar.attribution import View
 from ppar.errors import PparError
-from ppar.performance import Performance
 import ppar.schema as cols
 import ppar.utilities as util
 
@@ -43,13 +42,6 @@ class TestOptionalValueContracts(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(PparError, "display_name must not be blank"):
                     util.normalize_optional_string(value, "display_name")
-
-    def test_omitted_performance_metadata_uses_none(self) -> None:
-        """Absent public performance metadata is stored as ``None``."""
-        performance = Performance(_performance_rows())
-
-        self.assertIsNone(performance.name)
-        self.assertIsNone(performance.classification_name)
 
     def test_blank_analytics_metadata_is_rejected(self) -> None:
         """Names and classifications cannot masquerade as omitted values."""
@@ -107,14 +99,12 @@ class TestOptionalValueContracts(unittest.TestCase):
             0,
         )
 
-    def test_blank_sort_column_is_rejected_for_tables_and_charts(self) -> None:
-        """A blank sort column cannot silently select default ordering."""
+    def test_blank_table_sort_column_is_rejected(self) -> None:
+        """A blank table sort column cannot silently select default ordering."""
         attribution = Analytics(_performance_rows()).attribution()
 
         with self.assertRaisesRegex(PparError, "columns_to_sort must not be blank"):
             attribution.to_polars(View.OVERALL_ATTRIBUTION, columns_to_sort=" ")
-        with self.assertRaisesRegex(PparError, "columns_to_sort must not be blank"):
-            attribution.to_chart(Chart.OVERALL_ATTRIBUTION, columns_to_sort="")
 
 
 if __name__ == "__main__":

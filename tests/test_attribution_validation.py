@@ -17,8 +17,6 @@ import ppar.attribution as attribution_module
 from ppar.attribution import Attribution, View
 import ppar.schema as cols
 from ppar.errors import PparError
-from ppar.frequency import Frequency
-from ppar.performance import Performance
 
 
 class TestAttributionValidation(unittest.TestCase):
@@ -97,54 +95,7 @@ class TestAttributionValidation(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(PparError, "does not reconcile to its total"):
-            attribution.audit()
-
-    def test_direct_attribution_rejects_mislabeled_classification(self) -> None:
-        """A requested classification must match both direct performance sources."""
-        source = pl.DataFrame(
-            {
-                cols.FROM_DATE: [dt.date(2024, 1, 1)],
-                cols.THRU_DATE: [dt.date(2024, 1, 31)],
-                cols.IDENTIFIER: ["A"],
-                cols.RETURN: [0.02],
-                cols.WEIGHT: [1.0],
-            }
-        )
-        portfolio = Performance(source, classification_name="Security")
-        benchmark = Performance(source, classification_name="Security")
-        classification = pl.DataFrame({"identifier": ["A"], "name": ["Alpha"]})
-
-        with self.assertRaisesRegex(PparError, "classification"):
-            Attribution(
-                (portfolio, benchmark),
-                "Sector",
-                classification,
-                Frequency.AS_OFTEN_AS_POSSIBLE,
-            )
-
-    def test_direct_attribution_accepts_matching_requested_classification(self) -> None:
-        """Direct construction succeeds when both source and requested names agree."""
-        source = pl.DataFrame(
-            {
-                cols.FROM_DATE: [dt.date(2024, 1, 1)],
-                cols.THRU_DATE: [dt.date(2024, 1, 31)],
-                cols.IDENTIFIER: ["A"],
-                cols.RETURN: [0.02],
-                cols.WEIGHT: [1.0],
-            }
-        )
-        portfolio = Performance(source, classification_name="Security")
-        benchmark = Performance(source, classification_name="Security")
-        classification = pl.DataFrame({"identifier": ["A"], "name": ["Alpha"]})
-
-        attribution = Attribution(
-            (portfolio, benchmark),
-            "Security",
-            classification,
-            Frequency.AS_OFTEN_AS_POSSIBLE,
-        )
-
-        self.assertFalse(attribution.to_polars(View.SUBPERIOD_ATTRIBUTION).is_empty())
+            attribution._audit()  # pylint: disable=protected-access
 
 
 if __name__ == "__main__":

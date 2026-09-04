@@ -1,8 +1,9 @@
 # ppar Correctness Roadmap
 
-Status: Complete; Phases 0 through 13 are complete  
-Original review date: August 31, 2026  
+Status: Complete; Phases 0 through 14 are complete
+Original review date: August 31, 2026
 Post-cleanup reassessment date: September 1, 2026
+Post-`perfattr` reassessment date: September 4, 2026
 
 Phase 0 decisions and baseline evidence are recorded in
 [`ppar_correctness_phase_0_assessment.md`](ppar_correctness_phase_0_assessment.md).
@@ -32,6 +33,8 @@ Phase 12 implementation and validation evidence are recorded in
 [`ppar_correctness_phase_12_implementation.md`](ppar_correctness_phase_12_implementation.md).
 Phase 13 implementation and validation evidence are recorded in
 [`ppar_correctness_phase_13_implementation.md`](ppar_correctness_phase_13_implementation.md).
+Phase 14 implementation and validation evidence are recorded in
+[`ppar_correctness_phase_14_implementation.md`](ppar_correctness_phase_14_implementation.md).
 
 ## Objective
 
@@ -104,6 +107,10 @@ work with interacting edge cases. No phase in this roadmap currently warrants Ul
 | 18 | Risk-ratio zero handling is not scale-aware and can reverse Treynor sign | 10 |
 | 19 | Zero-net classifications are omitted or misstated in heatmaps | 11 |
 | 20 | Axys/APX portfolio display names depend on physical source-row order | 12 |
+| 21 | Caller-supplied contribution can override ppar's weight-times-return contract | 14 |
+| 22 | Excluded history can determine inferred names or create false conflicts | 14 |
+| 23 | Finite periodic returns can overflow to an infinite annualized result | 14 |
+| Contract reassessment | Generic surrounding whitespace is normalized consistently | 14 |
 
 ## Phase 0: Confirm contracts and establish the baseline
 
@@ -873,6 +880,85 @@ release-candidate results.
 8. Record the final behavior, tests, and measurements in phase implementation notes
    and update this roadmap's status without erasing the original completion history.
 
+## Phase 14: Post-`perfattr` boundary correction
+
+Recommended Codex level: **GPT-5.6 Sol High**
+
+Status: Complete. See
+[`ppar_correctness_phase_14_implementation.md`](ppar_correctness_phase_14_implementation.md)
+for pre-fix evidence, the narrow boundary changes, and unchanged release-candidate
+results.
+
+This phase reassesses the roadmap after ppar delegated source preparation and
+attribution calculation to `perfattr`. The migration remained broadly sound, but it
+exposed three host-boundary gaps that could publish internally inconsistent or
+nonfinite results.
+
+### Item 21: Preserve ppar's weight-times-return contribution contract
+
+Problem:
+
+- Generic CSV and Polars inputs can contain an optional `contribution` column.
+- Passing that column through to `perfattr` makes it authoritative, although ppar's
+  established public contract derives simple contribution as `weight * return`.
+- A disagreeing column can therefore change subperiod returns, period totals, and
+  overall results without failing the existing conservation audits.
+
+Implemented contract:
+
+- Generic input contribution cannot override ppar's calculation. It does not cross
+  the raw-input calculation boundary as authoritative financial data.
+- Internal calculated contribution remains present after portable preparation; no
+  public output column or schema changes.
+- Regression coverage exercises both CSV and in-memory Polars inputs and reconciles
+  subperiod return, contribution, period totals, and compounded overall return.
+
+### Item 22: Infer names only from retained financial history
+
+Problem:
+
+- Optional display names were selected from all raw rows before requested date
+  filtering and portfolio/benchmark alignment.
+- An excluded later rename could label an earlier report incorrectly or create a
+  false portfolio/benchmark classification conflict.
+
+Implemented contract:
+
+- Keep dated name metadata until portable preparation has selected and aligned the
+  accepted history.
+- For each retained identifier, choose the chronologically latest name within the
+  prepared date interval.
+- Excluded leading or trailing history cannot influence report names or conflicts.
+
+### Item 23: Reject nonfinite annualized returns
+
+Problem:
+
+- A finite, very large periodic mean could overflow exponentiation and publish
+  positive infinity with only a NumPy runtime warning.
+
+Implemented contract:
+
+- Continue returning undefined output for insufficient history or a deliberately
+  undefined (`NaN`) input statistic.
+- Reject nonfinite periodic inputs and any exponentiation overflow with a contextual
+  `PparError` before report publication.
+- Preserve the established greater-than-negative-100-percent compounding domain.
+
+### Phase 9 identity-policy reconciliation
+
+Phase 9 originally recommended rejecting surrounding whitespace for generic
+identities. The current documented and tested public boundary instead trims
+surrounding whitespace consistently across CSV and Polars inputs while rejecting
+null, empty, or whitespace-only values. This normalized policy supersedes the Phase
+9 recommendation. Leading zeroes and intentional internal spaces remain preserved,
+so identity meaning is not lost. The historical Phase 9 text remains above to avoid
+erasing the original decision trail.
+
+Phase gate: run focused normalization and risk-validation tests, the complete suite,
+Mypy, Pyright, both Pylint gates, README-image provenance, package and installed-demo
+checks, and the unchanged release-candidate workflow including the 500x scale check.
+
 ## Completion criteria
 
 - Every numbered review item has a regression test that fails on the original
@@ -884,7 +970,8 @@ release-candidate results.
 - Overall weights, contributions, and attribution effects satisfy their established
   conservation checks.
 - Axys/APX identities and source-supported exposures are not silently altered.
-- Vendor-neutral identifiers also round-trip exactly and invalid generic identities
+- Vendor-neutral identifiers preserve leading zeroes and intentional internal spaces;
+  surrounding whitespace is normalized consistently, and blank generic identities
   fail before aggregation or mapping.
 - Risk calculations use floating-point inputs and enforce the required numerical and
   financial domains.

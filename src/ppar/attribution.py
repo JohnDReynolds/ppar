@@ -16,7 +16,7 @@ Attribution instances are normally created by
 from enum import Enum
 import datetime as dt
 from pathlib import Path
-from typing import cast, Iterable, Sequence
+from typing import cast, Sequence
 
 # Third-Party Imports
 import polars as pl
@@ -121,11 +121,13 @@ _VIEW_COLUMN_NAMES = {
 
 
 class Attribution:
-    """Calculate, store, audit, and format attribution results.
+    """Store, audit, and format an attribution result returned by Analytics.
 
-    An ``Attribution`` instance contains portfolio and benchmark ``Performance``
-    objects, a ``Classification``, and the resulting contribution and attribution
-    effects. Results are available as Polars DataFrames, HTML, PNG charts, and CSV.
+    Application code normally obtains an instance from
+    :meth:`ppar.Analytics.attribution` or
+    :meth:`ppar.Analytics.attribution_for`. Results are available as Polars
+    DataFrames, HTML, PNG charts, and CSV. The constructor composes package-prepared
+    sources and is not the normal application entry point.
     """
 
     def __init__(
@@ -136,7 +138,7 @@ class Attribution:
         frequency: Frequency,
         classification_label: str | None = None,
     ):
-        """Initialize an attribution calculation.
+        """Initialize an attribution result from package-prepared sources.
 
         Args:
             performances: A two-item sequence containing the portfolio ``Performance`` at
@@ -200,7 +202,7 @@ class Attribution:
 
         # Attribution is a financial calculation boundary. Run its inexpensive
         # conservation checks before any report can expose the result.
-        self.audit()
+        self._audit()
 
     def _add_total_row(
         self,
@@ -260,7 +262,7 @@ class Attribution:
             result[-1, cols.THRU_DATE] = "Total"
         return result
 
-    def audit(self) -> None:
+    def _audit(self) -> None:
         """Audit this attribution instance for internal consistency.
 
         Raises:
@@ -293,56 +295,6 @@ class Attribution:
             self._result.period_summary,
             self._result.overall_summary,
         )
-
-    @staticmethod
-    def audit_attributions(attributions: Iterable["Attribution"]) -> None:
-        """Audit multiple attribution instances for consistency.
-
-        Args:
-            attributions: Attribution instances to audit.
-
-        Raises:
-            PparError: If any attribution fails its own audit or if the equivalent
-                portfolio/benchmark columns differ across attribution instances.
-        """
-        # Initialize base_equivalent_columns to empty (for lint).
-        base_equivalent_columns: list[pl.DataFrame] = []  # 0 = portfolio, 1 = benchmark
-
-        # Loop through each attribution and validate it.
-        for idxa, attribution in enumerate(attributions):
-            # Audit each Attribution separately.
-            attribution.audit()
-
-            # Get the equivalent columns.
-            # pylint: disable=protected-access
-            equivalent_columns = [
-                attribution._performances[0]
-                .narrow_df.select(_EQUIVALENT_COLUMN_NAMES)
-                .unique()
-                .sort(cols.THRU_DATE),
-                attribution._performances[1]
-                .narrow_df.select(_EQUIVALENT_COLUMN_NAMES)
-                .unique()
-                .sort(cols.THRU_DATE),
-            ]
-            # pylint: enable=protected-access
-
-            # Round the TOTAL_RETURN so it can be "equivalently" compared.
-            for idxe, _ in enumerate(equivalent_columns):
-                equivalent_columns[idxe] = equivalent_columns[idxe].with_columns(
-                    pl.col(cols.TOTAL_RETURN).round(11)
-                )
-
-            # Assert that the equivalent_columns are equivalent.
-            if idxa == 0:
-                base_equivalent_columns = equivalent_columns
-            else:
-                for idxe, equiv in enumerate(equivalent_columns):
-                    if not equiv.equals(base_equivalent_columns[idxe]):
-                        raise PparError(
-                            f"Attribution.audit_attributions(): Attribution {idxa} equivalent "
-                            "columns do not match base equivalent columns.",
-                        )
 
     @staticmethod
     def _audit_columns(
@@ -606,17 +558,11 @@ class Attribution:
     def to_chart(
         self,
         chart: Chart,
-        columns_to_sort: str | Sequence[str] | None = None,
-        sort_descendings: bool | Sequence[bool] = False,
     ) -> bytes:
         """Return a PNG chart for the requested attribution chart type.
 
         Args:
             chart: Chart type to render.
-            columns_to_sort: Optional column name or sequence of column names used for
-                sortable charts.
-            sort_descendings: Boolean or sequence of booleans indicating whether the
-                corresponding sort columns should be sorted descending.
 
         Returns:
             In-memory PNG bytes for the requested chart.
@@ -624,36 +570,13 @@ class Attribution:
         Raises:
             PparError: If the underlying view construction or table retrieval fails
                 validation.
-            ModuleNotFoundError: If chart rendering dependencies are not installed.
         """
         if not isinstance(chart, Chart):
             raise PparError(
                 repr(chart),
                 context={"chart": repr(chart)},
             )
-        if isinstance(columns_to_sort, str) and not columns_to_sort.strip():
-            raise PparError(
-                "columns_to_sort must not be blank; use None to omit it.",
-                context={"option": "columns_to_sort", "value": columns_to_sort},
-            )
-        if not isinstance(columns_to_sort, str) and columns_to_sort is not None:
-            blank_columns = [
-                column
-                for column in columns_to_sort
-                if isinstance(column, str) and not column.strip()
-            ]
-            if blank_columns:
-                raise PparError(
-                    "columns_to_sort must not contain blank column names.",
-                    context={"option": "columns_to_sort", "value": repr(columns_to_sort)},
-                )
-
-        try:
-            from ppar import charts as format_chart  # pylint: disable=import-outside-toplevel
-        except ModuleNotFoundError as error:
-            raise ModuleNotFoundError(
-                "Chart output requires matplotlib and seaborn."
-            ) from error
+        from ppar import charts as format_chart  # pylint: disable=import-outside-toplevel
 
         # Get the title_lines.
         title_lines = self._title_lines(chart)
@@ -704,9 +627,7 @@ class Attribution:
                     case Chart.HEATMAP_PORTFOLIO_RETURN:
                         column_name = cols.PORTFOLIO_RETURN
                 # Get the sorted chart png.
-                png = format_chart.heatmap(
-                    df, column_name, title_lines, columns_to_sort, sort_descendings
-                )
+                png = format_chart.heatmap(df, column_name, title_lines)
 
             case Chart.SUBPERIOD_ATTRIBUTION | Chart.SUBPERIOD_RETURN:
                 # Set the DataFrame.  Note that sorting is not valid for these bar charts.
@@ -723,26 +644,22 @@ class Attribution:
                 png = format_chart.vertical_bars(df, column_names, title_lines, y_axis_label)
 
             case Chart.OVERALL_ATTRIBUTION:
-                # Set the default sorting.
-                if columns_to_sort is None:
-                    columns_to_sort = cols.TOTAL_EFFECT_SMOOTHED
-                    sort_descendings = True
                 # Set the DataFrame and remove the last "Total" row.
-                df = self.to_polars(View.OVERALL_ATTRIBUTION, columns_to_sort, sort_descendings)[
-                    :-1
-                ]
+                df = self.to_polars(
+                    View.OVERALL_ATTRIBUTION,
+                    cols.TOTAL_EFFECT_SMOOTHED,
+                    True,
+                )[:-1]
                 # Get the chart png
                 png = format_chart.overall_attribution(df, title_lines)
 
             case _:  # Chart.OVERALL_CONTRIBUTION:
-                # Set the default sorting.
-                if columns_to_sort is None:
-                    columns_to_sort = cols.PORTFOLIO_CONTRIB_SMOOTHED
-                    sort_descendings = True
                 # Set the DataFrame and remove the last "Total" row.
-                df = self.to_polars(View.OVERALL_ATTRIBUTION, columns_to_sort, sort_descendings)[
-                    :-1
-                ]
+                df = self.to_polars(
+                    View.OVERALL_ATTRIBUTION,
+                    cols.PORTFOLIO_CONTRIB_SMOOTHED,
+                    True,
+                )[:-1]
                 # Get the chart png
                 png = format_chart.overall_contribution(
                     df,

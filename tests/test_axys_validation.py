@@ -2,6 +2,7 @@
 
 # Python Imports
 from collections.abc import Mapping, Sequence
+import copy
 from dataclasses import dataclass, field
 import datetime as dt
 from pathlib import Path
@@ -31,7 +32,7 @@ from ppar.errors import PparError
 
 @dataclass(frozen=True)
 class _AxysArguments:
-    """Constructor inputs that a validation test needs to override."""
+    """Axys source settings that a validation test needs to override."""
 
     base_directory: Path = field(
         default_factory=lambda: test_util.axys_data_path("portperf.csv").parent
@@ -54,14 +55,20 @@ def _assert_axys_error(
 ) -> None:
     """Assert that constructing AxysData fails with an actionable PparError."""
     arguments = arguments or _AxysArguments()
+    values = copy.deepcopy(arguments.values)
+    if isinstance(values, dict):
+        files = values.get("files")
+        if isinstance(files, dict):
+            for key, path in (
+                ("portfolio_performance", arguments.portfolio_performance_path),
+                ("security_performance", arguments.security_performance_path),
+            ):
+                definition = files.get(key)
+                if path is not None and isinstance(definition, dict):
+                    definition["path"] = str(path)
 
     with test.assertRaises(PparError) as context:
-        data = AxysData(
-            arguments.base_directory,
-            arguments.values,
-            portfolio_performance_path=arguments.portfolio_performance_path,
-            security_performance_path=arguments.security_performance_path,
-        )
+        data = AxysData(arguments.base_directory, values)
         portfolio = data.get_portfolio(arguments.portfolio_code)
         if arguments.classification_name is not None:
             data.get_classification_sources(arguments.classification_name, portfolio)
@@ -964,8 +971,6 @@ class TestAxysValidation(unittest.TestCase):
             data = AxysData(
                 directory,
                 {},
-                portfolio_performance_path=None,
-                security_performance_path=None,
             )
 
             self.assertEqual(
@@ -994,7 +999,7 @@ class TestAxysValidation(unittest.TestCase):
         )
 
     def test_blank_source_paths_are_rejected(self) -> None:
-        """A blank configured path or constructor override cannot mean omitted."""
+        """A blank configured path cannot mean omitted."""
         specification = _fixture_specification()
         portfolio_definition = _file_definition(
             specification,
@@ -1003,13 +1008,6 @@ class TestAxysValidation(unittest.TestCase):
         portfolio_definition["path"] = " "
         with self.assertRaisesRegex(PparError, "path must be a nonblank string"):
             AxysData(test_util.axys_data_path("portperf.csv").parent, specification)
-
-        with self.assertRaisesRegex(PparError, "Source path must not be blank"):
-            AxysData(
-                test_util.axys_data_path("portperf.csv").parent,
-                _fixture_specification(),
-                portfolio_performance_path="",
-            )
 
     def test_blank_performance_column_mapping_is_rejected(self) -> None:
         """Configured source-column names must contain non-whitespace text."""
@@ -1056,8 +1054,6 @@ class TestAxysValidation(unittest.TestCase):
         data = AxysData(
             test_util.axys_data_path("portperf.csv").parent,
             _fixture_specification(),
-            portfolio_performance_path=test_util.axys_data_path("portperf.csv"),
-            security_performance_path=test_util.axys_data_path("secperf.csv"),
         )
 
         with self.assertRaises(PparError) as context:

@@ -146,12 +146,6 @@ class TestAttributionOutputs(unittest.TestCase):
         self.assertIn("Portfolio vs Benchmark", html)
         self.assertNotIn("> vs <", html)
 
-    def test_removed_conversion_methods_are_absent(self) -> None:
-        """The public table surface does not duplicate dataframe libraries."""
-        attribution = _attribution()
-        for method in ("to_json", "to_pandas", "to_table", "to_xml"):
-            self.assertFalse(hasattr(attribution, method))
-
     def test_invalid_float_precision_is_rejected(self) -> None:
         """Serialization keeps its bounded precision invariant."""
         with tempfile.TemporaryDirectory() as directory:
@@ -262,12 +256,6 @@ class TestRiskOutputs(unittest.TestCase):
         self.assertIn("Monthly M-Squared", labels)
         self.assertIn("Monthly Jensen's Alpha", labels)
         self.assertIn("Annualized Jensen's Alpha", labels)
-
-    def test_removed_conversion_methods_are_absent(self) -> None:
-        """Risk output does not carry redundant conversion methods."""
-        risk = _risk_statistics()
-        for method in ("to_json", "to_pandas", "to_table", "to_xml"):
-            self.assertFalse(hasattr(risk, method))
 
     def test_invalid_float_precision_is_rejected(self) -> None:
         """Risk serialization keeps its bounded precision invariant."""

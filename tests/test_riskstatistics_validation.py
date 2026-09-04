@@ -10,10 +10,10 @@ import numpy as np
 import polars as pl
 
 # Project Imports
+from ppar import Analytics
 import ppar.schema as cols
 from ppar.errors import PparError
 from ppar.frequency import Frequency
-from ppar.performance import Performance
 from ppar.risk import RiskStatistics
 
 
@@ -107,6 +107,17 @@ class TestRiskStatisticsValidation(unittest.TestCase):
 
         self.assertFalse(risk_statistics.to_polars().is_empty())
 
+    def test_annualized_return_overflow_is_rejected(self) -> None:
+        """A finite periodic series cannot publish an infinite annualized return."""
+        returns = np.array([1.0e30, 5.0e29] * 6)
+
+        with self.assertRaisesRegex(PparError, "Annualized Mean Return.*finite"):
+            RiskStatistics(
+                (returns, returns.copy()),
+                Frequency.MONTHLY,
+                annual_risk_free_rate=0.0,
+            )
+
     def test_performance_total_return_at_negative_one_is_rejected(self) -> None:
         """Portable preparation rejects an undefined wealth relative at entry."""
         source = pl.DataFrame(
@@ -119,7 +130,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(PparError, "greater than -1.0"):
-            Performance(source)
+            Analytics(source)
 
     def test_derived_return_below_negative_one_cannot_be_annualized(self) -> None:
         """A valid regression cannot publish an invalid compounded alpha."""
@@ -192,34 +203,6 @@ class TestRiskStatisticsValidation(unittest.TestCase):
                 2289.7072539029457,
             )
         )
-
-    def test_performance_inputs_must_have_aligned_dates(self) -> None:
-        """Direct Performance inputs require matching reporting periods."""
-        portfolio = Performance(
-            pl.DataFrame(
-                {
-                    cols.FROM_DATE: [dt.date(2023, 2, 1), dt.date(2023, 3, 1)],
-                    cols.THRU_DATE: [dt.date(2023, 2, 28), dt.date(2023, 3, 31)],
-                    cols.IDENTIFIER: ["A", "A"],
-                    cols.RETURN: [0.01, 0.02],
-                    cols.WEIGHT: [1.0, 1.0],
-                }
-            )
-        )
-        benchmark = Performance(
-            pl.DataFrame(
-                {
-                    cols.FROM_DATE: [dt.date(2023, 3, 1), dt.date(2023, 4, 1)],
-                    cols.THRU_DATE: [dt.date(2023, 3, 31), dt.date(2023, 4, 30)],
-                    cols.IDENTIFIER: ["A", "A"],
-                    cols.RETURN: [0.03, 0.04],
-                    cols.WEIGHT: [1.0, 1.0],
-                }
-            )
-        )
-
-        with self.assertRaises(PparError):
-            RiskStatistics((portfolio, benchmark), Frequency.MONTHLY)
 
 
 if __name__ == "__main__":

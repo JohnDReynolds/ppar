@@ -18,7 +18,11 @@ from ppar.errors import PparError
 
 @dataclass(frozen=True)
 class AxysClassificationSources:
-    """Contain one classification and its optional mapping source.
+    """Contain classification sources returned by AxysData.
+
+    Application code normally obtains instances from an AxysData
+    classification-source method and passes them to
+    :meth:`ppar.Analytics.attribution_for`.
 
     Attributes:
         classification_name: Display name for the requested Axys

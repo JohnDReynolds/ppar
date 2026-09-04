@@ -448,11 +448,14 @@ def _selected_tables(
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Calculate security, sector, and risk tables for a scale workspace."""
     source = AxysData(site, _AXYS_SOURCE_VALUES)
-    security_portfolio = source.get_portfolio("MEGA_ALPHA")
-    security_benchmark = source.get_portfolio("MEGA_BENCH")
+    security_portfolio = source.get_portfolio(
+        "MEGA_ALPHA", from_date=_DEMO_FROM_DATE
+    )
+    security_benchmark = source.get_portfolio(
+        "MEGA_BENCH", from_date=_DEMO_FROM_DATE
+    )
     security_analytics = security_portfolio.to_analytics(
         security_benchmark,
-        from_date=_DEMO_FROM_DATE,
         frequency=Frequency.QUARTERLY,
         holidays=site / "input" / "holidays.csv",
     )
@@ -463,11 +466,14 @@ def _selected_tables(
             security_benchmark,
         ),
     ).to_polars(View.OVERALL_ATTRIBUTION)
-    sector_portfolio = source.get_portfolio("MEGA_ALPHA")
-    sector_benchmark = source.get_portfolio("MEGA_BENCH")
+    sector_portfolio = source.get_portfolio(
+        "MEGA_ALPHA", from_date=_DEMO_FROM_DATE
+    )
+    sector_benchmark = source.get_portfolio(
+        "MEGA_BENCH", from_date=_DEMO_FROM_DATE
+    )
     sector_analytics = sector_portfolio.to_analytics(
         sector_benchmark,
-        from_date=_DEMO_FROM_DATE,
         frequency=Frequency.QUARTERLY,
         holidays=site / "input" / "holidays.csv",
     )

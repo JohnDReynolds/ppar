@@ -16,10 +16,6 @@ __all__: list[str] = []
 
 # Types for type-checking.
 PathLike: TypeAlias = str | Path
-AllDataSources: TypeAlias = PathLike | pl.DataFrame
-ClassificationDataSource: TypeAlias = AllDataSources
-MappingDataSource: TypeAlias = AllDataSources
-PerformanceDataSource: TypeAlias = PathLike | pl.DataFrame
 
 # Miscellaneous Common Constants
 ENCODING = "utf-8"
@@ -135,18 +131,6 @@ def convert_to_date(date: str | dt.date | dt.datetime) -> dt.date:
         return dt.datetime.strptime(date, "%Y-%m-%d").date()
     except ValueError as e:
         raise PparError(f"{date!r} must be in the format yyyy-mm-dd") from e
-
-
-def date_str(date: dt.date) -> str:
-    """Format a date using the package date format.
-
-    Args:
-        date: The date to format.
-
-    Returns:
-        The date formatted as ``yyyy-mm-dd``.
-    """
-    return date.strftime(DATE_FORMAT_STRING)
 
 
 def normalize_optional_string(

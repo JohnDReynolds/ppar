@@ -5,7 +5,6 @@ from __future__ import annotations
 # Python imports
 from collections.abc import Callable
 from dataclasses import dataclass
-import datetime as dt
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -84,7 +83,11 @@ def _portfolio_display_name(
 
 @dataclass(frozen=True)
 class AxysPortfolio:
-    """Contain the reconciled performance output for one portfolio.
+    """Contain one reconciled portfolio returned by AxysData.
+
+    Application code normally obtains instances from
+    :meth:`ppar.axys_apx.AxysData.get_portfolio` or
+    :meth:`ppar.axys_apx.AxysData.get_portfolios`.
 
     Attributes:
         portfolio_code: Identifier used to select the portfolio in Axys sources.
@@ -98,15 +101,10 @@ class AxysPortfolio:
     portfolio_name: str
     security_performance: pl.DataFrame
 
-    def to_analytics(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def to_analytics(
         self,
-        benchmark_data_source: AxysPortfolio | str | Path | pl.DataFrame | None = None,
+        benchmark: AxysPortfolio | None = None,
         *,
-        benchmark_name: str | None = None,
-        portfolio_classification_name: str = _SECURITY_PERFORMANCE_CLASSIFICATION_NAME,
-        benchmark_classification_name: str | None = None,
-        from_date: str | dt.date = dt.date.min,
-        thru_date: str | dt.date = dt.date.max,
         frequency: Frequency = Frequency.AS_OFTEN_AS_POSSIBLE,
         annual_minimum_acceptable_return: float = (
             util.DEFAULT_ANNUAL_MINIMUM_ACCEPTABLE_RETURN
@@ -122,16 +120,8 @@ class AxysPortfolio:
         """Return an Analytics instance for this reconciled Axys portfolio.
 
         Args:
-            benchmark_data_source: Optional benchmark portfolio or benchmark
-                performance data source. When omitted, Analytics reuses the
-                portfolio data as its benchmark.
-            benchmark_name: Benchmark display name used in output titles.
-            portfolio_classification_name: Classification name associated with Axys
-                security-performance rows. Defaults to ``"Security"``.
-            benchmark_classification_name: Classification name associated with the
-                benchmark performance data.
-            from_date: Earliest period ``thru_date`` to retain.
-            thru_date: Latest period ``thru_date`` to retain.
+            benchmark: Optional reconciled Axys benchmark. When omitted,
+                Analytics reuses the portfolio data as its benchmark.
             frequency: Reporting frequency used to consolidate subperiods.
             annual_minimum_acceptable_return: Annual minimum acceptable return used in
                 downside-risk calculations.
@@ -154,33 +144,17 @@ class AxysPortfolio:
         # unless the convenience adapter is used.
         from ppar import Analytics  # pylint: disable=import-outside-toplevel
 
-        benchmark = (
-            benchmark_data_source
-            if isinstance(benchmark_data_source, AxysPortfolio)
-            else None
-        )
-        benchmark_performance_data_source = cast(
-            util.PerformanceDataSource | None,
-            None if benchmark is not None else benchmark_data_source,
-        )
-        if benchmark is not None:
-            benchmark_performance_data_source = benchmark.security_performance
-            benchmark_name = benchmark.portfolio_name if benchmark_name is None else benchmark_name
-            benchmark_classification_name = (
-                portfolio_classification_name
-                if benchmark_classification_name is None
-                else benchmark_classification_name
-            )
-
         return Analytics(
             portfolio_data_source=self.security_performance,
-            benchmark_data_source=benchmark_performance_data_source,
+            benchmark_data_source=(
+                None if benchmark is None else benchmark.security_performance
+            ),
             portfolio_name=self.portfolio_name,
-            benchmark_name=benchmark_name,
-            portfolio_classification_name=portfolio_classification_name,
-            benchmark_classification_name=benchmark_classification_name,
-            from_date=from_date,
-            thru_date=thru_date,
+            benchmark_name=None if benchmark is None else benchmark.portfolio_name,
+            portfolio_classification_name=_SECURITY_PERFORMANCE_CLASSIFICATION_NAME,
+            benchmark_classification_name=(
+                None if benchmark is None else _SECURITY_PERFORMANCE_CLASSIFICATION_NAME
+            ),
             frequency=frequency,
             annual_minimum_acceptable_return=annual_minimum_acceptable_return,
             annual_risk_free_rate=annual_risk_free_rate,

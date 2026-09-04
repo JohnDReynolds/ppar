@@ -147,16 +147,11 @@ def _file_columns(
 class TestAxysPipeline(unittest.TestCase):
     """Verify successful Axys loading and downstream attribution behavior."""
 
-    def test_axys_data_constructor_has_focused_source_options(self) -> None:
-        """AxysData exposes performance overrides but no lookup-file override map."""
+    def test_axys_data_constructor_uses_one_source_configuration(self) -> None:
+        """AxysData accepts one source configuration without parallel path overrides."""
         self.assertEqual(
             tuple(inspect.signature(AxysData).parameters),
-            (
-                "base_directory",
-                "values",
-                "portfolio_performance_path",
-                "security_performance_path",
-            ),
+            ("base_directory", "values"),
         )
 
     def test_load_reconciles_weights_and_filters_security_sources(self) -> None:
@@ -874,7 +869,7 @@ class TestAxysPipeline(unittest.TestCase):
         parameters = inspect.signature(AxysPortfolio.to_analytics).parameters
 
         self.assertEqual(
-            parameters["benchmark_data_source"].kind,
+            parameters["benchmark"].kind,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
         )
         for name in tuple(parameters)[2:]:

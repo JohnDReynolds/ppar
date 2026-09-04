@@ -14,79 +14,11 @@ from ppar.attribution import View
 import ppar.schema as cols
 from ppar.errors import PparError
 from ppar.frequency import Frequency
-from ppar.performance import Performance
 from tests import helpers as test_util
 
 
 class TestCalculationInvariants(unittest.TestCase):
     """Test small financial identities without external data files."""
-
-    def test_single_asset_total_return_equals_asset_return(self) -> None:
-        """A fully invested single asset contributes its entire return."""
-        performance = Performance(
-            test_util.make_performance_df(
-                [(dt.date(2024, 1, 1), dt.date(2024, 1, 31))],
-                {"A": ([0.0375], [1.0])},
-            )
-        )
-
-        self.assertTrue(
-            math.isclose(
-                performance.period_totals()[cols.TOTAL_RETURN].item(), 0.0375, abs_tol=1e-12
-            )
-        )
-        self.assertTrue(
-            math.isclose(performance.narrow_df[cols.CONTRIBUTION].item(), 0.0375, abs_tol=1e-12)
-        )
-
-    def test_two_asset_total_return_equals_sum_of_contributions(self) -> None:
-        """A period total return is the weighted sum of asset returns."""
-        performance = Performance(
-            test_util.make_performance_df(
-                [(dt.date(2024, 1, 1), dt.date(2024, 1, 31))],
-                {
-                    "A": ([0.10], [0.60]),
-                    "B": ([-0.05], [0.40]),
-                },
-            )
-        )
-
-        contributions = performance.narrow_df[cols.CONTRIBUTION].sum()
-        self.assertTrue(math.isclose(contributions, 0.04, abs_tol=1e-12))
-        self.assertTrue(
-            math.isclose(
-                performance.period_totals()[cols.TOTAL_RETURN].item(),
-                contributions,
-                abs_tol=1e-12,
-            )
-        )
-
-    def test_long_short_fully_invested_portfolio_reconciles(self) -> None:
-        """Gross exposures above one reconcile when net weights equal one."""
-        performance = Performance(
-            test_util.make_performance_df(
-                [(dt.date(2024, 1, 1), dt.date(2024, 1, 31))],
-                {
-                    "Long": ([0.10], [1.20]),
-                    "Short": ([0.05], [-0.20]),
-                },
-            )
-        )
-
-        contributions = dict(
-            zip(
-                performance.narrow_df[cols.IDENTIFIER],
-                performance.narrow_df[cols.CONTRIBUTION],
-            )
-        )
-        self.assertTrue(math.isclose(contributions["Long"], 0.12, abs_tol=1e-12))
-        self.assertTrue(math.isclose(contributions["Short"], -0.01, abs_tol=1e-12))
-        self.assertTrue(
-            math.isclose(
-                performance.period_totals()[cols.TOTAL_RETURN].item(), 0.11, abs_tol=1e-12
-            )
-        )
-        performance.audit()
 
     def test_identical_portfolio_and_benchmark_have_zero_active_effects(self) -> None:
         """Identical inputs have no active return or attribution effects."""

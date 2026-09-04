@@ -1,7 +1,6 @@
 """Test focused utility functions."""
 
 # Python imports
-import datetime as dt
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,10 +16,6 @@ class TestUtilities(unittest.TestCase):
         """Float nearness respects the selected tolerance."""
         self.assertTrue(util.are_near(1.0000000000001, 1.0, util.Tolerance.HIGH))
         self.assertFalse(util.are_near(1.0001, 1.0, util.Tolerance.LOW))
-
-    def test_date_str(self) -> None:
-        """Date formatting uses the package's ISO-style format."""
-        self.assertEqual(util.date_str(dt.date(2023, 1, 5)), "2023-01-05")
 
     def test_file_basename_without_extension(self) -> None:
         """File basenames are extracted from strings and Path instances."""

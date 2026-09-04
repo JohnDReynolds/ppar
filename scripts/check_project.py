@@ -19,6 +19,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 _ACTIVE_DOCUMENTATION = (
     "README.md",
     "docs/methodology.md",
+    "docs/reports.md",
     "docs/python_api.md",
     "docs/maintenance.md",
 )

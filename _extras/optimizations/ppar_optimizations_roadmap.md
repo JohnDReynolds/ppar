@@ -1,9 +1,9 @@
 # ppar Optimization Roadmap
 
-Status: Complete; all implementation phases and the Phase 5 validation follow-up are
-complete  
+Status: Complete; all implementation phases, the Phase 5 validation follow-up, and
+the post-v0.3.1 reassessment are complete
 Assessment date: September 1, 2026
-Reassessment date: September 2, 2026
+Reassessment dates: September 2 and September 4, 2026
 
 Phase 0 benchmark implementation and baseline evidence are recorded in
 [`ppar_optimizations_phase_0_implementation.md`](ppar_optimizations_phase_0_implementation.md).
@@ -32,9 +32,11 @@ low-complexity changes. The work should preserve the complete selected report bu
 financial results, public output schemas, image quality, and existing correctness and
 release gates.
 
-This roadmap covers four code-level opportunities retained after reassessment:
+This roadmap covers four code-level opportunities retained after the original
+reassessment:
 
-1. Preserve Matplotlib's cache across runs.
+1. Preserve Matplotlib's cache across runs when the execution environment provides a
+   reusable writable cache location.
 2. Use Matplotlib's non-GUI Agg backend for PNG generation.
 3. Skip fixed-frequency consolidation when source and reporting periods already match
    exactly.
@@ -42,7 +44,8 @@ This roadmap covers four code-level opportunities retained after reassessment:
 
 The previously proposed weight-solver fast path remains documented below but is
 deferred. Its isolated upside does not justify financially sensitive solver changes
-under the requested simple 80/20 scope.
+under the requested simple 80/20 scope. The September 4 reassessment found no new
+broadly applicable code change that meets that scope.
 
 Phase 5 is a validation follow-up, not a fifth code optimization. It was added after
 Phases 3 and 4 demonstrated that the large-site ratio gate became sensitive to faster
@@ -132,12 +135,91 @@ below remain the durable record. These observations are not release gates:
 | Already-monthly workload, 121,260 rows per source | 0.212 seconds |
 | Bulk Axys/APX load, 40 accounts and 242,520 security rows | 0.448 seconds |
 
+## Post-v0.3.1 reassessment
+
+Assessment date: September 4, 2026
+
+The optimization roadmap was reassessed after ppar adopted `perfattr` as its sole
+source-neutral preparation and attribution engine. The assessment looked for new,
+simple changes capable of materially reducing complete workflow time. It changed no
+production code, financial tolerance, output, test, warning threshold, failure
+threshold, or release gate.
+
+Measurements used an explicitly writable persistent Matplotlib cache so a restricted
+assessment environment could reproduce ordinary warm-cache behavior. Unprofiled
+stage timings were used for elapsed observations; deterministic profiling was used
+only to rank call paths because its instrumentation materially increases absolute
+runtime. The observations below are informational and machine-specific:
+
+| Current v0.3.1 workload | Observed elapsed time |
+| --- | ---: |
+| Standard generic 11-report bundle, warm cache | approximately 1.34 seconds |
+| Standard Axys/APX 11-report bundle, warm cache | approximately 1.41 seconds |
+| Generic analytics and two attribution objects | approximately 0.22--0.23 seconds |
+| Genuine 25-year analytics and two attribution objects | approximately 0.47 seconds |
+| Generic rendering of seven selected PNG charts | approximately 0.64--0.75 seconds |
+| Genuine 25-year rendering of seven selected PNG charts | approximately 1.07 seconds |
+| Generic or long-history HTML serialization | approximately 0.002--0.006 seconds |
+| Risk-statistics construction and HTML serialization | approximately 0.010 seconds |
+
+The complete generic and Axys/APX bundle times remain close to the Phase 0 baselines.
+Chart import and rendering still dominate ordinary complete bundles. Preparation and
+calculation construction is now larger than the pre-`perfattr` Phase 0 observation:
+the generic workflow increased from approximately 0.07 seconds to 0.22--0.23 seconds,
+and the genuine long-history workflow increased from approximately 0.18 seconds to
+0.47 seconds. Profiling attributes that work primarily to the intended portable CSV
+validation, normalization, period preparation, consolidation, reconciliation, and
+attribution calculation rather than to one dominant ppar container conversion.
+
+A diagnostic 10x scale run passed all checks. The 1x and 10x large-site bundles both
+completed in approximately 1.18 seconds and were byte-for-byte equivalent. The
+selected workload measured approximately 0.35 seconds and 0.74 seconds. The
+long-history workload measured approximately 1.19 seconds and 1.88 seconds, a 1.582x
+ratio that reached the retained warning boundary but remained below the 1.65x failure
+boundary. No threshold was changed in response.
+
+### Reassessment decisions
+
+No new implementation phase is recommended:
+
+- **Keep Matplotlib cache reuse as the dominant operational optimization.** A fresh
+  or non-reusable cache still adds approximately nine seconds. The Phase 1 custom
+  cache-selection module was later retired, so current ppar relies on Matplotlib's
+  native cache behavior. Ordinary writable user environments retain the intended
+  benefit. Read-only homes, ephemeral containers, and restricted jobs should provide
+  a writable reusable `MPLCONFIGDIR`. Restore a small ppar fallback only if evidence
+  from supported deployments shows repeated cache reconstruction.
+- **Record the increased portable preparation cost without bypassing it.** Removing
+  validation, reconciliation, or production financial invariants is not an acceptable
+  optimization. A future `perfattr` prepared-input contract could be assessed if
+  calculation-only latency becomes a demonstrated product problem, but that would be
+  cross-package financial-core work rather than a simple ppar 80/20 change.
+- **Benchmark pair-oriented Axys classification loading only when real source scale
+  warrants it.** The current portfolio/benchmark helper loads supporting
+  classification data independently for each side before combining it. Loading once
+  for the union of identifiers could reduce security-master scans, but both selected
+  classifications together consumed only approximately 0.025 seconds in the measured
+  long-history workflow. The standard workload does not justify a new phase.
+- **Keep the weight-solver fast path deferred.** The long-history profile invoked the
+  solver hundreds of times, but its aggregate cost remained a small part of the
+  complete bundle. Its financial control-flow risk still outweighs the measured
+  end-to-end benefit.
+- **Reject a small pandas-to-Polars translation rewrite.** Replacing one grouped join
+  with a window expression roughly halved a small-frame microbenchmark, but saved only
+  about 10% in an artificial 6,063,000-row conversion and is not material after normal
+  source filtering. It does not meet the end-to-end 80/20 standard.
+
+The reassessment therefore preserves the original prioritization: deployment cache
+reuse can be transformative, while the remaining calculation and rendering costs do
+not have a broad, low-complexity shortcut that preserves every financial and report
+contract.
+
 ## Phase map
 
 | Phase | Change | Applies to | Expected result |
 | --- | --- | --- | --- |
 | 0 | Establish repeatable baselines | All workflows | Evidence and regression protection |
-| 1 | Persistent chart cache | Reports | Avoid about nine seconds on uncached runs |
+| 1 | Reusable chart cache | Reports | Avoid about nine seconds when cache state persists |
 | 2 | Agg backend | Reports | Approximately 8–15% faster bundles |
 | 3 | Skip no-op consolidation | Core analytics | About 46% faster measured workload |
 | 4 | Partition accounts once | Axys/APX bulk loading | 10–14% faster at 40 accounts |
@@ -493,12 +575,14 @@ The following findings do not currently meet the requested 80/20 standard:
 
 ## Recommended implementation order
 
-Proceed in phase order. Phases 1 and 2 are broad reporting improvements with little
-financial risk. Phase 3 is a narrowly guarded core shortcut. Phase 4 addresses bulk
-Axys/APX scalability without changing financial logic. Bulk-account use is expected,
-so Phase 4 is retained rather than treated as an optional site-specific improvement.
-The solver fast path is not included in this sequence.
+The retained phases were completed in order. No additional phase is recommended after
+the September 4 reassessment. Keep the solver fast path deferred and the rejected
+chart-quality tradeoffs rejected. Treat reusable Matplotlib cache configuration as a
+deployment check, and retain the pair-oriented Axys classification load and a possible
+portable prepared-input contract as evidence-triggered watchlist items rather than
+approved work.
 
-After each phase, record the implementation, test results, before-and-after timings,
-artifact comparisons, and any observed platform differences in a corresponding
-`ppar_optimizations_phase_<N>_implementation.md` file.
+If a future production workload supplies new evidence, establish a focused repeatable
+baseline before approving another phase. Record its implementation, test results,
+before-and-after timings, artifact comparisons, and platform differences without
+changing an existing gate merely because an observation regressed.

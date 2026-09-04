@@ -48,9 +48,6 @@ class AxysData:  # pylint: disable=too-few-public-methods,too-many-instance-attr
         self,
         base_directory: str | Path,
         values: Mapping[str, object],
-        *,
-        portfolio_performance_path: str | Path | None = None,
-        security_performance_path: str | Path | None = None,
     ) -> None:
         """Initialize Axys source configuration.
 
@@ -59,10 +56,6 @@ class AxysData:  # pylint: disable=too-few-public-methods,too-many-instance-attr
                 resolved.
             values: Source paths, source-column mappings, security-master
                 classification mappings, and security-identity settings.
-            portfolio_performance_path: Optional portfolio-performance CSV
-                path overriding ``values``.
-            security_performance_path: Optional security-performance CSV path
-                overriding ``values``.
         Raises:
             PparError: If the source values are invalid.
         """
@@ -75,10 +68,10 @@ class AxysData:  # pylint: disable=too-few-public-methods,too-many-instance-attr
         self._specification = specification
         self.source_values = self._specification.values
         self.portfolio_performance_path = self._specification.performance_path(
-            portfolio_performance_path, "portfolio_performance"
+            "portfolio_performance"
         )
         self.security_performance_path = self._specification.performance_path(
-            security_performance_path, "security_performance"
+            "security_performance"
         )
         self._classification_loader = AxysClassificationSourceLoader(
             self._specification,

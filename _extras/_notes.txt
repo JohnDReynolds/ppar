@@ -28,23 +28,20 @@ Then follow the directions that it shows you.
 Do you see any places in this project where the execution times could be substantially increased?
 I'm looking for simple 80/20 wins, not micro-optimizations or complicated re-factors.
 
+09/04: Finished implementation at _extras/optimizations/ppar_optimizations_roadmap.md
+
 #################### 2. Correctness (Extra High)
 Can you do a read-only review of this project for obvious bugs, especially mathematical or logic issues?
 
-Finished implementation at ../ppar-extras/correctness/ppar_correctness_roadmap.md
-
-Finished implementation at ../ppar-extras/optimizations/ppar_optimizations_roadmap.md
+09/04: Finished implementation at _extras/correctness/ppar_correctness_roadmap.md
 
 #################### 3. Cleanup (Extra High)
 Can you do a read-only review of the entire project for dead code, unnecessary backward-compatibility, inconsistencies, opportunities for simplification, opportunities for 80/20 refactoring, unsupported features, etc.
 Use the lenses of "less is more" and "keep it simple stupid".
 
-Finished implementation at ../ppar-extras/cleanup/ppar_cleanup_roadmap.md
+09/04: Finished implementation at _extras/cleanup/ppar_cleanup_roadmap.md
 
 #################### 4. User View (Extra High)
 Approach the project as a user.  Look at documentation, workflow, user API, outputs.  What would a user think?
 
-Finished implementation at ../ppar-extras/optimizations/ppar_optimizations_roadmap.md
-
-#################### 5. Code Preferences
-See AGENTS.md
+09/04: Finished implementation at _extras/optimizations/ppar_optimizations_roadmap.md

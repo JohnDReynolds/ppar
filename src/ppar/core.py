@@ -1,9 +1,9 @@
 """Coordinate analytics for portfolio and benchmark performance data.
 
 This module provides the Analytics class, which reads portfolio and benchmark
-Performance data, aligns both data sets to common subperiods, optionally
-consolidates those subperiods to the requested frequency, and exposes Attribution
-and RiskStatistics objects.
+performance data, aligns both data sets to common subperiods, optionally consolidates
+those subperiods to the requested frequency, and exposes Attribution and
+RiskStatistics results.
 """
 
 # Python Imports
@@ -18,14 +18,13 @@ import polars as pl
 from ppar.attribution import Attribution
 from ppar._perfattr_adapter import prepare_performance_sources, prepare_performances
 from ppar.frequency import Frequency, load_holidays
-from ppar.performance import Performance
 from ppar.risk import RiskStatistics
 import ppar.schema as cols
 from ppar.errors import PparError
 import ppar.utilities as util
 
 
-class AttributionSources(Protocol):  # pylint: disable=too-few-public-methods
+class _AttributionSources(Protocol):  # pylint: disable=too-few-public-methods
     """Describe bundled classification sources accepted by Analytics."""
 
     @property
@@ -49,8 +48,8 @@ class AttributionSources(Protocol):  # pylint: disable=too-few-public-methods
 class Analytics:  # pylint: disable=too-many-instance-attributes
     """Coordinate attribution and risk-statistics calculations.
 
-    Analytics validates and aligns portfolio and benchmark Performance data, then
-    consolidates that data to the requested reporting frequency. It acts as the
+    Analytics validates and aligns portfolio and benchmark performance data, then
+    consolidates that data to the requested reporting frequency. It is the primary
     public entry point for attribution and risk-statistics calculations.
     """
 
@@ -128,8 +127,7 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
         Raises:
             PparError: If either date cannot be converted, the portfolio and benchmark
                 do not share any valid subperiods, there are too few performance rows
-                for the calculated subperiods, or a nested Performance validation
-                raises ``PparError``.
+                for the calculated subperiods, or source validation fails.
         """
         portfolio_name = util.normalize_optional_string(portfolio_name, "portfolio_name")
         benchmark_name = util.normalize_optional_string(benchmark_name, "benchmark_name")
@@ -185,22 +183,6 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
             .iter_rows()
         ]
 
-    def audit(self) -> None:
-        """Audit the Analytics instance.
-
-        Audits the aligned portfolio and benchmark Performance objects. Each
-        Attribution audits itself when it is constructed.
-
-        Raises:
-            PparError: If the underlying Performance audit fails.
-        """
-        # Audit the portfolio/benchmark pair of performances.  These are the performances that
-        # were originally read in the constructor. Depending on their classifications, they may
-        # be different than the performances in the attributions.
-        Performance.audit_performances(
-            self._performances, self._from_date(), self._thru_date()
-        )
-
     def _from_date(self) -> dt.date:
         """Return the overall from date.
 
@@ -238,8 +220,8 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
             mapping_data_sources: Optional two-item sequence of mapping data sources
                 where item 0 maps the portfolio and item 1 maps the benchmark. Each
                 source can be a CSV file path or Polars DataFrame; use ``None`` when
-                a performance already uses the target
-                classification.
+                a performance already uses the target classification. Mapping sources
+                may use the static two-column or effective-dated four-column form.
             classification_label: Optional label displayed in tables and charts. If
                 supplied, this overrides the classification name for presentation.
 
@@ -253,6 +235,12 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
 
                 AAPL, IT
                 GOOG, CS
+
+            Effective-dated mapping data uses inclusive dates and four positional
+            columns::
+
+                2024-01-01, 2024-01-31, AAPL, IT
+                2024-02-01, 2024-12-31, AAPL, HC
 
         Returns:
             Attribution instance associated with ``classification_name``.
@@ -366,7 +354,7 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
 
     def attribution_for(
         self,
-        sources: AttributionSources,
+        sources: _AttributionSources,
         classification_label: str | None = None,
     ) -> Attribution:
         """Return an Attribution instance from a bundled source object.
@@ -394,13 +382,13 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
         )
 
     def risk_statistics(self) -> RiskStatistics:
-        """Return risk statistics for the aligned Performance objects.
+        """Return risk statistics for the aligned portfolio and benchmark data.
 
         Creates and caches a RiskStatistics instance on first use, then returns the
         cached instance on subsequent calls.
 
         Returns:
-            RiskStatistics instance for the portfolio and benchmark Performance data.
+            RiskStatistics instance for the portfolio and benchmark return data.
         """
         # Calculate the risk statistics if they are not already cached.
         if self._riskstatistics is None:

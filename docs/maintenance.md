@@ -43,7 +43,8 @@ retains its established timed gate. Add `--diagnostics` to also report fixture
 preparation, Python startup, and calculation-only timings as observation-only
 components.
 
-The attribution scenarios exercise the permanent `perfattr` calculation boundary.
+The attribution scenarios exercise the permanent `perfattr` preparation and
+calculation boundary. No source-neutral Polars fallback is retained in ppar.
 
 The release-candidate command composes both gates:
 

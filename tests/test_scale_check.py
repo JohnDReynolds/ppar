@@ -272,18 +272,18 @@ class TestScaleCheck(unittest.TestCase):
         self.assertEqual(periods["from_date"].item(0), dt.date(2021, 7, 1))
         self.assertEqual(periods["thru_date"].item(-1), dt.date(2046, 3, 30))
 
-    def test_reporting_alignment_materializes_each_source_period_list_once(self) -> None:
-        """Long-history alignment does not repeatedly collect complete source history."""
+    def test_reporting_workflow_uses_portable_pair_boundaries(self) -> None:
+        """Long-history alignment and later mapping each delegate once."""
         with tempfile.TemporaryDirectory() as directory:
             site, _, _ = check_scale._prepare_history(Path(directory) / "site")
             with mock.patch.object(
                 core_module,
-                "_period_tuples",
-                wraps=core_module._period_tuples,
-            ) as period_tuples:
+                "prepare_performances",
+                wraps=core_module.prepare_performances,
+            ) as prepare_performances:
                 check_scale._history_reporting_periods(site)
 
-        self.assertEqual(period_tuples.call_count, 2)
+        self.assertEqual(prepare_performances.call_count, 2)
 
 
 if __name__ == "__main__":

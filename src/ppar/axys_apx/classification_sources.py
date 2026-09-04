@@ -9,6 +9,10 @@ from typing import Any, Final, Literal, cast
 import polars as pl
 
 # Project imports
+from ppar._perfattr_adapter import (
+    normalize_classification_source,
+    normalize_mapping_source,
+)
 from ppar.axys_apx.column_aliases import resolve_column
 from ppar.axys_apx.security_identity import (
     SecurityIdConstruction,
@@ -145,9 +149,25 @@ class AxysClassificationSourceLoader:
             pl.col(source["identifier_column"]).alias(cols.IDENTIFIER),
             pl.col(source["name_column"]).alias(cols.NAME),
         )
-        return util._deduplicate_identifier_pairs(  # pylint: disable=protected-access
-            normalized,
-            f"Axys {source_type} {source_name!r} from {str(file_path)!r}",
+        source_description = (
+            f"Axys {source_type} {source_name!r} from {str(file_path)!r}"
+        )
+        portable = (
+            normalize_classification_source(
+                normalized,
+                source_description=source_description,
+            )
+            if source_type == "classification"
+            else normalize_mapping_source(
+                normalized,
+                source_description=source_description,
+            )
+        )
+        return pl.DataFrame(
+            {
+                cols.IDENTIFIER: portable.iloc[:, 0].to_numpy(),
+                cols.NAME: portable.iloc[:, 1].to_numpy(),
+            }
         )
 
     def _effective_source_definition(

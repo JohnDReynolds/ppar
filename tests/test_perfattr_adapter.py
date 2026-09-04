@@ -13,6 +13,7 @@ import polars as pl
 from polars.testing import assert_frame_equal
 
 from ppar import Analytics
+import ppar._perfattr_adapter as adapter_module
 import ppar.attribution as attribution_module
 from ppar.attribution import Attribution, View
 from ppar.frequency import Frequency
@@ -377,6 +378,21 @@ class TestPerfattrAdapter(unittest.TestCase):
             Analytics(performance).attribution()
 
         adapter.assert_called_once()
+
+    def test_analytics_preparation_uses_portable_boundary(self) -> None:
+        """Source loading and pair preparation invoke only portable composition."""
+        performance = test_util.make_performance_df(
+            ((dt.date(2024, 1, 1), dt.date(2024, 1, 31)),),
+            {"A": ([0.01], [1.0])},
+        )
+        with mock.patch.object(
+            adapter_module,
+            "prepare_attribution",
+            wraps=adapter_module.prepare_attribution,
+        ) as portable:
+            Analytics(performance)
+
+        self.assertEqual(portable.call_count, 3)
 
     def test_attribution_for_uses_portable_calculation(self) -> None:
         """Bundled classification sources use the permanent calculation path."""

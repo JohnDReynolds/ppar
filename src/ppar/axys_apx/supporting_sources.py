@@ -8,12 +8,12 @@ from dataclasses import dataclass
 import polars as pl
 
 # Project imports
+from ppar._perfattr_adapter import normalize_classification_source
 from ppar.axys_apx.classification_sources import AxysClassificationSourceLoader
 from ppar.axys_apx.portfolios import AxysPortfolio
 from ppar.axys_apx.specification import _AxysSpecification
 import ppar.schema as cols
 from ppar.errors import PparError
-import ppar.utilities as util
 
 
 @dataclass(frozen=True)
@@ -61,7 +61,7 @@ def combine_classification_sources(
             f"benchmark={benchmark_sources.classification_name!r}",
         )
 
-    classification_data_source = util._deduplicate_identifier_pairs(  # pylint: disable=protected-access
+    normalized_classification = normalize_classification_source(
         pl.concat(
             [
                 portfolio_sources.classification_data_source,
@@ -69,7 +69,17 @@ def combine_classification_sources(
             ],
             how="vertical",
         ),
-        "Combined Axys classification data",
+        source_description="Combined Axys classification data",
+    )
+    classification_data_source = pl.DataFrame(
+        {
+            cols.IDENTIFIER: normalized_classification[
+                "classification_identifier"
+            ].to_numpy(),
+            cols.NAME: normalized_classification[
+                "classification_name"
+            ].to_numpy(),
+        }
     )
     mapping_data_sources = _combine_mapping_sources(
         portfolio_sources,

@@ -32,9 +32,11 @@ Performance, classification, and mapping table inputs accept only a CSV path or 
 Polars DataFrame. Focused types and lower-level APIs live in `ppar.attribution`,
 `ppar.frequency`, `ppar.risk`, and `ppar.axys_apx`.
 
-Attribution uses the portable `perfattr` calculator. Prepared Polars rows cross one
-internal numerical boundary and return to ppar's established Polars, HTML, PNG, and
-CSV presentation path.
+Source-neutral validation, period alignment, classification mapping, frequency
+consolidation, and attribution calculations use `perfattr`. Polars rows cross one
+internal translation boundary and return to ppar's established Polars, HTML, PNG, and
+CSV presentation path. Vendor loading, risk analytics, and presentation remain in
+ppar.
 
 The adapter requests a `5e-9` reconciliation tolerance to match ppar's established
 eight-decimal input weight validation. This affects validation only and does not alter

@@ -6,11 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-# Third-party imports
-import polars as pl
-
 # Project imports
-from ppar.errors import PparError
 import ppar.utilities as util
 
 
@@ -21,18 +17,6 @@ class TestUtilities(unittest.TestCase):
         """Float nearness respects the selected tolerance."""
         self.assertTrue(util.are_near(1.0000000000001, 1.0, util.Tolerance.HIGH))
         self.assertFalse(util.are_near(1.0001, 1.0, util.Tolerance.LOW))
-
-    def test_carino_linking_coefficient_rejects_undefined_returns(self) -> None:
-        """Carino linking rejects returns at or below negative one."""
-        with self.assertRaises(PparError):
-            util.carino_linking_coefficient(-1.0, 0.03)
-
-        with self.assertRaises(PparError):
-            util.carino_linking_coefficient(0.05, -1.0)
-
-    def test_carino_linking_coefficient_valid(self) -> None:
-        """Valid Carino inputs return a floating-point coefficient."""
-        self.assertIsInstance(util.carino_linking_coefficient(0.05, 0.03), float)
 
     def test_date_str(self) -> None:
         """Date formatting uses the package's ISO-style format."""
@@ -84,30 +68,6 @@ class TestUtilities(unittest.TestCase):
         self.assertTrue(util.file_path_exists(performance_path))
         self.assertTrue(util.file_path_exists(classification_path))
 
-    def test_logarithmic_linking_coefficient_series(self) -> None:
-        """Paired Polars Series produce a result for each observation."""
-        result = util.logarithmic_linking_coefficient_series(
-            pl.Series([0.02, 0.03, 0.05]),
-            pl.Series([0.01, 0.02, 0.025]),
-        )
-
-        self.assertIsInstance(result, pl.Series)
-        self.assertEqual(result.len(), 3)
-
-    def test_logarithmic_linking_coefficients(self) -> None:
-        """One total return produces one coefficient per period return."""
-        result = util.logarithmic_linking_coefficients(
-            0.08,
-            pl.Series([0.01, 0.02, 0.03]),
-        )
-
-        self.assertIsInstance(result, pl.Series)
-        self.assertEqual(result.len(), 3)
-
-    def test_near_zero(self) -> None:
-        """Near-zero detection respects the selected tolerance."""
-        self.assertTrue(util.near_zero(0.0000000000001, util.Tolerance.HIGH))
-        self.assertFalse(util.near_zero(0.001, util.Tolerance.LOW))
 
 
 if __name__ == "__main__":

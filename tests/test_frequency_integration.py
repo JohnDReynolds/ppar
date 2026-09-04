@@ -5,16 +5,11 @@
 # pyright: reportPrivateUsage=false
 
 # Python Imports
-import calendar
 import datetime as dt
 from pathlib import Path
 import tempfile
 import unittest
-from unittest import mock
 import warnings
-
-# Third-Party Imports
-from polars.testing import assert_frame_equal
 
 # Test Imports
 from tests import helpers as test_util
@@ -23,14 +18,7 @@ from tests import helpers as test_util
 from ppar import Analytics
 from ppar.attribution import View
 import ppar.schema as cols
-from ppar.frequency import (
-    date_matches_frequency,
-    Frequency,
-    frequency_bucket,
-    frequency_bucket_end,
-    frequency_bucket_effective_end,
-    load_holidays,
-)
+from ppar.frequency import Frequency, load_holidays
 from ppar.performance import Performance
 from ppar.errors import PparError
 import ppar.utilities as util
@@ -40,128 +28,6 @@ _HOLIDAYS_PATH = test_util.HOLIDAYS_PATH
 
 class TestFrequencyIntegration(unittest.TestCase):
     """Verify fixture-based consolidation and date-window workflows."""
-
-    def test_fixed_frequency_endpoint_candidates_are_conservative(self) -> None:
-        """Calendar and weekend endpoints do not accept incomplete weekdays."""
-        cases = (
-            (dt.date(2022, 12, 30), Frequency.MONTHLY, True),
-            (dt.date(2023, 12, 29), Frequency.MONTHLY, True),
-            (dt.date(2023, 12, 28), Frequency.MONTHLY, False),
-            (dt.date(2023, 7, 28), Frequency.MONTHLY, False),
-            (dt.date(2023, 7, 29), Frequency.MONTHLY, False),
-            (dt.date(2024, 1, 31), Frequency.MONTHLY, True),
-            (dt.date(2024, 2, 29), Frequency.MONTHLY, True),
-            (dt.date(2021, 2, 26), Frequency.MONTHLY, True),
-            (dt.date(2022, 2, 25), Frequency.MONTHLY, False),
-            (dt.date(2024, 3, 28), Frequency.QUARTERLY, False),
-            (dt.date(2024, 3, 29), Frequency.QUARTERLY, True),
-            (dt.date(2023, 8, 31), Frequency.QUARTERLY, False),
-            (dt.date(2023, 9, 29), Frequency.QUARTERLY, True),
-            (dt.date(2022, 12, 30), Frequency.YEARLY, True),
-            (dt.date(2023, 12, 28), Frequency.YEARLY, False),
-        )
-
-        for date, frequency, expected in cases:
-            with self.subTest(date=date, frequency=frequency):
-                self.assertEqual(
-                    date_matches_frequency(date, frequency),
-                    expected,
-                )
-        good_friday = frozenset((dt.date(2024, 3, 29),))
-        self.assertFalse(
-            date_matches_frequency(
-                dt.date(2024, 3, 29),
-                Frequency.QUARTERLY,
-                good_friday,
-            )
-        )
-        self.assertTrue(
-            date_matches_frequency(
-                dt.date(2024, 3, 28),
-                Frequency.QUARTERLY,
-                good_friday,
-            )
-        )
-
-    def test_frequency_bucket_end_remains_the_nominal_calendar_boundary(self) -> None:
-        """Bucket metadata retains its calendar boundary."""
-        for date, frequency, expected_end in (
-            (
-                dt.date(2023, 12, 29),
-                Frequency.MONTHLY,
-                dt.date(2023, 12, 31),
-            ),
-            (
-                dt.date(2023, 9, 29),
-                Frequency.QUARTERLY,
-                dt.date(2023, 9, 30),
-            ),
-            (
-                dt.date(2022, 12, 30),
-                Frequency.YEARLY,
-                dt.date(2022, 12, 31),
-            ),
-        ):
-            with self.subTest(date=date, frequency=frequency):
-                self.assertEqual(
-                    frequency_bucket_end(
-                        frequency_bucket(date, frequency),
-                        frequency,
-                    ),
-                    expected_end,
-                )
-
-    def test_effective_end_rolls_over_weekends_and_consecutive_holidays(
-        self,
-    ) -> None:
-        """Configured closures roll backward until a usable weekday is found."""
-        cases = (
-            (
-                dt.date(2023, 7, 31),
-                Frequency.MONTHLY,
-                frozenset((dt.date(2023, 7, 31),)),
-                dt.date(2023, 7, 28),
-            ),
-            (
-                dt.date(2024, 3, 31),
-                Frequency.QUARTERLY,
-                frozenset((dt.date(2024, 3, 29),)),
-                dt.date(2024, 3, 28),
-            ),
-            (
-                dt.date(2023, 12, 31),
-                Frequency.YEARLY,
-                frozenset(
-                    (
-                        dt.date(2023, 12, 28),
-                        dt.date(2023, 12, 29),
-                    )
-                ),
-                dt.date(2023, 12, 27),
-            ),
-        )
-
-        for nominal_end, frequency, holidays, expected_end in cases:
-            with self.subTest(
-                nominal_end=nominal_end,
-                frequency=frequency,
-            ):
-                bucket = frequency_bucket(nominal_end, frequency)
-                self.assertEqual(
-                    frequency_bucket_effective_end(
-                        bucket,
-                        frequency,
-                        holidays,
-                    ),
-                    expected_end,
-                )
-                self.assertTrue(
-                    date_matches_frequency(
-                        expected_end,
-                        frequency,
-                        holidays,
-                    )
-                )
 
     def test_crazy_frequency(self) -> None:
         """Incompatible irregular intervals require an explicit fixed frequency."""
@@ -200,54 +66,6 @@ class TestFrequencyIntegration(unittest.TestCase):
             util.are_near(detail[cols.SELECTION_EFFECT_SMOOTHED].item(14), 0.0015709213702753996)
         )
 
-    def test_exact_fixed_frequency_periods_skip_consolidation(self) -> None:
-        """Exact monthly and quarterly inputs retain their validated source rows."""
-        cases = (
-            (
-                Frequency.MONTHLY,
-                (
-                    (dt.date(2024, 1, 1), dt.date(2024, 1, 31)),
-                    (dt.date(2024, 2, 1), dt.date(2024, 2, 29)),
-                ),
-            ),
-            (
-                Frequency.QUARTERLY,
-                (
-                    (dt.date(2024, 1, 1), dt.date(2024, 3, 31)),
-                    (dt.date(2024, 4, 1), dt.date(2024, 6, 30)),
-                ),
-            ),
-        )
-        for frequency, periods in cases:
-            with self.subTest(frequency=frequency), mock.patch.object(
-                Analytics,
-                "_consolidate_subperiods",
-                side_effect=AssertionError("exact periods must not be consolidated"),
-            ):
-                performance = test_util.make_performance_df(
-                    periods,
-                    {
-                        "Equity": ([0.02, 0.01], [0.60, 0.55]),
-                        "Fixed Income": ([0.01, 0.03], [0.40, 0.45]),
-                    },
-                )
-                analytics = Analytics(
-                    performance,
-                    performance.clone(),
-                    portfolio_classification_name="Asset Class",
-                    benchmark_classification_name="Asset Class",
-                    frequency=frequency,
-                )
-
-                analytics.audit()
-                analytics.attribution("Asset Class")
-                self.assertTrue(
-                    all(
-                        not item.subperiods_have_been_consolidated
-                        for item in analytics._performances
-                    )
-                )
-
     def test_nonmatching_fixed_frequency_periods_still_consolidate(self) -> None:
         """Complete source partitions that differ from output periods use consolidation."""
         performance = test_util.make_performance_df(
@@ -268,88 +86,9 @@ class TestFrequencyIntegration(unittest.TestCase):
             frequency=Frequency.MONTHLY,
         )
 
-        self.assertTrue(
-            all(item.subperiods_have_been_consolidated for item in analytics._performances)
-        )
         self.assertEqual(
             analytics.attribution().to_polars(View.SUBPERIOD_SUMMARY).height,
             2,
-        )
-
-    def test_exact_period_shortcut_matches_the_consolidation_path(self) -> None:
-        """All public financial tables and audits match the former fixed-frequency path."""
-        periods = tuple(
-            (
-                dt.date(2024, month, 1),
-                dt.date(2024, month, calendar.monthrange(2024, month)[1]),
-            )
-            for month in range(1, 13)
-        )
-        portfolio = test_util.make_performance_df(
-            periods,
-            {
-                "Equity": (
-                    [0.02, -0.01, 0.03, 0.01, -0.02, 0.04] * 2,
-                    [0.60, 0.55, 0.65, 0.50, 0.70, 0.60] * 2,
-                ),
-                "Fixed Income": (
-                    [0.01, 0.02, -0.01, 0.03, 0.01, -0.02] * 2,
-                    [0.40, 0.45, 0.35, 0.50, 0.30, 0.40] * 2,
-                ),
-            },
-        )
-        benchmark = test_util.make_performance_df(
-            periods,
-            {
-                "Equity": (
-                    [0.01, -0.005, 0.02, 0.015, -0.01, 0.03] * 2,
-                    [0.50] * 12,
-                ),
-                "Fixed Income": (
-                    [0.005, 0.015, 0.00, 0.02, 0.005, -0.01] * 2,
-                    [0.50] * 12,
-                ),
-            },
-        )
-        optimized = Analytics(
-            portfolio,
-            benchmark,
-            portfolio_classification_name="Asset Class",
-            benchmark_classification_name="Asset Class",
-            frequency=Frequency.MONTHLY,
-        )
-        with mock.patch.object(
-            Analytics,
-            "_source_periods_match_reporting_periods",
-            return_value=False,
-        ):
-            consolidated = Analytics(
-                portfolio,
-                benchmark,
-                portfolio_classification_name="Asset Class",
-                benchmark_classification_name="Asset Class",
-                frequency=Frequency.MONTHLY,
-            )
-
-        optimized.audit()
-        consolidated.audit()
-        optimized_attribution = optimized.attribution("Asset Class")
-        consolidated_attribution = consolidated.attribution("Asset Class")
-        for view in View:
-            with self.subTest(view=view):
-                assert_frame_equal(
-                    optimized_attribution.to_polars(view),
-                    consolidated_attribution.to_polars(view),
-                    check_exact=False,
-                    rel_tol=1e-12,
-                    abs_tol=1e-12,
-                )
-        assert_frame_equal(
-            optimized.risk_statistics().to_polars(),
-            consolidated.risk_statistics().to_polars(),
-            check_exact=False,
-            rel_tol=1e-12,
-            abs_tol=1e-12,
         )
 
     def test_daily_to_quarterly(self) -> None:

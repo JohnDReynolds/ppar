@@ -108,7 +108,7 @@ class TestRiskStatisticsValidation(unittest.TestCase):
         self.assertFalse(risk_statistics.to_polars().is_empty())
 
     def test_performance_total_return_at_negative_one_is_rejected(self) -> None:
-        """Performance-backed risk inputs obey the same compounding boundary."""
+        """Portable preparation rejects an undefined wealth relative at entry."""
         source = pl.DataFrame(
             {
                 cols.FROM_DATE: [dt.date(2024, 1, 1), dt.date(2024, 2, 1)],
@@ -118,13 +118,8 @@ class TestRiskStatisticsValidation(unittest.TestCase):
                 cols.WEIGHT: [1.0, 1.0],
             }
         )
-        performance = Performance(source)
-
-        with self.assertRaisesRegex(PparError, "exceed -100%"):
-            RiskStatistics(
-                (performance, performance.copy()),
-                Frequency.MONTHLY,
-            )
+        with self.assertRaisesRegex(PparError, "greater than -1.0"):
+            Performance(source)
 
     def test_derived_return_below_negative_one_cannot_be_annualized(self) -> None:
         """A valid regression cannot publish an invalid compounded alpha."""

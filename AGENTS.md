@@ -21,6 +21,23 @@ Apply these conventions when modifying or creating code in this project.
 - Keep code free of `pylint` and `pyright` errors. Evaluate warnings case by case.
 - Prefer small, behavior-preserving changes unless a broader refactor has clear value.
 
+## Portable Preparation Boundary
+
+- Treat `perfattr` as the sole authority for source-neutral performance validation,
+  canonical CSV loading, portfolio selection from normalized frames, calendar and
+  period alignment, classification mapping, frequency consolidation, and attribution
+  calculations.
+- Keep all Polars/pandas translation in `src/ppar/_perfattr_adapter.py`. Do not add a
+  permanent local fallback or another implementation of a portable algorithm.
+- Keep vendor-specific parsing, portfolio accounting, source-level predicate pushdown,
+  security-identity construction, holiday-file loading, Polars-facing compatibility
+  objects, risk, reports, and presentation in `ppar`.
+- Preserve ppar's public APIs, output schemas, warnings, null placement, deterministic
+  ordering, and presentation precision at the adapter boundary.
+- Require `1e-12` relative and absolute numerical parity across the adapter, together
+  with identical reconciliation outcomes. Do not require bit-for-bit floating-point
+  identity.
+
 ## Test-Gate Integrity
 
 - Never raise, relax, disable, or bypass a test, benchmark, warning threshold, failure

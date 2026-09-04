@@ -12,7 +12,6 @@ from ppar.attribution import Chart, View
 from ppar.classification import Classification
 import ppar.schema as cols
 from ppar.errors import PparError
-from ppar.mapping import Mapping
 from ppar.performance import Performance
 
 
@@ -164,110 +163,7 @@ class ClassificationTests(unittest.TestCase):
 
 
 class MappingTests(unittest.TestCase):
-    """Verify the direct mapping contract and mapped attribution result."""
-
-    def test_mapping_rolls_multiple_items_to_same_target(self) -> None:
-        """Several source identifiers may roll up to one target identifier."""
-        mapping = Mapping(("A", "B"), _pairs({"A": "TECH", "B": "TECH"}))
-
-        self.assertEqual(dict(mapping.to_froms), {"TECH": ["A", "B"]})
-
-    def test_mapping_keeps_unmapped_item_at_its_own_identifier(self) -> None:
-        """An unmapped identifier remains a standalone mapped group."""
-        mapping = Mapping(("A", "B"), _pairs({"A": "TECH"}))
-
-        self.assertEqual(
-            dict(mapping.to_froms),
-            {"TECH": ["A"], "B": ["B"]},
-        )
-
-    def test_mapping_filters_unused_source_items(self) -> None:
-        """Mappings for identifiers outside the source performance are discarded."""
-        mapping = Mapping(
-            ("A", "B"),
-            _pairs({"A": "TECH", "B": "FIN", "C": "OTHER"}),
-        )
-
-        self.assertEqual(
-            dict(mapping.to_froms),
-            {"TECH": ["A"], "FIN": ["B"]},
-        )
-
-    def test_mapping_accepts_exact_duplicate_pairs(self) -> None:
-        """Exact duplicate mapping rows collapse to one source-to-target pair."""
-        mapping = Mapping(
-            ("A",),
-            pl.DataFrame({"from": ["A", "A"], "to": ["TECH", "TECH"]}),
-        )
-
-        self.assertEqual(dict(mapping.to_froms), {"TECH": ["A"]})
-
-    def test_mapping_rejects_conflicts_for_dataframe_and_csv(self) -> None:
-        """Conflicting destinations fail identically for Polars and CSV sources."""
-        source = pl.DataFrame(
-            {"from": ["A", "A"], "to": ["TECH", "HEALTH"]}
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "mapping.csv"
-            source.write_csv(path, include_header=False)
-            for data_source in (source, source.reverse(), path):
-                with self.subTest(source_type=type(data_source).__name__):
-                    with self.assertRaisesRegex(PparError, "conflicting values.*A"):
-                        Mapping(("A",), data_source)
-
-    def test_mapping_rejects_blank_source_and_destination_identities(self) -> None:
-        """Mapping identifiers must contain non-whitespace text before filtering."""
-        for invalid_value in (None, "", " "):
-            for invalid_column in ("from", "to"):
-                values = {
-                    "from": [invalid_value if invalid_column == "from" else "A"],
-                    "to": [invalid_value if invalid_column == "to" else "TECH"],
-                }
-                source = pl.DataFrame(values)
-                with tempfile.TemporaryDirectory() as tmp:
-                    path = Path(tmp) / "mapping.csv"
-                    source.write_csv(path, include_header=False)
-                    for data_source in (source, path):
-                        with self.subTest(
-                            invalid_value=invalid_value,
-                            invalid_column=invalid_column,
-                            source_type=type(data_source).__name__,
-                        ):
-                            with self.assertRaises(PparError) as context:
-                                Mapping(("A",), data_source)
-
-                            self.assertIn("Mapping data", str(context.exception))
-                            self.assertIn(
-                                "non-null and nonblank",
-                                str(context.exception),
-                            )
-                            self.assertEqual(
-                                context.exception.context.get("field"),
-                                cols.FROM_TO_COLUMNS[
-                                    0 if invalid_column == "from" else 1
-                                ],
-                            )
-
-    def test_mapping_trims_surrounding_whitespace(self) -> None:
-        """Mapping source and destination identities are normalized consistently."""
-        source = pl.DataFrame({"from": [" A "], "to": [" TECH "]})
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "mapping.csv"
-            source.write_csv(path, include_header=False)
-            for data_source in (source, path):
-                with self.subTest(source_type=type(data_source).__name__):
-                    mapping = Mapping(("A",), data_source)
-
-                    self.assertEqual(mapping.to_froms, {"TECH": ["A"]})
-
-    def test_mapping_rejects_conflicts_created_by_trimming(self) -> None:
-        """Normalization cannot silently choose between conflicting targets."""
-        source = pl.DataFrame(
-            {"from": ["A", " A "], "to": ["TECH", "HEALTH"]}
-        )
-
-        with self.assertRaisesRegex(PparError, "conflicting values.*A"):
-            Mapping(("A",), source)
+    """Verify portable mapping through ppar's public attribution workflow."""
 
     def test_classification_trims_surrounding_whitespace(self) -> None:
         """Classification identifiers and display names are normalized together."""
@@ -299,33 +195,6 @@ class MappingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PparError, "conflicting values.*A"):
             Classification("Security", source, (performance, performance))
-
-    def test_mapping_preserves_internal_identifier_spaces(self) -> None:
-        """Mapping identities may contain meaningful internal spaces."""
-        mapping = Mapping(
-            ("Alpha Holding",),
-            pl.DataFrame(
-                {
-                    "from": ["Alpha Holding"],
-                    "to": ["Core Strategy"],
-                }
-            ),
-        )
-
-        self.assertEqual(mapping.to_froms, {"Core Strategy": ["Alpha Holding"]})
-
-    def test_mapping_dictionary_is_a_defensive_copy(self) -> None:
-        """Mutating a returned reverse mapping cannot alter stored mappings."""
-        mapping = Mapping(("A", "B"), _pairs({"A": "TECH", "B": "TECH"}))
-        returned = mapping.to_froms
-        returned["TECH"].append("CHANGED")
-
-        self.assertEqual(dict(mapping.to_froms), {"TECH": ["A", "B"]})
-
-    def test_one_column_mapping_source_is_rejected(self) -> None:
-        """Mapping sources must supply both from and to identifier columns."""
-        with self.assertRaises(PparError):
-            Mapping(("A", "B"), pl.DataFrame({"from": ["A", "B"]}))
 
     def test_mapped_attribution_rollup_preserves_portfolio_contribution(self) -> None:
         """Mapped attribution totals retain underlying portfolio contribution."""

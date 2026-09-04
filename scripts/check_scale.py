@@ -18,16 +18,15 @@ from typing import cast
 
 import polars as pl
 from polars.testing import assert_frame_equal
+from perfattr.frequency import (
+    _frequency_bucket,
+    _frequency_bucket_effective_end,
+)
 
 from ppar import Analytics
 from ppar.attribution import Attribution, View
 from ppar.axys_apx import AxysData
-from ppar.frequency import (
-    Frequency,
-    frequency_bucket,
-    frequency_bucket_effective_end,
-    load_holidays,
-)
+from ppar.frequency import Frequency, load_holidays
 import ppar.schema as cols
 
 
@@ -199,14 +198,14 @@ def _monthly_history_periods(
     if count < 1:
         raise ValueError("History period count must be positive.")
 
-    first_bucket = frequency_bucket(first_from_date, Frequency.MONTHLY)
+    first_bucket = _frequency_bucket(first_from_date, Frequency.MONTHLY)
     from_date = first_from_date
     periods: list[tuple[dt.date, dt.date]] = []
     for offset in range(count):
-        thru_date = frequency_bucket_effective_end(
+        thru_date = _frequency_bucket_effective_end(
             first_bucket + offset,
             Frequency.MONTHLY,
-            holidays,
+            frozenset(holidays),
         )
         if thru_date < from_date:
             raise RuntimeError(

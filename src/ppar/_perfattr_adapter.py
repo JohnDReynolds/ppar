@@ -1,18 +1,37 @@
-"""Adapt prepared ppar attribution rows to the portable pandas calculator."""
+"""Translate between ppar host objects and the sole portable perfattr engine."""
 
-from collections.abc import Mapping, Sequence
+from __future__ import annotations
+
+from collections.abc import Collection, Mapping, Sequence
+import datetime as dt
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 import polars as pl
-from perfattr import AttributionError, AttributionResult, calculate_attribution
+from perfattr import (
+    AttributionError,
+    AttributionResult,
+    Frequency as PortableFrequency,
+    PreparationError,
+    calculate_attribution,
+    normalize_classification,
+    normalize_mapping,
+    prepare_attribution,
+    read_classification_csv,
+    read_mapping_csv,
+    read_performance_csv,
+)
 
 from ppar._attribution_result import (
     AttributionCalculationResult,
     overall_summary_from_periods,
 )
 from ppar.errors import PparError
-from ppar.performance import Performance
 import ppar.schema as cols
+
+if TYPE_CHECKING:
+    from ppar.performance import Performance
 
 
 _INPUT_COLUMNS = (
@@ -25,6 +44,15 @@ _INPUT_COLUMNS = (
     cols.QUANTITY_OF_DAYS,
 )
 _PPAR_RECONCILIATION_TOLERANCE = 5e-9
+_PPAR_PERFORMANCE_COLUMNS = (
+    *cols.DATE_COLUMNS,
+    cols.QUANTITY_OF_DAYS,
+    cols.TOTAL_RETURN,
+    cols.IDENTIFIER,
+    cols.RETURN,
+    cols.WEIGHT,
+    cols.CONTRIBUTION,
+)
 
 _PERIOD_DETAIL_COLUMNS = (
     *cols.DATE_COLUMNS,
@@ -104,6 +132,285 @@ def _to_portable_input(performance: Performance) -> pd.DataFrame:
         # materializing every column as a Python list.
         {column: rows[column].to_numpy() for column in rows.columns}
     )
+
+
+def _polars_to_pandas(frame: pl.DataFrame) -> pd.DataFrame:
+    """Translate a Polars frame columnarly without requiring PyArrow."""
+    return pd.DataFrame(
+        {column: frame[column].to_numpy() for column in frame.columns}
+    )
+
+
+def _prepared_to_polars(frame: pd.DataFrame) -> pl.DataFrame:
+    """Translate prepared rows and restore ppar's repeated total-return column."""
+    renamed = frame.rename(columns={"quantity_of_days": cols.QUANTITY_OF_DAYS})
+    translated = pl.DataFrame(
+        {column: renamed[column].to_numpy(copy=False) for column in renamed.columns}
+    ).with_columns(
+        pl.col(cols.DATE_COLUMNS).cast(pl.Date),
+        pl.col(cols.QUANTITY_OF_DAYS).cast(pl.Int64),
+    )
+    totals = translated.group_by(cols.DATE_COLUMNS).agg(
+        pl.col(cols.CONTRIBUTION).sum().alias(cols.TOTAL_RETURN)
+    )
+    return (
+        translated.join(totals, on=cols.DATE_COLUMNS, validate="m:1")
+        .select(_PPAR_PERFORMANCE_COLUMNS)
+        .sort([cols.THRU_DATE, cols.IDENTIFIER])
+    )
+
+
+def _portable_frequency(frequency: object) -> PortableFrequency:
+    """Translate ppar's compatibility enum value to the portable enum."""
+    value = getattr(frequency, "value", frequency)
+    try:
+        return PortableFrequency(value)
+    except ValueError as error:
+        raise PparError(f"Unsupported reporting frequency: {value!r}.") from error
+
+
+def _translate_preparation_error(error: Exception) -> PparError:
+    """Preserve ppar's public error type at the portable boundary."""
+    return PparError(f"perfattr preparation failed: {error}")
+
+
+def _translate_identity_error(
+    error: Exception,
+    source: str,
+    source_kind: str = "performance",
+) -> PparError:
+    """Preserve established ppar identity and conflict diagnostics."""
+    message = str(error)
+    if "multiple classifications" in message or "multiple names" in message:
+        return PparError(
+            f"{source} has conflicting values for the same identifier: {message}"
+        )
+    if "empty string" in message or "non-null strings" in message:
+        if source_kind == "mapping":
+            field = "to" if "classification_identifier" in message else "from"
+        elif source_kind == "classification":
+            field = (
+                cols.CLASSIFICATION_NAME
+                if "classification_name" in message
+                else cols.CLASSIFICATION_IDENTIFIER
+            )
+        else:
+            field = cols.IDENTIFIER
+        return PparError(
+            f"{source} identity field {field!r} must be non-null and nonblank "
+            f"after surrounding whitespace is removed. {message}",
+            context={"boundary": source, "field": field},
+        )
+    return _translate_preparation_error(error)
+
+
+def load_performance_source(
+    data_source: str | Path | pl.DataFrame,
+    *,
+    from_date: dt.date | None,
+    thru_date: dt.date | None,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Load and prepare one canonical ppar performance source through perfattr.
+
+    The second return value contains optional identifier/name metadata retained by
+    the host presentation layer. Numerical normalization and validation belong to
+    ``perfattr``.
+    """
+    try:
+        if isinstance(data_source, str | Path):
+            source = read_performance_csv(
+                data_source,
+                reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
+            )
+        elif isinstance(data_source, pl.DataFrame):
+            source_frame = data_source.clone()
+            required = (*cols.DATE_COLUMNS, cols.IDENTIFIER, cols.RETURN, cols.WEIGHT)
+            missing = [column for column in required if column not in source_frame.columns]
+            if missing:
+                raise PparError(f"Missing required performance columns {missing}.")
+            selected = [*required]
+            selected.extend(
+                column
+                for column in (cols.CONTRIBUTION, cols.NAME)
+                if column in source_frame.columns
+            )
+            try:
+                source_frame = source_frame.select(selected).with_columns(
+                    pl.col(cols.DATE_COLUMNS).cast(pl.Date),
+                    pl.col((cols.WEIGHT, cols.RETURN)).cast(pl.Float64),
+                    pl.col(cols.IDENTIFIER).cast(pl.String),
+                )
+                if cols.CONTRIBUTION in source_frame.columns:
+                    source_frame = source_frame.with_columns(
+                        pl.col(cols.CONTRIBUTION).cast(pl.Float64)
+                    )
+                if cols.NAME in source_frame.columns:
+                    source_frame = source_frame.with_columns(
+                        pl.col(cols.NAME).cast(pl.String).str.strip_chars()
+                    )
+            except pl.exceptions.PolarsError as error:
+                raise PparError(f"Cannot normalize performance columns: {error}") from error
+            source = _polars_to_pandas(source_frame)
+        else:
+            raise PparError(
+                "Performance data source must be a CSV path or Polars DataFrame."
+            )
+
+        names = pl.DataFrame()
+        if "name" in source.columns:
+            named = source.loc[:, ["thru_date", "identifier", "name"]].copy(deep=True)
+            named["identifier"] = named["identifier"].astype("string").str.strip()
+            named["name"] = named["name"].astype("string").str.strip()
+            named = named.sort_values(
+                ["thru_date", "identifier"], kind="stable"
+            ).drop_duplicates("identifier", keep="last")
+            names = pl.DataFrame(
+                {
+                    cols.CLASSIFICATION_IDENTIFIER: named["identifier"].to_numpy(),
+                    cols.CLASSIFICATION_NAME: named["name"].to_numpy(),
+                }
+            )
+
+        prepared = prepare_attribution(
+            source,
+            source,
+            from_date=from_date,
+            thru_date=thru_date,
+            reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
+        )
+        return _prepared_to_polars(prepared.portfolio), names
+    except (PreparationError, TypeError, ValueError) as error:
+        raise _translate_identity_error(error, "Performance") from error
+
+
+def normalize_mapping_source(
+    data_source: str | Path | pl.DataFrame,
+    *,
+    source_description: str = "Mapping data",
+) -> pd.DataFrame:
+    """Normalize a host mapping through the public portable boundary."""
+    try:
+        if isinstance(data_source, str | Path):
+            return read_mapping_csv(data_source)
+        if not isinstance(data_source, pl.DataFrame):
+            raise PparError("Mapping data must be a CSV path or Polars DataFrame.")
+        if len(data_source.columns) != 2:
+            raise PparError("Mapping data must contain exactly two columns.")
+        frame = _polars_to_pandas(data_source)
+        frame.columns = ["identifier", "classification_identifier"]
+        for column in frame.columns:
+            frame[column] = frame[column].astype("string").astype(object)
+        return normalize_mapping(frame)
+    except (PreparationError, TypeError, ValueError) as error:
+        raise _translate_identity_error(error, source_description, "mapping") from error
+
+
+def normalize_classification_source(
+    data_source: str | Path | pl.DataFrame,
+    *,
+    source_description: str = "Classification data",
+) -> pd.DataFrame:
+    """Normalize host display metadata through the public portable boundary."""
+    try:
+        if isinstance(data_source, str | Path):
+            return read_classification_csv(data_source)
+        if not isinstance(data_source, pl.DataFrame):
+            raise PparError(
+                "Classification data must be a CSV path or Polars DataFrame."
+            )
+        if len(data_source.columns) != 2:
+            raise PparError("Classification data must contain exactly two columns.")
+        frame = _polars_to_pandas(data_source)
+        frame.columns = ["classification_identifier", "classification_name"]
+        for column in frame.columns:
+            frame[column] = frame[column].astype("string").astype(object)
+        return normalize_classification(frame)
+    except (PreparationError, TypeError, ValueError) as error:
+        raise _translate_identity_error(
+            error, source_description, "classification"
+        ) from error
+
+
+def prepare_performances(
+    performances: Sequence[Performance],
+    *,
+    frequency: object,
+    holidays: Collection[dt.date],
+    mapping_data_sources: Sequence[str | Path | pl.DataFrame | None] = (None, None),
+    classification_name: str | None = None,
+) -> tuple[Performance, Performance]:
+    """Prepare, align, map, and consolidate a ppar pair solely through perfattr."""
+    portfolio, benchmark = performances
+    mapping_sources = tuple(mapping_data_sources)
+    if len(mapping_sources) != 2:
+        raise PparError("mapping_data_sources must contain exactly two items.")
+    mappings = tuple(
+        None if source is None else normalize_mapping_source(source)
+        for source in mapping_sources
+    )
+    try:
+        prepared = prepare_attribution(
+            _to_portable_input(portfolio),
+            _to_portable_input(benchmark),
+            frequency=_portable_frequency(frequency),
+            holidays=holidays,
+            portfolio_mapping=mappings[0],
+            benchmark_mapping=mappings[1],
+            reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
+        )
+    except (PreparationError, TypeError, ValueError) as error:
+        raise _translate_preparation_error(error) from error
+
+    results: list[Performance] = []
+    for source, frame in zip(
+        performances,
+        (prepared.portfolio, prepared.benchmark),
+        strict=True,
+    ):
+        result = source.copy()
+        translated = _prepared_to_polars(frame)
+        result._replace_calculated_rows(  # pylint: disable=protected-access
+            translated,
+            sort_rows=False,
+        )
+        if classification_name is not None:
+            result.classification_name = classification_name
+        results.append(result)
+    return results[0], results[1]
+
+
+def overall_performance(performance: Performance) -> pl.DataFrame:
+    """Return ppar-compatible overall rows calculated by the portable core."""
+    try:
+        result = calculate_attribution(
+            _to_portable_input(performance),
+            _to_portable_input(performance),
+            reconciliation_tolerance=_PPAR_RECONCILIATION_TOLERANCE,
+        )
+    except AttributionError as error:
+        raise PparError(f"perfattr calculation failed: {error}") from error
+
+    detail = result.overall_detail.rename(
+        columns={
+            "portfolio_weight": "weight",
+            "portfolio_return": "return",
+            "linked_portfolio_contribution": "contribution",
+        }
+    ).loc[
+        :,
+        [
+            "from_date",
+            "thru_date",
+            "identifier",
+            "weight",
+            "return",
+            "contribution",
+        ],
+    ]
+    detail["quantity_of_days"] = int(
+        performance.period_totals()[cols.QUANTITY_OF_DAYS].sum()
+    )
+    return _prepared_to_polars(detail)
 
 
 def _to_polars(

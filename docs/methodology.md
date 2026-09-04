@@ -1,8 +1,9 @@
 # Methodology
 
-ppar calculates benchmark-relative portfolio performance from security-period rows.
-It validates dates, weights, returns, and classifications, then checks that calculated
-contributions and portfolio totals reconcile.
+ppar presents benchmark-relative portfolio analytics from security-period rows. Its
+portable `perfattr` dependency validates and prepares source-neutral dates, weights,
+returns, contributions, periods, and classifications, then performs attribution and
+the associated reconciliation checks.
 
 ## Contribution and attribution
 

@@ -12,6 +12,7 @@ from typing import Sequence
 import polars as pl
 
 # Project Imports
+from ppar._perfattr_adapter import normalize_classification_source
 import ppar.schema as cols
 from ppar.performance import Performance
 import ppar.utilities as util
@@ -67,9 +68,9 @@ class Classification:
                 IT, Information Technology
 
         Raises:
-            PparError: Propagated from ``util.load_datasource`` if
-                ``data_source`` is a missing file path or does not contain
-                exactly two columns.
+            PparError: Propagated from the portable adapter if ``data_source`` is a
+                missing file path, malformed, or contains invalid or conflicting
+                identities.
             TypeError: If ``data_source`` is supplied and ``performances`` is
                 ``None``.
         """
@@ -90,13 +91,19 @@ class Classification:
             needed_items = list(
                 set(performances[0].identifiers) | set(performances[1].identifiers)
             )  # unique list of the union of portfolio and benchmark
-            self._df = util.load_datasource(
-                data_source,
-                column_names=cols.CLASSIFICATION_COLUMNS,
-                needed_items=needed_items,
-                error_message="Classification data must contain exactly two columns.",
-                source_description="Classification data",
-                identity_column_indices=(0, 1),
+            normalized = normalize_classification_source(data_source)
+            normalized = normalized.loc[
+                normalized["classification_identifier"].isin(needed_items)
+            ]
+            self._df = pl.DataFrame(
+                {
+                    cols.CLASSIFICATION_IDENTIFIER: normalized[
+                        "classification_identifier"
+                    ].to_numpy(),
+                    cols.CLASSIFICATION_NAME: normalized[
+                        "classification_name"
+                    ].to_numpy(),
+                }
             )
 
     @property
@@ -148,10 +155,16 @@ class Classification:
 
         # Concatenate the portfolio and benchmark classification items. Exact duplicate
         # pairs are harmless; different names for one identifier are ambiguous.
-        df = pl.concat(dfs, how="vertical")
-        df = util._deduplicate_identifier_pairs(  # pylint: disable=protected-access
-            df,
-            "Inferred classification data",
+        normalized = normalize_classification_source(
+            pl.concat(dfs, how="vertical")
+        )
+        df = pl.DataFrame(
+            {
+                cols.CLASSIFICATION_IDENTIFIER: normalized[
+                    "classification_identifier"
+                ].to_numpy(),
+                cols.CLASSIFICATION_NAME: normalized["classification_name"].to_numpy(),
+            }
         )
 
         # Return the classification name common to both streams and the combined items.

@@ -26,7 +26,7 @@ packaging==26.0
 # Seaborn imports pandas during CLI startup, which affects the end-to-end scale ratio.
 pandas==3.0.0
 pathspec==1.1.1
-perfattr==0.2.2
+perfattr==0.3.0a1
 pillow==12.1.0
 platformdirs==4.9.6
 pluggy==1.6.0

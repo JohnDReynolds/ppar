@@ -188,6 +188,8 @@ class TestPackageMetadata(unittest.TestCase):
         )
         self.assertNotIn("perfaud", " ".join(dependencies).lower())
         self.assertIn("perfattr>=0.3.0a1,<0.4", dependencies)
+        constraints = (_ROOT / "constraints/ci.txt").read_text(encoding="utf-8")
+        self.assertIn("perfattr==0.3.0a1", constraints.splitlines())
         self.assertEqual(set(project["optional-dependencies"]), {"dev"})
 
     def test_root_exports_are_exact(self) -> None:

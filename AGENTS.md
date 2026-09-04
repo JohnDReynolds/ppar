@@ -56,6 +56,19 @@ Apply these conventions when modifying or creating code in this project.
   similarly expensive independent verification in test and release-candidate checks
   when running it in production would materially degrade performance.
 
+## Test Ownership
+
+- Keep exhaustive source-neutral calculation, normalization, alignment, mapping, and
+  consolidation cases in `perfattr`, which owns those implementations.
+- Keep `ppar` tests for Polars/pandas and CSV translation, host error and warning
+  behavior, public schema and null placement, presentation, source-specific behavior,
+  and representative end-to-end delegation.
+- Retain at least one successful and one failing public `ppar` example for each
+  material adapter seam. Do not duplicate a complete portable edge-case matrix merely
+  to exercise the same `perfattr` call repeatedly through `Analytics`.
+- Before removing a portable invariant that is covered only in `ppar`, add an
+  independently explained test for it in `perfattr` and verify both suites.
+
 ## Typing And Naming
 
 - Annotate public parameters, public return values, class attributes, and non-obvious

@@ -399,65 +399,6 @@ class MappingTests(unittest.TestCase):
             expected_total - expected_allocation,
         )
 
-    def test_zero_weight_zero_contribution_mapped_group_has_zero_return(self) -> None:
-        """A zero-exposure group with no contribution retains a defined zero return."""
-        performance = pl.DataFrame(
-            {
-                cols.FROM_DATE: [dt.date(2024, 1, 1)] * 3,
-                cols.THRU_DATE: [dt.date(2024, 1, 31)] * 3,
-                cols.IDENTIFIER: ["LONG", "SHORT", "CORE"],
-                cols.RETURN: [0.10, 0.10, 0.02],
-                cols.WEIGHT: [0.50, -0.50, 1.0],
-            }
-        )
-        mapping = _pairs({"LONG": "HEDGE", "SHORT": "HEDGE", "CORE": "CORE"})
-        analytics = Analytics(
-            performance,
-            performance,
-            portfolio_classification_name="Security",
-            benchmark_classification_name="Security",
-        )
-
-        details = analytics.attribution(
-            "Strategy",
-            mapping_data_sources=(mapping, mapping),
-        ).to_polars(View.SUBPERIOD_ATTRIBUTION)
-        hedge = details.filter(pl.col(cols.CLASSIFICATION_IDENTIFIER) == "HEDGE")
-
-        self.assertAlmostEqual(hedge[cols.PORTFOLIO_WEIGHT].item(), 0.0)
-        self.assertAlmostEqual(hedge[cols.PORTFOLIO_CONTRIB_SIMPLE].item(), 0.0)
-        self.assertAlmostEqual(hedge[cols.PORTFOLIO_RETURN].item(), 0.0)
-
-    def test_near_zero_mapped_weight_is_not_treated_as_exact_zero(self) -> None:
-        """A nonzero net exposure keeps its mathematically defined mapped return."""
-        epsilon = 1e-12
-        performance = pl.DataFrame(
-            {
-                cols.FROM_DATE: [dt.date(2024, 1, 1)] * 3,
-                cols.THRU_DATE: [dt.date(2024, 1, 31)] * 3,
-                cols.IDENTIFIER: ["LONG", "SHORT", "CORE"],
-                cols.RETURN: [0.10, -0.10, 0.0],
-                cols.WEIGHT: [0.50 + epsilon, -0.50, 1.0 - epsilon],
-            }
-        )
-        mapping = _pairs({"LONG": "HEDGE", "SHORT": "HEDGE", "CORE": "CORE"})
-        analytics = Analytics(
-            performance,
-            performance,
-            portfolio_classification_name="Security",
-            benchmark_classification_name="Security",
-        )
-
-        details = analytics.attribution(
-            "Strategy",
-            mapping_data_sources=(mapping, mapping),
-        ).to_polars(View.SUBPERIOD_ATTRIBUTION)
-        hedge = details.filter(pl.col(cols.CLASSIFICATION_IDENTIFIER) == "HEDGE")
-
-        self.assertNotEqual(hedge[cols.PORTFOLIO_WEIGHT].item(), 0.0)
-        self.assertIsNotNone(hedge[cols.PORTFOLIO_RETURN].item())
-        self.assertGreater(abs(hedge[cols.PORTFOLIO_RETURN].item()), 1e6)
-
     def test_attribution_requests_use_current_mapping_source_contents(self) -> None:
         """Each attribution reflects the mapping contents supplied to that call."""
         analytics = Analytics(

@@ -3,7 +3,7 @@
 Do this in the context of re-assessing _extras/optimizations/ppar_optimizations_roadmap.md.
 
 
-Think about removing polars and going 100% pandas.
+Codex said that removing polars and going 100% pandas was feasible, but a big project.  And would probably make things slower.  Maybe do it later.
 
 ################################################################################ OVERHEAD
 https://chatgpt.com/codex/cloud/settings/analytics             # To see how much codex credits you have left.

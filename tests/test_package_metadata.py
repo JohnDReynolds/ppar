@@ -32,7 +32,7 @@ class TestPackageMetadata(unittest.TestCase):
         """Distribution metadata names only the independent Analytics product."""
         project = _pyproject()["project"]
         self.assertEqual(project["name"], "ppar")
-        self.assertEqual(project["version"], "0.2.1")
+        self.assertEqual(project["version"], "0.3.0")
         self.assertEqual(project["requires-python"], ">=3.11.9,<3.15")
         self.assertEqual(project["scripts"], {"ppar": "ppar.cli:main"})
         self.assertEqual(

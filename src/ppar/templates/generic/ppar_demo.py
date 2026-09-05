@@ -1,7 +1,7 @@
 """Create portfolio analytics reports from CSV input files.
 
-The initial settings use the included demonstration data. To analyze your own
-portfolio, replace the input files and update the settings below.
+The initial settings use the included demonstration data. To analyze your own data,
+replace the input files and update the settings below.
 
 Use the command in README.md to run this script. Reports are written to ``output/``.
 
@@ -25,7 +25,7 @@ from ppar.frequency import Frequency
 DIRECTORY = Path(__file__).resolve().parent
 OUTPUT_DIRECTORY = DIRECTORY / "output"
 
-# FROM_DATE and THRU_DATE define the inclusive reporting period. Complete source
+# FROM_DATE and THRU_DATE define the inclusive reporting period. Complete input
 # periods are selected by their thru_date. Use dt.date.min or dt.date.max when
 # you do not want a lower or upper limit.
 FROM_DATE = dt.date(2021, 7, 1)
@@ -35,8 +35,8 @@ THRU_DATE = dt.date(2026, 5, 29)
 # which classification data and mapping are selected in the source settings below.
 CLASSIFICATION = "Economic Sector"
 
-# Choose MONTHLY, QUARTERLY, or YEARLY to consolidate source periods into
-# completed calendar periods. AS_OFTEN_AS_POSSIBLE preserves the source periods,
+# Choose MONTHLY, QUARTERLY, or YEARLY to consolidate input periods into
+# completed calendar periods. AS_OFTEN_AS_POSSIBLE preserves the input periods,
 # but omits the risk statistics report because that report requires a fixed frequency.
 FREQUENCY = Frequency.QUARTERLY
 
@@ -53,7 +53,7 @@ ANNUAL_RISK_FREE_RATE = 0.03
 CONFIDENCE_LEVEL = 0.95
 PORTFOLIO_VALUE = (100_000.0, "$")
 
-# Each performance CSV contains one row per security and source period. It must
+# Each performance CSV contains one row per security and input period. It must
 # have these headings:
 #
 #   from_date, thru_date, identifier, weight, return
@@ -73,11 +73,11 @@ PORTFOLIO_PERFORMANCE = DIRECTORY / "input/performance/Mega-Cap Alpha Portfolio.
 BENCHMARK_PERFORMANCE = DIRECTORY / "input/performance/Mega-Cap Benchmark.csv"
 
 # Master CSVs can contain multiple portfolios identified by a ``portfolio_code``
-# column. To produce reports for several portfolios, load the files with Polars,
+# column. To produce reports for several portfolios, load the files,
 # loop over their portfolio codes, and pass each filtered portfolio and benchmark
 # pair to Analytics.
 
-# Classification CSVs and static mapping CSVs are headerless and have two columns:
+# Classification CSVs and two-column mapping CSVs are headerless:
 #
 #   Security.csv: security identifier, security display name
 #   <classification>.csv: classification identifier, display name
@@ -87,11 +87,11 @@ BENCHMARK_PERFORMANCE = DIRECTORY / "input/performance/Mega-Cap Benchmark.csv"
 #
 #   from_date, thru_date, security identifier, classification identifier
 #
-# Effective dates are inclusive. Each security source period must fit wholly within
+# Effective dates are inclusive. Each security input period must fit wholly within
 # one assignment; ppar does not split a period at a classification boundary.
 #
-# Every identifier in the performance files must be named in Security.csv and
-# mapped when classification reports are requested.
+# Each identifier in the performance files should be named in Security.csv and must
+# be mapped when classification reports are requested.
 #
 # Surrounding whitespace is removed from identifiers and names; meaningful
 # internal spaces are retained. Repeated identical pairs are collapsed, while
@@ -176,7 +176,7 @@ def main() -> int:
         output_path.write_bytes(classification_attribution.to_chart(chart))
         output_paths.append(output_path)
 
-    # Native source periods do not establish a fixed annualization frequency, so
+    # Native input periods do not establish a fixed annualization frequency, so
     # risk statistics are limited to monthly, quarterly, or yearly runs.
     if (
         INCLUDE_RISK_STATISTICS

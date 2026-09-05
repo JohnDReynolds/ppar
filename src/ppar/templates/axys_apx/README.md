@@ -12,11 +12,11 @@ The demonstration reads three CSV files:
 
 | File | Contents |
 | --- | --- |
-| `portperf.csv` | One row per account and source period |
-| `secperf.csv` | One row per security, account, and source period |
+| `portperf.csv` | One row per account and input period |
+| `secperf.csv` | One row per security, account, and input period |
 | `secmast.csv` | One row per security |
 
-The demonstration maps these ppar fields:
+`ppar_demo.py` maps these fields:
 
 ```text
 portperf.csv:
@@ -33,7 +33,7 @@ guaranteed native Axys/APX object, profile, report, filename, or column names be
 export formats vary by site.
 
 `portfolio_code` and `portfolio_name` are text. Surrounding whitespace is removed,
-and values that are then blank are rejected. A name may change across source periods;
+and values that are then blank are rejected. A name may change across input periods;
 ppar uses the latest name in the retained reporting window and prefixes it with the
 portfolio code in output titles.
 
@@ -41,18 +41,15 @@ portfolio code in output titles.
 heading used by your exports. Replace the demonstration CSV files in `input/`, or
 point those paths to files elsewhere, and update the headings as needed.
 
-The script loads the portfolio and benchmark first, then explicitly selects the
-classification sources for each attribution report.
-
 Returns, weights, and contributions are decimals: `0.05` means 5%. The demonstrated
 security identity combines `security_type` and `security_symbol`, so those fields must
 identify the same securities in `secperf.csv` and `secmast.csv`. Each entry under
 `mappings` identifies the `secmast.csv` columns containing a classification code and
 its displayed name.
 
-The supported top-level settings are `files`, `mappings`, and the optional
-`security_id`. Classifications for this Axys/APX workflow come from `secmast.csv`;
-independent classification files and filters are not part of this source contract.
+For Axys/APX data, classifications come from `secmast.csv`. Configure `files`,
+`mappings`, and, if needed, `security_id` under `AXYS_SOURCE_VALUES` in `ppar_demo.py`.
+This workflow does not use separate classification files.
 
 ppar reconciles the security-level performance in `secperf.csv` to the corresponding
 reported account return in `portperf.csv`. It prefers the weight implied by
@@ -63,7 +60,7 @@ determine them uniquely. Underdetermined, contradictory, infeasible, or material
 unreconciled account periods stop the run instead of producing reports from
 inconsistent inputs.
 
-Each security identifier must occur at most once per account and source period.
+Each security identifier must occur at most once per account and input period.
 Duplicate rows are rejected because ppar cannot safely infer whether they are
 accidental duplicates or separate lots requiring a site-specific aggregation rule.
 

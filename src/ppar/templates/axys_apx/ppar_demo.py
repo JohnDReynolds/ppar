@@ -1,7 +1,7 @@
 """Create portfolio analytics reports from Axys/APX export files.
 
-The initial settings use the included demonstration data. To analyze your own
-portfolio, replace the export files and update the settings below.
+The initial settings use the included demonstration data. To analyze your own data,
+replace the export files and update the settings below.
 
 Use the command in README.md to run this script. Reports are written to ``output/``.
 
@@ -26,7 +26,7 @@ from ppar.frequency import Frequency
 DIRECTORY = Path(__file__).resolve().parent
 OUTPUT_DIRECTORY = DIRECTORY / "output"
 
-# FROM_DATE and THRU_DATE define the inclusive reporting period. Complete source
+# FROM_DATE and THRU_DATE define the inclusive reporting period. Complete input
 # periods are selected by their thru_date. Use dt.date.min or dt.date.max when
 # you do not want a lower or upper limit.
 FROM_DATE = dt.date(2021, 7, 1)
@@ -36,8 +36,8 @@ THRU_DATE = dt.date(2026, 5, 29)
 # which classification data and mapping are selected in the source settings below.
 CLASSIFICATION = "Economic Sector"
 
-# Choose MONTHLY, QUARTERLY, or YEARLY to consolidate source periods into
-# completed calendar periods. AS_OFTEN_AS_POSSIBLE preserves the source periods,
+# Choose MONTHLY, QUARTERLY, or YEARLY to consolidate input periods into
+# completed calendar periods. AS_OFTEN_AS_POSSIBLE preserves the input periods,
 # but omits the risk statistics report because that report requires a fixed frequency.
 FREQUENCY = Frequency.QUARTERLY
 
@@ -65,7 +65,7 @@ BENCHMARK = "MEGA_BENCH"
 
 # The "Use your own Axys/APX exports" section in README.md describes the three input
 # files, their mapped fields, and their relationship. portperf.csv has one row per
-# account and source period. secperf.csv has one row per security, account, and source
+# account and input period. secperf.csv has one row per security, account, and input
 # period. secmast.csv supplies security names and classification columns.
 #
 # Axys/APX headings vary by site. Each ``columns`` entry maps a ppar field on the
@@ -202,7 +202,7 @@ def main() -> int:
         output_path.write_bytes(classification_attribution.to_chart(chart))
         output_paths.append(output_path)
 
-    # Native source periods do not establish a fixed annualization frequency, so
+    # Native input periods do not establish a fixed annualization frequency, so
     # risk statistics are limited to monthly, quarterly, or yearly runs.
     if (
         INCLUDE_RISK_STATISTICS
@@ -254,8 +254,7 @@ def _build_analytics() -> tuple[Analytics, Attribution, Attribution]:
     )
 
     # 2. Create security attribution. This answers which individual holdings drove
-    # relative performance. The paired source includes names for holdings found in
-    # either the portfolio or benchmark.
+    # relative performance.
     security_attribution = analytics.attribution_for(
         source.get_classification_sources_for_pair(
             "Security",
@@ -265,8 +264,7 @@ def _build_analytics() -> tuple[Analytics, Attribution, Attribution]:
     )
 
     # 3. Create classification attribution. This rolls holdings into CLASSIFICATION
-    # groups. Naming the paired source here makes the selected grouping explicit at
-    # the point where its attribution is calculated.
+    # groups.
     classification_attribution = analytics.attribution_for(
         source.get_classification_sources_for_pair(
             CLASSIFICATION,

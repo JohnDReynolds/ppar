@@ -83,28 +83,46 @@ selected by editing `ppar_demo.py`.
 
 ## Python
 
-This prints the overall portfolio, benchmark, and active returns as decimals:
+This prints up to ten of the largest overall attribution effects as decimals:
 
 ```python
 from pathlib import Path
 
+import polars as pl
+
 from ppar import Analytics
 from ppar.attribution import View
 
+# Use the performance files created by: ppar setup ./my_ppar
 performance_input_directory = Path("./my_ppar") / "input" / "performance"
 
+# The portfolio is the first file and the benchmark is the second.
 analytics = Analytics(
     performance_input_directory / "Mega-Cap Alpha Portfolio.csv",
     performance_input_directory / "Mega-Cap Benchmark.csv",
 )
 
-overall_returns = (
+# Calculate security-level attribution and return the overall results as a
+# Polars DataFrame. Select the most useful introductory columns, then show the
+# ten largest effects first.
+largest_effects = (
     analytics.attribution()
     .to_polars(View.OVERALL_ATTRIBUTION)
-    .tail(1)
-    .select("Portfolio_Return", "Benchmark_Return", "Active_Return")
+    .select(
+        "Classification_Name",
+        "Portfolio_Weight",
+        "Portfolio_Return",
+        "Benchmark_Weight",
+        "Benchmark_Return",
+        "Active_Contribution_Smoothed",
+        "Total_Effect_Smoothed",
+    )
+    .sort("Total_Effect_Smoothed", descending=True)
+    .head(10)
 )
-print(overall_returns)
+# Widen the printed table so the column names remain readable.
+with pl.Config(tbl_width_chars=160):
+    print(largest_effects)
 ```
 
 The generated `ppar_demo.py` is the complete reporting example. Results are available

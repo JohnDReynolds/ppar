@@ -86,11 +86,16 @@ class TestPackageMetadata(unittest.TestCase):
             "```", maxsplit=1
         )[0]
         compile(example, "README.md Python example", "exec")
-        self.assertIn(".tail(1)", example)
-        self.assertIn(
-            '.select("Portfolio_Return", "Benchmark_Return", "Active_Return")',
-            example,
-        )
+        self.assertIn('.sort("Total_Effect_Smoothed", descending=True)', example)
+        self.assertIn(".head(10)", example)
+        for column in (
+            "Classification_Name",
+            "Portfolio_Weight",
+            "Benchmark_Weight",
+            "Active_Contribution_Smoothed",
+            "Total_Effect_Smoothed",
+        ):
+            self.assertIn(f'"{column}"', example)
 
         api_guide = (_ROOT / "docs/python_api.md").read_text(encoding="utf-8")
         self.assertNotIn("analytics = Analytics(", api_guide)
@@ -250,13 +255,18 @@ class TestPackageMetadata(unittest.TestCase):
             "`return` | Holding return as a decimal; `0.05` means 5%.",
             "weights must sum to 1.0",
             "at least one common selected period",
-            "select periods by `thru_date`, including both boundaries",
+            "`FROM_DATE` and `THRU_DATE` set the inclusive",
+            "An input period is included when its `thru_date` falls within that",
+            "Each input period must fit within one dated assignment",
+            "Each performance identifier should be named in `Security.csv`",
             "## Classifications and mappings",
             "`Security.csv` | Performance identifier | Display name",
             "Mapping file | Performance identifier | Classification identifier",
             "Common setup errors include",
         ):
             self.assertIn(expected, generic_readme)
+        self.assertNotIn("perfattr", generic_readme)
+        self.assertNotIn("source period", generic_readme)
         axys_readme = templates.joinpath("axys_apx", "README.md").read_text(
             encoding="utf-8"
         )
@@ -266,6 +276,8 @@ class TestPackageMetadata(unittest.TestCase):
             "`secperf.csv`",
             "`secmast.csv`",
             "`AXYS_SOURCE_VALUES`",
+            "`ppar_demo.py` maps these fields:",
+            "This workflow does not use separate classification files.",
             "ppar reconciles the security-level performance",
         ):
             self.assertIn(expected, axys_readme)
@@ -276,6 +288,8 @@ class TestPackageMetadata(unittest.TestCase):
             )
         )
         self.assertNotIn("perfattr", axys_readme)
+        self.assertNotIn("source period", axys_readme)
+        self.assertNotIn("The script loads the portfolio and benchmark", axys_readme)
 
     def test_templates_keep_shared_workflow_in_sync(self) -> None:
         """Common demo settings and direct report writing remain equivalent."""

@@ -1,12 +1,35 @@
+What do you think of the below:
+
+In the setup README.md files:
+1. Remove "Attribution calculations use the portable `perfattr` core."
+2. Change "... contain one row per identifier and source period." to "... contain one row per identifier and time period."
+3. Remove or simplify "`FROM_DATE` and `THRU_DATE` in `ppar_demo.py` select periods by `thru_date`, including both boundaries."
+4. I find this a bit jargonish and technical and overly verbose.  Can you simplify it?  "The effective dates are closed and inclusive. Every nonblank mapping record in one file must use the same width, and each source period for a mapped identifier must fit wholly within one dated assignment. A source period is never split at a classification boundary."
+5. Change "For the demonstrated reports, every performance identifier must be named in `Security.csv` and mapped to an identifier in the selected classification file." to "Each performance identifier should be named in `Security.csv` and mapped to an identifier in the selected classification file."
+6. Rename all occurences of "source period" to "time period".
+7. Change "The demonstration maps these ppar fields:" to "The demonstration ppar_demo.py maps these ppar fields:"
+8. Remove "The script loads the portfolio and benchmark first, then explicitly selects the classification sources for each attribution report."
+9. Remove this or move it to ppar_demo.py: "The supported top-level settings are `files`, `mappings`, and the optional `security_id`. Classifications for this Axys/APX workflow come from `secmast.csv`; independent classification files and filters are not part of this source contract."
+
+
+What do you think of the below in the setup python_demo.py files:
+
+1. Change "To produce reports for several portfolios, load the files with Polars..." to "To produce reports for several portfolios, load the files..."
+2. Change "Classification CSVs and static mapping CSVs are headerless and have two columns:" to "Classification CSVs and mapping CSVs are headerless and have two columns:"
+3. Change "source period" to "input period".
+4. Change "Every identifier in the performance files must be named in Security.csv" to "Each identifier in the performance files should be named in Security.csv".
+5. Change "To analyze your own portfolio, replace the input files and update the settings below." to "To analyze your own data, replace the input files and update the settings below."
+6. I'm wondering if the bulk of "## Use your own Axys/APX exports" in the axys_apx README.md should go in the axys_apx ppar_demo.py file?
+7. Remove "The paired source includes names for holdings found in either the portfolio or benchmark." from the axys_apx ppar_demo.py.
+8. Remove "Naming the paired source here makes the selected grouping explicit at the point where its attribution is calculated."  from the axys_apx ppar_demo.py.
+
 
 ################################################################################ OBSOLETE ABOVE HERE
-Do this in the context of re-assessing _extras/optimizations/ppar_optimizations_roadmap.md.
-
-
-Codex said that removing polars and going 100% pandas was feasible, but a big project.  And would probably make things slower.  Maybe do it later.
+Codex said that removing polars and going 100% pandas was feasible, but a big project.  Maybe do it later.
 
 ################################################################################ OVERHEAD
 https://chatgpt.com/codex/cloud/settings/analytics             # To see how much codex credits you have left.
+python -m venv .venv                                           # To make a venv
 source .venv/bin/activate                                      # To activate the venv
 deactivate                                                     # To deactivate the venv
 scripts/check_release_candidate.py                             # Test and Build
@@ -18,7 +41,6 @@ scripts/check_release_candidate.py                             # Test and Build
 ppar setup ../my_ppar
 ppar setup ../my_ppar_axys_apx --axys-apx
 
-Then follow the directions that it shows you.
 
 
 
@@ -27,21 +49,25 @@ Then follow the directions that it shows you.
 #################### 1. Optimizations (Extra High)
 Do you see any places in this project where the execution times could be substantially increased?
 I'm looking for simple 80/20 wins, not micro-optimizations or complicated re-factors.
+Do this in the context of re-assessing _extras/optimizations/ppar_optimizations_roadmap.md.
 
 09/04: Finished implementation at _extras/optimizations/ppar_optimizations_roadmap.md
 
 #################### 2. Correctness (Extra High)
 Can you do a read-only review of this project for obvious bugs, especially mathematical or logic issues?
+Do this in the context of re-assessing _extras/correctness/ppar_correctness_roadmap.md
 
 09/04: Finished implementation at _extras/correctness/ppar_correctness_roadmap.md
 
 #################### 3. Cleanup (Extra High)
 Can you do a read-only review of the entire project for dead code, unnecessary backward-compatibility, inconsistencies, opportunities for simplification, opportunities for 80/20 refactoring, unsupported features, etc.
 Use the lenses of "less is more" and "keep it simple stupid".
+Do this in the context of re-assessing _extras/cleanup/ppar_cleanup_roadmap.md
 
 09/04: Finished implementation at _extras/cleanup/ppar_cleanup_roadmap.md
 
 #################### 4. User View (Extra High)
 Approach the project as a user.  Look at documentation, workflow, user API, outputs.  What would a user think?
+Do this in the context of re-assessing _extras/userview/ppar_userview_roadmap.md
 
-09/04: Finished implementation at _extras/optimizations/ppar_optimizations_roadmap.md
+09/04: Finished implementation at _extras/userview/ppar_userview_roadmap.md

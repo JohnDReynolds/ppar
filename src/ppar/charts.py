@@ -8,6 +8,8 @@ Each public formatter returns PNG image bytes.
 
 # Overrides for pylance.  All of the plt and ax methods are "type partially unknown".
 # pyright: reportUnknownMemberType=none
+# Cache and backend configuration must run before the intentionally delayed chart imports.
+# pylint: disable=wrong-import-order,wrong-import-position
 
 # Python Imports
 from collections import Counter
@@ -17,6 +19,14 @@ import math
 import os
 import textwrap
 from typing import cast, Iterable, Protocol, Sequence
+
+# Configure cache state before any Matplotlib import can initialize it. This has no
+# effect when the caller supplied a cache or Matplotlib's native directory is writable.
+from ppar._chart_environment import (  # noqa: E402
+    configure_current_process,
+)
+
+configure_current_process()
 
 # Static PNG rendering does not need a GUI backend. Respect any backend the caller
 # selected explicitly.

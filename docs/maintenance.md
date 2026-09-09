@@ -46,6 +46,13 @@ components.
 The attribution scenarios exercise the permanent `perfattr` preparation and
 calculation boundary. No source-neutral Polars fallback is retained in ppar.
 
+Chart rendering uses Matplotlib's native cache when it is writable. In a restricted
+environment, ppar automatically selects a stable fallback below the operating-system
+temporary directory so later processes can reuse the font cache. A fully ephemeral
+container still starts with an empty cache on every job; set `MPLCONFIGDIR` to a
+persistent writable mount in that environment. An explicit `MPLCONFIGDIR` always
+remains authoritative.
+
 The release-candidate command composes both gates:
 
 ```bash

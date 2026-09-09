@@ -25,7 +25,12 @@ What do you think of the below in the setup python_demo.py files:
 
 
 ################################################################################ OBSOLETE ABOVE HERE
+Remove _extras from github
+Publish a new PyPi before 09/15, after perfattr settles down.  Then test in a new venv.  Review all demos and readmes.
+Maybe eventually go through the project review prompts again in ../pr-workflow-common/checkpoint_prompts.md.  They were all done before publishing on 09/04.
+Maybe add some of the new features from perfattr (eg Menchero, Geometric, etc.)
 Codex said that removing polars and going 100% pandas was feasible, but a big project.  Maybe do it later.
+
 
 ################################################################################ OVERHEAD
 https://chatgpt.com/codex/cloud/settings/analytics             # To see how much codex credits you have left.
@@ -44,30 +49,3 @@ ppar setup ../my_ppar_axys_apx --axys-apx
 
 
 
-################################################################# CODEX REVIEWS #####################################################
-
-#################### 1. Optimizations (Extra High)
-Do you see any places in this project where the execution times could be substantially increased?
-I'm looking for simple 80/20 wins, not micro-optimizations or complicated re-factors.
-Do this in the context of re-assessing _extras/optimizations/ppar_optimizations_roadmap.md.
-
-09/04: Finished implementation at _extras/optimizations/ppar_optimizations_roadmap.md
-
-#################### 2. Correctness (Extra High)
-Can you do a read-only review of this project for obvious bugs, especially mathematical or logic issues?
-Do this in the context of re-assessing _extras/correctness/ppar_correctness_roadmap.md
-
-09/04: Finished implementation at _extras/correctness/ppar_correctness_roadmap.md
-
-#################### 3. Cleanup (Extra High)
-Can you do a read-only review of the entire project for dead code, unnecessary backward-compatibility, inconsistencies, opportunities for simplification, opportunities for 80/20 refactoring, unsupported features, etc.
-Use the lenses of "less is more" and "keep it simple stupid".
-Do this in the context of re-assessing _extras/cleanup/ppar_cleanup_roadmap.md
-
-09/04: Finished implementation at _extras/cleanup/ppar_cleanup_roadmap.md
-
-#################### 4. User View (Extra High)
-Approach the project as a user.  Look at documentation, workflow, user API, outputs.  What would a user think?
-Do this in the context of re-assessing _extras/userview/ppar_userview_roadmap.md
-
-09/04: Finished implementation at _extras/userview/ppar_userview_roadmap.md

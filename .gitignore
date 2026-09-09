@@ -1,3 +1,6 @@
+# Private _extras not suitable for public release
+/_extras/
+
 # Generated project outputs
 /_demo_output/
 /.cache/

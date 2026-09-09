@@ -10,7 +10,7 @@ vendor-neutral CSV files or Axys/APX exports.
 
 ppar supports Python 3.11.9 through Python 3.14.
 
-ppar is available under a 45-day, single-user internal evaluation license.
+ppar is available under a 90-day, single-user internal evaluation license.
 Production, commercial, multi-user, or continued use requires a separate agreement;
 contact `jjjkreynolds@gmail.com`. Review the [license](LICENSE) before installing.
 
@@ -57,6 +57,14 @@ ex-post risk-statistics table.
 The gallery below shows examples of available output, including reports that can be
 selected by editing `ppar_demo.py`.
 
+Over the demonstrated period, the Mega-Cap Alpha portfolio returned 83.4% versus
+76.8% for the benchmark, outperforming by approximately 656 basis points. Security
+selection generated about 644 basis points of that result, while sector allocation
+added about 12 basis points. Information Technology was the largest positive source,
+contributing approximately 337 basis points. The portfolio was slightly more volatile,
+but its annualized Sharpe ratio of 0.70 and Sortino ratio of 1.55 were both better than
+the benchmark's 0.66 and 1.46.
+
 <img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/OverallAttributionByEconomicSector.png" alt="Overall attribution by economic sector chart" width="100%" />
 
 <img src="https://raw.githubusercontent.com/JohnDReynolds/ppar/main/docs/images/OverallContributionByEconomicSector.png" alt="Overall contribution by economic sector chart" width="100%" />
@@ -83,12 +91,10 @@ selected by editing `ppar_demo.py`.
 
 ## Python
 
-This prints up to ten of the largest overall attribution effects as decimals:
+This prints the overall security attribution view as a Polars DataFrame:
 
 ```python
 from pathlib import Path
-
-import polars as pl
 
 from ppar import Analytics
 from ppar.attribution import View
@@ -102,27 +108,9 @@ analytics = Analytics(
     performance_input_directory / "Mega-Cap Benchmark.csv",
 )
 
-# Calculate security-level attribution and return the overall results as a
-# Polars DataFrame. Select the most useful introductory columns, then show the
-# ten largest effects first.
-largest_effects = (
-    analytics.attribution()
-    .to_polars(View.OVERALL_ATTRIBUTION)
-    .select(
-        "Classification_Name",
-        "Portfolio_Weight",
-        "Portfolio_Return",
-        "Benchmark_Weight",
-        "Benchmark_Return",
-        "Active_Contribution_Smoothed",
-        "Total_Effect_Smoothed",
-    )
-    .sort("Total_Effect_Smoothed", descending=True)
-    .head(10)
-)
-# Widen the printed table so the column names remain readable.
-with pl.Config(tbl_width_chars=160):
-    print(largest_effects)
+# Calculate security-level attribution and request its overall table.
+overall_attribution = analytics.attribution().to_polars(View.OVERALL_ATTRIBUTION)
+print(overall_attribution)
 ```
 
 The generated `ppar_demo.py` is the complete reporting example. Results are available

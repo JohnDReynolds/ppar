@@ -235,7 +235,7 @@ phrase "self-contained demonstration directory" because the generated script sti
 depends on the installed ppar package. Broader positioning remains a separate product
 decision.
 
-The 45-day single-user evaluation boundary and commercial contact are conspicuous
+The 90-day single-user evaluation boundary and commercial contact are conspicuous
 before installation, which is good. The lack of a published support, update, pricing,
 or purchase process beyond a personal email also signals an early-stage commercial
 offering. That is not a documentation defect while those policies do not exist; add
@@ -505,7 +505,7 @@ Status: **Completed September 2, 2026, as focused user-facing polish.**
 
 Implemented:
 
-- The README states the 45-day, single-user internal evaluation terms before the
+- The README states the 90-day, single-user internal evaluation terms before the
   installation command and gives the existing package-author email as the direct
   commercial-licensing contact.
 - The license repeats that direct contact and uses the lowercase `ppar` product name

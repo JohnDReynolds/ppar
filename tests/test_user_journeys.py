@@ -134,14 +134,10 @@ class TestDocumentedUserJourneys(unittest.TestCase):
                 text=True,
             )
 
-            self.assertIn("shape: (3, 7)", completed.stdout)
-            self.assertIn("Classification_Name", completed.stdout)
-            self.assertIn("Portfolio_Weight", completed.stdout)
-            self.assertIn("Portfolio_Return", completed.stdout)
-            self.assertIn("Benchmark_Weight", completed.stdout)
-            self.assertIn("Benchmark_Return", completed.stdout)
-            self.assertIn("Active_Contribution_Smoothed", completed.stdout)
-            self.assertIn("Total_Effect_Smoothed", completed.stdout)
+            self.assertIn("shape: (3, 14)", completed.stdout)
+            self.assertIn("AAPL", completed.stdout)
+            self.assertIn("MSFT", completed.stdout)
+            self.assertIn("Total", completed.stdout)
 
     def test_direct_risk_example_executes(self) -> None:
         """The distinct lower-level risk example remains executable as documented."""

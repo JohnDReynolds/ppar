@@ -69,15 +69,27 @@ class TestPackageMetadata(unittest.TestCase):
         license_text = (_ROOT / "LICENSE").read_text(encoding="utf-8")
 
         install_position = readme.index("python -m pip install ppar")
-        self.assertLess(readme.index("45-day, single-user"), install_position)
+        self.assertLess(readme.index("90-day, single-user"), install_position)
         self.assertLess(readme.index("jjjkreynolds@gmail.com"), install_position)
-        self.assertIn("solely for internal evaluation for 45 days", license_text)
+        self.assertIn("solely for internal evaluation for 90 days", license_text)
         self.assertIn("John D Reynolds at\njjjkreynolds@gmail.com", license_text)
         self.assertNotRegex(license_text, r"\bPPAR\b")
 
     def test_documentation_has_one_concise_introductory_analytics_example(self) -> None:
         """The root owns the complete introductory example without API-page duplication."""
         readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+        for explanation in (
+            "83.4%",
+            "76.8%",
+            "656 basis points",
+            "644 basis points",
+            "12 basis points",
+            "Information Technology was the largest positive source",
+            "337 basis points",
+            "annualized Sharpe ratio of 0.70",
+            "Sortino ratio of 1.55",
+        ):
+            self.assertIn(explanation, readme)
         python_section = readme.split("## Python\n", maxsplit=1)[1].split(
             "## Documentation\n", maxsplit=1
         )[0]
@@ -86,16 +98,12 @@ class TestPackageMetadata(unittest.TestCase):
             "```", maxsplit=1
         )[0]
         compile(example, "README.md Python example", "exec")
-        self.assertIn('.sort("Total_Effect_Smoothed", descending=True)', example)
-        self.assertIn(".head(10)", example)
-        for column in (
-            "Classification_Name",
-            "Portfolio_Weight",
-            "Benchmark_Weight",
-            "Active_Contribution_Smoothed",
-            "Total_Effect_Smoothed",
-        ):
-            self.assertIn(f'"{column}"', example)
+        self.assertIn(
+            "analytics.attribution().to_polars(View.OVERALL_ATTRIBUTION)",
+            example,
+        )
+        self.assertNotIn(".select(", example)
+        self.assertNotIn(".head(", example)
 
         api_guide = (_ROOT / "docs/python_api.md").read_text(encoding="utf-8")
         self.assertNotIn("analytics = Analytics(", api_guide)
@@ -192,7 +200,7 @@ class TestPackageMetadata(unittest.TestCase):
             },
         )
         self.assertNotIn("perfaud", " ".join(dependencies).lower())
-        self.assertIn("perfattr>=0.3.0a1,<0.4", dependencies)
+        self.assertIn("perfattr>=0.3.0a1", dependencies)
         constraints = (_ROOT / "constraints/ci.txt").read_text(encoding="utf-8")
         self.assertIn("perfattr==0.3.0a1", constraints.splitlines())
         self.assertEqual(set(project["optional-dependencies"]), {"dev"})

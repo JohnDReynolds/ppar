@@ -1,10 +1,11 @@
 # Python API
 
-The root API is deliberately small: `from ppar import Analytics, __version__`.
+The root API is deliberately small:
+`from ppar import Analytics, AttributionSources, __version__`.
 
 The complete supported Python surface is:
 
-- `ppar`: `Analytics`, `__version__`
+- `ppar`: `Analytics`, `AttributionSources`, `__version__`
 - `ppar.attribution`: `Attribution`, `Chart`, `View`
 - `ppar.axys_apx`: `AxysClassificationSources`, `AxysData`, `AxysPortfolio`
 - `ppar.errors`: `PparError`
@@ -21,6 +22,8 @@ surface:
 - Construct `Analytics` for ordinary CSV or Polars inputs and `AxysData` for Axys/APX
   exports.
 - Receive `Attribution` from `Analytics.attribution()` or `attribution_for()`.
+- Use `AttributionSources` as the structural type for a classification-source bundle
+  passed to `Analytics.attribution_for()`; AxysData methods return compatible bundles.
 - Receive `AxysPortfolio` and `AxysClassificationSources` from `AxysData` methods.
 - Construct `RiskStatistics` directly only for a portfolio/benchmark pair of NumPy
   arrays; `Analytics.risk_statistics()` supplies named and dated results otherwise.

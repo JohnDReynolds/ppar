@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppar"
-version = "0.4.0"
+version = "0.4.1"
 description = "Portfolio performance attribution, contribution, and ex-post risk analytics."
 authors = [{ name = "John Reynolds", email = "jjjkreynolds@gmail.com" }]
 readme = "README.md"
@@ -25,7 +25,7 @@ dependencies = [
     "matplotlib>=3.8.2",
     "numpy>=1.26.4",
     "pandas>=2.2",
-    "perfattr>=0.3.0a1",
+    "perfattr>=0.12,<0.13",
     "pillow>=10.0",
     "polars>=1.24.0",
     "seaborn>=0.13.2",
@@ -47,6 +47,7 @@ dev = [
 ppar = "ppar.cli:main"
 
 [project.urls]
+Documentation = "https://github.com/JohnDReynolds/ppar/blob/main/docs/python_api.md"
 Repository = "https://github.com/JohnDReynolds/ppar"
 
 [tool.setuptools.packages.find]

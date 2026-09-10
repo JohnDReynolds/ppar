@@ -6,6 +6,8 @@ those subperiods to the requested frequency, and exposes Attribution and
 RiskStatistics results.
 """
 
+from __future__ import annotations
+
 # Python Imports
 import datetime as dt
 from pathlib import Path
@@ -24,8 +26,14 @@ from ppar.errors import PparError
 import ppar.utilities as util
 
 
-class _AttributionSources(Protocol):  # pylint: disable=too-few-public-methods
-    """Describe bundled classification sources accepted by Analytics."""
+class AttributionSources(Protocol):  # pylint: disable=too-few-public-methods
+    """Describe classification source bundles accepted by attribution.
+
+    Attributes:
+        classification_name: Name shared by the classification and mapping sources.
+        classification_data_source: Classification CSV path or Polars DataFrame.
+        mapping_data_sources: Optional portfolio and benchmark mapping sources.
+    """
 
     @property
     def classification_name(self) -> str | None:
@@ -357,15 +365,15 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
 
     def attribution_for(
         self,
-        sources: _AttributionSources,
+        sources: AttributionSources,
         classification_label: str | None = None,
     ) -> Attribution:
-        """Return an Attribution instance from a bundled source object.
+        """Return an Attribution instance from a classification source bundle.
 
         Args:
-            sources: Object containing a classification name, classification data
-                source, and optional mapping data sources. Axys classification
-                source bundles implement this shape.
+            sources: Bundle containing a classification name, classification data
+                source, and optional mapping sources. ``AxysData`` classification
+                methods return compatible bundles.
             classification_label: Optional label displayed in tables and charts. If
                 supplied, this overrides the classification name from ``sources`` for
                 presentation.

@@ -8,6 +8,8 @@ Attribution instances are normally created by
 :meth:`ppar.Analytics.attribution`.
 """
 
+from __future__ import annotations
+
 # Overrides for pylint
 # pylint: disable=too-many-lines
 

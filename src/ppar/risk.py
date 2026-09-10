@@ -6,6 +6,8 @@ benchmark-relative risk, risk-adjusted performance, and regression statistics
 for a portfolio and benchmark return series.
 """
 
+from __future__ import annotations
+
 # Python Imports
 import datetime as dt
 from enum import Enum

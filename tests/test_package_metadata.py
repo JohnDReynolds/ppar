@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import ast
 from importlib import metadata, resources
+import inspect
 from pathlib import Path
 import runpy
 import tomllib
+import typing
 from typing import Any
 import unittest
 from unittest import mock
@@ -25,6 +27,17 @@ _ROOT = Path(__file__).resolve().parents[1]
 _PRODUCT_DESCRIPTION = (
     "Portfolio performance attribution, contribution, and ex-post risk analytics."
 )
+_REPOSITORY_URL = "https://github.com/JohnDReynolds/ppar"
+_DOCUMENTATION_URL = f"{_REPOSITORY_URL}/blob/main/docs/python_api.md"
+_LICENSE_URL = f"{_REPOSITORY_URL}/blob/main/LICENSE"
+_README_DOCUMENTATION_LINKS = {
+    "Methodology": f"{_REPOSITORY_URL}/blob/main/docs/methodology.md",
+    "Reports and results": f"{_REPOSITORY_URL}/blob/main/docs/reports.md",
+    "Python API": _DOCUMENTATION_URL,
+    "Contributor maintenance": f"{_REPOSITORY_URL}/blob/main/docs/maintenance.md",
+}
+
+
 class TestPackageMetadata(unittest.TestCase):
     """The extracted product has one coherent public and packaged identity."""
 
@@ -32,13 +45,14 @@ class TestPackageMetadata(unittest.TestCase):
         """Distribution metadata names only the independent Analytics product."""
         project = _pyproject()["project"]
         self.assertEqual(project["name"], "ppar")
-        self.assertEqual(project["version"], "0.4.0")
+        self.assertEqual(project["version"], "0.4.1")
         self.assertEqual(project["requires-python"], ">=3.11.9,<3.15")
         self.assertEqual(project["scripts"], {"ppar": "ppar.cli:main"})
         self.assertEqual(
             project["urls"]["Repository"],
-            "https://github.com/JohnDReynolds/ppar",
+            _REPOSITORY_URL,
         )
+        self.assertEqual(project["urls"]["Documentation"], _DOCUMENTATION_URL)
         self.assertEqual(ppar.__version__, project["version"])
         self.assertEqual(ppar.__version__, metadata.version("ppar"))
         self.assertIn(
@@ -71,6 +85,8 @@ class TestPackageMetadata(unittest.TestCase):
         install_position = readme.index("python -m pip install ppar")
         self.assertLess(readme.index("90-day, single-user"), install_position)
         self.assertLess(readme.index("jjjkreynolds@gmail.com"), install_position)
+        self.assertEqual(readme.count(f"]({_LICENSE_URL})"), 2)
+        self.assertNotIn("](LICENSE)", readme)
         self.assertIn("solely for internal evaluation for 90 days", license_text)
         self.assertIn("John D Reynolds at\njjjkreynolds@gmail.com", license_text)
         self.assertNotRegex(license_text, r"\bPPAR\b")
@@ -168,8 +184,10 @@ class TestPackageMetadata(unittest.TestCase):
         )[0]
         compile(csv_example, "reports guide CSV example", "exec")
 
-        self.assertIn("[Reports and results](docs/reports.md)", readme)
-        self.assertIn("[Contributor maintenance](docs/maintenance.md)", readme)
+        for label, target in _README_DOCUMENTATION_LINKS.items():
+            with self.subTest(documentation_link=label):
+                self.assertIn(f"[{label}]({target})", readme)
+        self.assertNotIn("](docs/", readme)
         self.assertIn("[Reports and results](reports.md)", api_guide)
         self.assertIn("Receive `Attribution`", api_guide)
         self.assertNotIn("perfattr", api_guide)
@@ -181,6 +199,29 @@ class TestPackageMetadata(unittest.TestCase):
         self.assertIn(
             "returned by AxysData",
             ppar.axys_apx.AxysClassificationSources.__doc__ or "",
+        )
+
+    def test_public_signatures_use_supported_ppar_type_names(self) -> None:
+        """Interactive signatures avoid implementation and private type names."""
+        public_callables = (
+            ppar.Analytics,
+            ppar.Analytics.attribution_for,
+            ppar.attribution.Attribution,
+            ppar.risk.RiskStatistics,
+        )
+        for callable_object in public_callables:
+            with self.subTest(callable_object=callable_object.__qualname__):
+                signature = str(inspect.signature(callable_object))
+                self.assertNotIn("perfattr", signature)
+                self.assertNotIn("_AttributionSources", signature)
+
+        attribution_for_signature = str(
+            inspect.signature(ppar.Analytics.attribution_for)
+        )
+        self.assertIn("AttributionSources", attribution_for_signature)
+        self.assertIs(
+            typing.get_type_hints(ppar.Analytics.attribution_for)["sources"],
+            ppar.AttributionSources,
         )
 
     def test_runtime_dependencies_are_complete_and_independent(self) -> None:
@@ -200,14 +241,17 @@ class TestPackageMetadata(unittest.TestCase):
             },
         )
         self.assertNotIn("perfaud", " ".join(dependencies).lower())
-        self.assertIn("perfattr>=0.3.0a1", dependencies)
+        self.assertIn("perfattr>=0.12,<0.13", dependencies)
         constraints = (_ROOT / "constraints/ci.txt").read_text(encoding="utf-8")
-        self.assertIn("perfattr==0.3.0a1", constraints.splitlines())
+        self.assertIn("perfattr==0.12.0", constraints.splitlines())
         self.assertEqual(set(project["optional-dependencies"]), {"dev"})
 
     def test_root_exports_are_exact(self) -> None:
         """The root exposes only the primary facade and version."""
-        self.assertEqual(ppar.__all__, ["Analytics", "__version__"])
+        self.assertEqual(
+            ppar.__all__,
+            ["Analytics", "AttributionSources", "__version__"],
+        )
         self.assertTrue(callable(ppar.Analytics))
 
     def test_supported_module_exports_are_explicit(self) -> None:

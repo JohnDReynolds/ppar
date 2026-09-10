@@ -234,7 +234,8 @@ def _installed_package_workflow_smoke(wheel: Path, directory: Path) -> None:
         "origin=Path(ppar.__file__).resolve(); "
         "assert 'site-packages' in str(origin), origin; "
         "assert importlib.util.find_spec('perfaud') is None; "
-        "assert ppar.__all__ == ['Analytics', '__version__']; "
+        "assert ppar.__all__ == "
+        "['Analytics', 'AttributionSources', '__version__']; "
         f"assert ppar.__version__ == {expected_version!r}, ppar.__version__; "
         "print(origin)"
     )

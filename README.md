@@ -12,7 +12,8 @@ ppar supports Python 3.11.9 through Python 3.14.
 
 ppar is available under a 90-day, single-user internal evaluation license.
 Production, commercial, multi-user, or continued use requires a separate agreement;
-contact `jjjkreynolds@gmail.com`. Review the [license](LICENSE) before installing.
+contact `jjjkreynolds@gmail.com`. Review the
+[license](https://github.com/JohnDReynolds/ppar/blob/main/LICENSE) before installing.
 
 ```bash
 python -m pip install ppar
@@ -118,10 +119,10 @@ as Polars DataFrames, HTML text, PNG bytes, or CSV files.
 
 ## Documentation
 
-- [Methodology](docs/methodology.md)
-- [Reports and results](docs/reports.md)
-- [Python API](docs/python_api.md)
-- [Contributor maintenance](docs/maintenance.md)
+- [Methodology](https://github.com/JohnDReynolds/ppar/blob/main/docs/methodology.md)
+- [Reports and results](https://github.com/JohnDReynolds/ppar/blob/main/docs/reports.md)
+- [Python API](https://github.com/JohnDReynolds/ppar/blob/main/docs/python_api.md)
+- [Contributor maintenance](https://github.com/JohnDReynolds/ppar/blob/main/docs/maintenance.md)
 
 Downloading, installing, accessing, copying, or using ppar constitutes acceptance of
-the [license](LICENSE).
+the [license](https://github.com/JohnDReynolds/ppar/blob/main/LICENSE).

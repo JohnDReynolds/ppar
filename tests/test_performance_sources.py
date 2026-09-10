@@ -142,6 +142,82 @@ class TestPerformanceSources(unittest.TestCase):
                         ["Alpha Name", "Beta"],
                     )
 
+    def test_retained_invalid_display_names_use_contextual_public_error(self) -> None:
+        """Null and blank retained names fail consistently for both source forms."""
+        valid = _performance_rows(include_names=True)
+        for invalid_name in (None, "", "   "):
+            invalid = valid.with_columns(
+                pl.when(
+                    (pl.col(cols.IDENTIFIER) == "A")
+                    & (pl.col(cols.THRU_DATE) == _PERIODS[1][1])
+                )
+                .then(pl.lit(invalid_name))
+                .otherwise(pl.col(cols.NAME))
+                .alias(cols.NAME)
+            )
+            with tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "invalid-performance.csv"
+                invalid.write_csv(path)
+                for source in (invalid, path):
+                    for role in ("Portfolio", "Benchmark"):
+                        with self.subTest(
+                            invalid_name=invalid_name,
+                            source_type=type(source).__name__,
+                            role=role,
+                        ):
+                            portfolio = source if role == "Portfolio" else valid
+                            benchmark = source if role == "Benchmark" else valid
+                            with self.assertRaises(PparError) as context:
+                                Analytics(
+                                    portfolio,
+                                    benchmark,
+                                    portfolio_classification_name="Security",
+                                    benchmark_classification_name="Security",
+                                )
+
+                            self.assertIn(
+                                f"{role} performance display name field 'name'",
+                                str(context.exception),
+                            )
+                            self.assertIn("non-null and nonblank", str(context.exception))
+                            self.assertEqual(
+                                context.exception.context["boundary"],
+                                f"{role} performance display metadata",
+                            )
+                            self.assertEqual(context.exception.context["field"], "name")
+
+    def test_invalid_display_name_in_excluded_period_is_ignored(self) -> None:
+        """Display metadata outside retained history cannot block valid analysis."""
+        valid = _performance_rows(include_names=True)
+        excluded_invalid = valid.with_columns(
+            pl.when(
+                (pl.col(cols.IDENTIFIER) == "A")
+                & (pl.col(cols.THRU_DATE) == _PERIODS[0][1])
+            )
+            .then(None)
+            .otherwise(pl.col(cols.NAME))
+            .alias(cols.NAME)
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "excluded-invalid-performance.csv"
+            excluded_invalid.write_csv(path)
+            for source in (excluded_invalid, path):
+                for role in ("Portfolio", "Benchmark"):
+                    with self.subTest(source_type=type(source).__name__, role=role):
+                        portfolio = source if role == "Portfolio" else valid
+                        benchmark = source if role == "Benchmark" else valid
+                        detail = _detail(
+                            portfolio,
+                            benchmark,
+                            from_date=_PERIODS[1][0],
+                            thru_date=_PERIODS[1][1],
+                        )
+
+                        self.assertEqual(
+                            detail[cols.CLASSIFICATION_NAME].unique().sort().to_list(),
+                            ["Alpha", "Beta"],
+                        )
+
     def test_inferred_name_uses_latest_aligned_retained_period(self) -> None:
         """Excluded or unmatched history cannot affect a display name."""
         portfolio = pl.DataFrame(

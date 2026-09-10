@@ -316,16 +316,21 @@ def _load_performance_input(
 def _classification_items_for_prepared(
     dated_names: pd.DataFrame,
     prepared: pd.DataFrame,
+    source_role: str,
 ) -> pl.DataFrame:
     """Select latest display names from periods retained by preparation.
 
     Args:
         dated_names: Optional raw names with their source-period identity.
         prepared: Financial rows retained by portable preparation.
+        source_role: User-facing role of this performance source.
 
     Returns:
         Host classification metadata containing at most one row per retained
         identifier.
+
+    Raises:
+        PparError: If a retained display name is null or blank after trimming.
 
     Notes:
         Name selection follows financial date filtering and pair alignment so
@@ -344,6 +349,27 @@ def _classification_items_for_prepared(
         & normalized_names["thru_date"].le(prepared["thru_date"].max())
         & normalized_names["identifier"].isin(prepared["identifier"].unique())
     ].copy(deep=True)
+    invalid_names = accepted["name"].isna() | accepted["name"].eq("")
+    if invalid_names.any():
+        affected_identifiers = (
+            accepted.loc[invalid_names, "identifier"]
+            .dropna()
+            .astype(str)
+            .drop_duplicates()
+            .head(10)
+            .tolist()
+        )
+        boundary = f"{source_role} performance display metadata"
+        raise PparError(
+            f"{source_role} performance display name field 'name' must be non-null "
+            "and nonblank after surrounding whitespace is removed. "
+            f"Affected identifiers: {affected_identifiers}.",
+            context={
+                "boundary": boundary,
+                "field": "name",
+                "identifiers": affected_identifiers,
+            },
+        )
     accepted = accepted.sort_values(
         ["thru_date", "from_date", "identifier"], kind="stable"
     ).drop_duplicates("identifier", keep="last")
@@ -409,20 +435,26 @@ def prepare_performance_sources(
 
     from ppar.performance import Performance  # pylint: disable=import-outside-toplevel
 
+    source_roles = ("Portfolio", "Benchmark")
     results = tuple(
         Performance._from_prepared_rows(  # pylint: disable=protected-access
             _prepared_to_polars(frame),
             data_source=source,
             name=name,
             classification_name=classification_name,
-            classification_items=_classification_items_for_prepared(metadata[1], frame),
+            classification_items=_classification_items_for_prepared(
+                metadata[1],
+                frame,
+                source_role,
+            ),
         )
-        for source, name, classification_name, metadata, frame in zip(
+        for source, name, classification_name, metadata, frame, source_role in zip(
             sources,
             source_names,
             source_classifications,
             loaded,
             (prepared.portfolio, prepared.benchmark),
+            source_roles,
             strict=True,
         )
     )

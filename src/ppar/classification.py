@@ -132,9 +132,9 @@ class Classification:
 
         Returns:
             Tuple containing the resolved classification name and a two-column
-            Polars DataFrame of classification identifiers and names. Returns
-            ``None`` and an empty typed DataFrame when no matching classification
-            data is available.
+            Polars DataFrame of classification identifiers and names. The DataFrame
+            can be empty when the common classification is known but neither
+            performance supplies optional item names.
         """
         # Return empty if there are no performances or the portfolio and benchmark do not share
         # the same classification name.
@@ -143,6 +143,8 @@ class Classification:
         ):
             return None, _EMPTY_DF
 
+        common_name = performances[0].classification_name
+
         # Get the classification items from the portfolio and benchmark Performance objects.
         dfs = [
             performance.classification_items
@@ -150,9 +152,10 @@ class Classification:
             if not performance.classification_items.is_empty()
         ]
 
-        # Return empty if the performances do not have any classification_items.
+        # Optional item names do not determine whether the common classification
+        # itself is known. Reporting can use identifiers as item-name fallbacks.
         if not dfs:
-            return None, _EMPTY_DF
+            return common_name, _EMPTY_DF
 
         # Concatenate the portfolio and benchmark classification items. Exact duplicate
         # pairs are harmless; different names for one identifier are ambiguous.
@@ -169,4 +172,4 @@ class Classification:
         )
 
         # Return the classification name common to both streams and the combined items.
-        return performances[0].classification_name, df
+        return common_name, df

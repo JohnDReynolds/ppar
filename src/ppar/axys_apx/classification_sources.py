@@ -43,7 +43,6 @@ _SECURITY_MASTER_IDENTITY_KEYS: Final[frozenset[str]] = frozenset(
 )
 _SECURITY_MASTER_FILE_KEY: Final[str] = "security_master"
 _SECURITY_CLASSIFICATION_NAME: Final[str] = "Security"
-_FILTER_TO_SECURITY_IDS: Final[str] = "_filter_to_security_ids"
 _SOURCE_FILE_PATH: Final[str] = "_source_file_path"
 _SECURITY_ID_CONSTRUCTION: Final[str] = "_security_id_construction"
 _CONSTRUCTED_SECURITY_ID_COLUMN: Final[str] = "__ppar_constructed_security_id"
@@ -81,14 +80,19 @@ class AxysClassificationSourceLoader:
         self,
         source_type: _SourceType,
         source_name: str | None,
-        unique_security_ids: list[str],
+        required_identifiers: list[str],
+        *,
+        require_complete: bool = False,
     ) -> pl.DataFrame:
         """Load one normalized classification or security-to-group mapping.
 
         Args:
             source_type: Whether to produce classification items or a mapping.
             source_name: ``Security`` or a configured security-master mapping name.
-            unique_security_ids: Security identifiers retained in portfolio output.
+            required_identifiers: Security or classification identifiers required
+                by the selected portfolio output.
+            require_complete: Whether every required identifier must have a
+                normalized source row.
 
         Returns:
             Two-column DataFrame containing normalized identifier/name pairs.
@@ -120,6 +124,7 @@ class AxysClassificationSourceLoader:
                 dataset_name="security_master",
                 source_path=file_path,
                 error_message=self._error_message,
+                required_identifiers=required_identifiers,
             )
             lazy_frame = source_frame.lazy()
         self._validate_csv_columns(source_type, source_name, source, lazy_frame)
@@ -128,10 +133,12 @@ class AxysClassificationSourceLoader:
             cast(str, source["identifier_column"]),
             cast(str, source["name_column"]),
         }
-        if source[_FILTER_TO_SECURITY_IDS]:
+        if construction is None:
             identifier_column = cast(str, source["identifier_column"])
             lazy_frame = lazy_frame.filter(
-                pl.col(identifier_column).str.strip_chars().is_in(unique_security_ids)
+                pl.col(identifier_column)
+                .str.strip_chars()
+                .is_in(required_identifiers)
             )
         lazy_frame = lazy_frame.with_columns(
             pl.col(column_name).str.strip_chars()
@@ -163,12 +170,29 @@ class AxysClassificationSourceLoader:
                 source_description=source_description,
             )
         )
-        return pl.DataFrame(
+        result = pl.DataFrame(
             {
                 cols.IDENTIFIER: portable.iloc[:, 0].to_numpy(),
                 cols.NAME: portable.iloc[:, 1].to_numpy(),
             }
         )
+        if require_complete:
+            observed_identifiers = set(result[cols.IDENTIFIER].to_list())
+            missing_identifiers = list(
+                dict.fromkeys(
+                    identifier
+                    for identifier in required_identifiers
+                    if identifier not in observed_identifiers
+                )
+            )
+            if missing_identifiers:
+                raise PparError(
+                    self._error_message(
+                        f"Missing {source_type} {source_name!r} rows for required "
+                        f"identifiers: {missing_identifiers[:10]}."
+                    )
+                )
+        return result
 
     def _effective_source_definition(
         self,
@@ -193,7 +217,6 @@ class AxysClassificationSourceLoader:
                 _SOURCE_FILE_PATH: security_master[_SOURCE_FILE_PATH],
                 "identifier_column": security_master["identifier_column"],
                 "name_column": security_master["name_column"],
-                _FILTER_TO_SECURITY_IDS: True,
                 **self._security_id_construction_fields(security_master),
             }
 
@@ -208,13 +231,11 @@ class AxysClassificationSourceLoader:
                 _SOURCE_FILE_PATH: security_master[_SOURCE_FILE_PATH],
                 "identifier_column": mapping["classification_column"],
                 "name_column": mapping["display_name_column"],
-                _FILTER_TO_SECURITY_IDS: False,
             }
         return {
             _SOURCE_FILE_PATH: security_master[_SOURCE_FILE_PATH],
             "identifier_column": security_master["identifier_column"],
             "name_column": mapping["classification_column"],
-            _FILTER_TO_SECURITY_IDS: True,
             **self._security_id_construction_fields(security_master),
         }
 
@@ -258,6 +279,9 @@ class AxysClassificationSourceLoader:
         file_path: util.PathLike,
     ) -> None:
         """Reject null or blank identities in normalized supporting sources."""
+        source_label = (
+            "classification mapping" if source_type == "mapping" else source_type
+        )
         field_names = ["identifier_column", "name_column"]
         for field_name in field_names:
             column_name = cast(str, source[field_name])
@@ -267,7 +291,7 @@ class AxysClassificationSourceLoader:
             raise PparError(
                 self._error_message(
                     f"Identity field {column_name!r} in {str(file_path)!r} for "
-                    f"{source_type} {source_name!r} must be non-null and nonblank "
+                    f"{source_label} {source_name!r} must be non-null and nonblank "
                     "after surrounding whitespace is removed. "
                     f"Affected rows: {sample_rows(invalid_rows, [column_name])}"
                 )

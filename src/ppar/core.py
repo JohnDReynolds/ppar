@@ -124,6 +124,9 @@ class Analytics:  # pylint: disable=too-many-instance-attributes
                 2024-01-01, 2024-01-31, AAPL, -0.0422272121, 0.4, Apple Inc.
                 2024-01-01, 2024-01-31, MSFT,  0.0572811503, 0.6, Microsoft
 
+            When the optional ``name`` column is supplied, retained names must be
+            non-null and nonblank after surrounding whitespace is removed.
+
         Raises:
             PparError: If either date cannot be converted, the portfolio and benchmark
                 do not share any valid subperiods, there are too few performance rows

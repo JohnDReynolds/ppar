@@ -23,13 +23,13 @@ import ppar.utilities as util
 if TYPE_CHECKING:
     from ppar import Analytics
 
-_ANALYTICS_REQUIRED_COLUMNS = {
+_ANALYTICS_REQUIRED_COLUMNS = (
     cols.FROM_DATE,
     cols.THRU_DATE,
     cols.IDENTIFIER,
     cols.RETURN,
     cols.WEIGHT,
-}
+)
 _SECURITY_PERFORMANCE_CLASSIFICATION_NAME = "Security"
 _PORTFOLIO_NAME_SEPARATOR = " - "
 _PortfolioErrorMessage = Callable[[str, str | None], str]

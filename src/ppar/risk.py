@@ -101,7 +101,9 @@ class RiskStatistics:
         Accepted NumPy integer and floating return arrays are normalized to
         ``float64`` before calculation. Periodic portfolio and benchmark
         returns must be finite and strictly greater than -100% because the
-        reported annualized values use geometric compounding.
+        reported annualized values use geometric compounding. Finite inputs
+        must also produce representable derived statistics; arithmetic overflow
+        raises ``PparError`` before a partial result can be exposed.
 
         Ratio calculations retain small risk magnitudes supported by the
         floating-point resolution of their source returns. Exact or
@@ -148,8 +150,8 @@ class RiskStatistics:
         Raises:
             PparError: If the frequency, financial parameters, portfolio value,
                 input pair, return-source types, return dimensions, return
-                lengths, observation count, finite values, or Performance dates
-                fail validation.
+                lengths, observation count, finite values, Performance dates, or
+                representability of derived statistics fail validation.
         """
         # Validate public options before indexing either input pair.
         if not isinstance(frequency, Frequency) or frequency == Frequency.AS_OFTEN_AS_POSSIBLE:
@@ -318,13 +320,32 @@ class RiskStatistics:
         if self._performances_to_audit:
             self._audit()
 
-        # Get all statistic values.
-        statistic_values = self._calculate_all_statistics(
-            annual_minimum_acceptable_return,
-            annual_risk_free_rate,
-            confidence_level,
-            portfolio_value_amount,
-        )
+        # Finite source values can still overflow float64 calculations such as
+        # variance and squared downside shortfalls. Convert those arithmetic
+        # failures into the public error contract instead of publishing warnings
+        # and partially nonfinite analytics.
+        try:
+            with np.errstate(over="raise", invalid="raise"):
+                statistic_values = self._calculate_all_statistics(
+                    annual_minimum_acceptable_return,
+                    annual_risk_free_rate,
+                    confidence_level,
+                    portfolio_value_amount,
+                )
+        except FloatingPointError as error:
+            raise PparError(
+                "Risk statistics cannot be represented for the supplied finite inputs.",
+                context={
+                    "calculation": "derived risk statistics",
+                    "reason": str(error),
+                    "portfolio_max_absolute_return": float(
+                        np.max(np.abs(self._portfolio_returns))
+                    ),
+                    "benchmark_max_absolute_return": float(
+                        np.max(np.abs(self._benchmark_returns))
+                    ),
+                },
+            ) from error
 
         # Create self._df from the statistic_values dictionary.
         self._df = pl.DataFrame(statistic_values)
@@ -867,6 +888,10 @@ class RiskStatistics:
 
         Returns:
             Parametric value at risk as a positive currency amount.
+
+        Raises:
+            PparError: If the finite inputs produce an unrepresentable currency
+                loss.
         """
         # For a 95% VaR, use the 5th percentile of the normal return distribution.
         # ``z_score`` is negative, so ``mean + z * stddev`` is the lower-tail return.
@@ -875,7 +900,31 @@ class RiskStatistics:
         # Report VaR as a nonnegative potential loss. Example: if the 5th-percentile
         # return is -3%, a $100,000 portfolio has $3,000 VaR. If the lower-tail
         # quantile is still positive, the loss is floored at zero.
-        var = max(0.0, -(mean + (z_score * stddev)) * portfolio_value)
+        try:
+            with np.errstate(over="raise", invalid="raise"):
+                var = max(0.0, -(mean + (z_score * stddev)) * portfolio_value)
+        except FloatingPointError as error:
+            raise PparError(
+                "Value At Risk cannot be represented for the supplied finite inputs.",
+                context={
+                    "statistic": _Statistic.VALUE_AT_RISK.value,
+                    "mean": float(mean),
+                    "standard_deviation": float(stddev),
+                    "confidence_level": confidence_level,
+                    "portfolio_value": portfolio_value,
+                },
+            ) from error
+        if not math.isfinite(var):
+            raise PparError(
+                "Value At Risk cannot be represented for the supplied finite inputs.",
+                context={
+                    "statistic": _Statistic.VALUE_AT_RISK.value,
+                    "mean": float(mean),
+                    "standard_deviation": float(stddev),
+                    "confidence_level": confidence_level,
+                    "portfolio_value": portfolio_value,
+                },
+            )
 
         # This package uses the common positive-loss convention; callers do not
         # need to negate the result for presentation.

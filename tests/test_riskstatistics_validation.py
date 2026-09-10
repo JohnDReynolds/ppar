@@ -4,6 +4,7 @@
 import datetime as dt
 import math
 import unittest
+import warnings
 
 # Third-Party Imports
 import numpy as np
@@ -117,6 +118,69 @@ class TestRiskStatisticsValidation(unittest.TestCase):
                 Frequency.MONTHLY,
                 annual_risk_free_rate=0.0,
             )
+
+    def test_derived_statistic_overflow_is_rejected_without_warning(self) -> None:
+        """Finite extreme returns cannot publish overflowed risk statistics."""
+        returns = np.array([1.0e308, -0.5])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            with self.assertRaisesRegex(
+                PparError,
+                "Risk statistics cannot be represented",
+            ) as raised:
+                RiskStatistics(
+                    (returns, returns.copy()),
+                    Frequency.YEARLY,
+                )
+
+        self.assertEqual(
+            raised.exception.context["calculation"],
+            "derived risk statistics",
+        )
+
+    def test_downside_overflow_is_rejected_without_warning(self) -> None:
+        """An extreme finite hurdle cannot overflow squared shortfalls."""
+        returns = np.array([0.01, 0.02])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            with self.assertRaisesRegex(
+                PparError,
+                "Risk statistics cannot be represented",
+            ) as raised:
+                RiskStatistics(
+                    (returns, returns.copy()),
+                    Frequency.YEARLY,
+                    annual_minimum_acceptable_return=1.0e308,
+                )
+
+        self.assertEqual(
+            raised.exception.context["calculation"],
+            "derived risk statistics",
+        )
+
+    def test_value_at_risk_overflow_is_rejected(self) -> None:
+        """Finite inputs cannot publish an unrepresentable currency loss."""
+        returns = np.array([-0.999999, 0.0])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            with self.assertRaisesRegex(
+                PparError,
+                "Value At Risk cannot be represented",
+            ) as raised:
+                RiskStatistics(
+                    (returns, returns.copy()),
+                    Frequency.YEARLY,
+                    confidence_level=np.nextafter(1.0, 0.0),
+                    portfolio_value=(1.0e308, "$"),
+                )
+
+        self.assertEqual(
+            raised.exception.context["statistic"],
+            "Value At Risk",
+        )
 
     def test_performance_total_return_at_negative_one_is_rejected(self) -> None:
         """Portable preparation rejects an undefined wealth relative at entry."""

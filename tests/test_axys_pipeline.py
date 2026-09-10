@@ -4,7 +4,10 @@
 import datetime as dt
 import inspect
 import math
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -478,6 +481,13 @@ class TestAxysPipeline(unittest.TestCase):
                     .replace_strict(security_types)
                     .alias("Security Type")
                 )
+                if file_name == "security_master.csv":
+                    frame = frame.with_columns(
+                        pl.when(pl.col("Security Symbol") == "UNUSED")
+                        .then(None)
+                        .otherwise(pl.col("Security Type"))
+                        .alias("Security Type")
+                    )
                 frame.write_csv(path)
 
             specification["security_id"] = {
@@ -511,6 +521,54 @@ class TestAxysPipeline(unittest.TestCase):
                 sources.classification_data_source[cols.IDENTIFIER].sort().to_list(),
                 ["csus_A", "csus_B"],
             )
+
+            security_master_path = directory / "security_master.csv"
+            pl.read_csv(security_master_path).with_columns(
+                pl.when(pl.col("Security Symbol") == "A")
+                .then(None)
+                .otherwise(pl.col("Security Type"))
+                .alias("Security Type")
+            ).write_csv(security_master_path)
+            with self.assertRaisesRegex(
+                PparError,
+                "Missing classification 'Security' rows.*csus_A",
+            ):
+                data.get_classification_sources("Security", portfolio)
+
+    def test_public_security_performance_column_order_is_hash_stable(self) -> None:
+        """AxysPortfolio exposes its canonical columns in deterministic order."""
+        expected_columns = [
+            cols.FROM_DATE,
+            cols.THRU_DATE,
+            cols.IDENTIFIER,
+            cols.RETURN,
+            cols.WEIGHT,
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            specification = _write_axys_inputs(directory)
+            self.assertEqual(
+                _axys_data(directory, specification)
+                .get_portfolio("P1")
+                .security_performance.columns,
+                expected_columns,
+            )
+            script = (
+                "from ppar.axys_apx import AxysData; "
+                f"data = AxysData({str(directory)!r}, {specification!r}); "
+                "print('|'.join(data.get_portfolio('P1').security_performance.columns))"
+            )
+            expected_output = "|".join(expected_columns)
+            for seed in ("1", "2"):
+                with self.subTest(seed=seed):
+                    completed = subprocess.run(
+                        [sys.executable, "-c", script],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        env={**os.environ, "PYTHONHASHSEED": seed},
+                    )
+                    self.assertEqual(completed.stdout.strip(), expected_output)
 
     def test_explicit_performance_mapping_ignores_unconfigured_columns(self) -> None:
         """Configured performance columns ignore unrelated headings."""
@@ -770,8 +828,66 @@ class TestAxysPipeline(unittest.TestCase):
             self.assertIsNotNone(sources.mapping_data_sources)
             self.assertEqual(
                 sources.classification_data_source[cols.NAME].sort().to_list(),
-                ["Cash", "Defensive", "Other", "Technology"],
+                ["Defensive", "Technology"],
             )
+
+    def test_classification_sources_ignore_invalid_unselected_master_rows(self) -> None:
+        """Only master evidence required by selected accounts is validated."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            specification = _write_axys_inputs(directory)
+            security_master_path = directory / "security_master.csv"
+            pl.read_csv(security_master_path).with_columns(
+                pl.when(pl.col("SECURITY_ID") == "UNUSED")
+                .then(None)
+                .otherwise(pl.col("SECTOR_CODE"))
+                .alias("SECTOR_CODE"),
+                pl.when(pl.col("SECURITY_ID") == "UNUSED")
+                .then(None)
+                .otherwise(pl.col("SECTOR_DESC"))
+                .alias("SECTOR_DESC"),
+            ).write_csv(security_master_path)
+            data = _axys_data(directory, specification)
+            portfolio = data.get_portfolio("P1")
+            benchmark = data.get_portfolio("P2")
+
+            portfolio_sources = data.get_classification_sources("Sector", portfolio)
+            paired_sources = data.get_classification_sources_for_pair(
+                "Sector",
+                portfolio,
+                benchmark,
+            )
+
+            self.assertEqual(
+                portfolio_sources.classification_data_source[cols.IDENTIFIER]
+                .sort()
+                .to_list(),
+                ["DEF", "TECH"],
+            )
+            self.assertEqual(
+                paired_sources.classification_data_source[cols.IDENTIFIER]
+                .sort()
+                .to_list(),
+                ["CASH", "DEF", "TECH"],
+            )
+
+    def test_selected_security_without_mapping_is_rejected_by_source_loader(self) -> None:
+        """Selected performance identifiers retain complete mapping coverage."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            specification = _write_axys_inputs(directory)
+            security_master_path = directory / "security_master.csv"
+            pl.read_csv(security_master_path).filter(
+                pl.col("SECURITY_ID") != "B"
+            ).write_csv(security_master_path)
+            data = _axys_data(directory, specification)
+            portfolio = data.get_portfolio("P1")
+
+            with self.assertRaisesRegex(
+                PparError,
+                "Missing mapping 'Sector' rows.*B",
+            ):
+                data.get_classification_sources("Sector", portfolio)
 
     def test_portfolio_only_attribution_names_its_sources_explicitly(self) -> None:
         """Portfolio-only Axys attribution identifies its classification source."""
@@ -913,11 +1029,11 @@ class TestAxysPipeline(unittest.TestCase):
             self.assertIsNotNone(sources.mapping_data_sources)
             self.assertEqual(
                 sources.classification_data_source[cols.IDENTIFIER].sort().to_list(),
-                ["CASH", "DEF", "OTHER", "TECH"],
+                ["DEF", "TECH"],
             )
             self.assertEqual(
                 sources.classification_data_source[cols.NAME].sort().to_list(),
-                ["Cash", "Defensive", "Other", "Technology"],
+                ["Defensive", "Technology"],
             )
 
     def test_axys_sources_accept_exact_duplicate_pairs(self) -> None:

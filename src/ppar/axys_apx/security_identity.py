@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 # Python imports
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from typing import Final, cast
 
@@ -183,6 +183,7 @@ def with_constructed_security_id(
     dataset_name: str,
     source_path: util.PathLike,
     error_message: Callable[[str], str],
+    required_identifiers: Collection[str] | None = None,
 ) -> pl.DataFrame:
     """Add a validated composite security identifier to a source frame.
 
@@ -193,13 +194,17 @@ def with_constructed_security_id(
         dataset_name: Normalized source dataset name for errors.
         source_path: Source CSV path for errors.
         error_message: Callback that adds product-specific error context.
+        required_identifiers: Optional constructed identifiers used to limit a
+            supporting source before validating its component values. Missing
+            required identifiers remain the caller's coverage responsibility.
 
     Returns:
         A new frame containing ``output_column``.
 
     Raises:
-        PparError: If a component column is missing or blank after trimming, or
-            produces an ambiguous composite identifier.
+        PparError: If a required component column is missing, or a retained
+            component is blank after trimming or produces an ambiguous composite
+            identifier.
 
     Notes:
         Symbols may contain the configured separator. ppar therefore checks
@@ -224,27 +229,6 @@ def with_constructed_security_id(
             strict=True,
         )
     }
-    for component, source_column in zip(
-        construction.components,
-        construction.source_columns,
-        strict=True,
-    ):
-        string_expression = string_expressions[component]
-        invalid_rows = frame.filter(
-            string_expression.is_null()
-            | string_expression.eq("")
-        )
-        if not invalid_rows.is_empty():
-            value = invalid_rows.get_column(source_column)[0]
-            raise PparError(
-                error_message(
-                    f"security_id component {component!r}, mapped to source column "
-                    f"{source_column!r}, contains a blank or null value "
-                    f"{value!r} after surrounding whitespace is removed in "
-                    f"{str(source_path)!r} "
-                    f"for {dataset_name}."
-                ),
-            )
     result = frame.with_columns(
         string_expressions[component].alias(source_column)
         for component, source_column in zip(
@@ -252,12 +236,52 @@ def with_constructed_security_id(
             construction.source_columns,
             strict=True,
         )
-    ).with_columns(
-        pl.concat_str(
-            [pl.col(source_column) for source_column in construction.source_columns],
-            separator=construction.separator,
-        ).alias(output_column)
     )
+    if required_identifiers is not None:
+        valid_components = [
+            pl.col(source_column).is_not_null() & pl.col(source_column).ne("")
+            for source_column in construction.source_columns
+        ]
+        result = result.with_columns(
+            pl.when(pl.all_horizontal(*valid_components))
+            .then(
+                pl.concat_str(
+                    [
+                        pl.col(source_column)
+                        for source_column in construction.source_columns
+                    ],
+                    separator=construction.separator,
+                )
+            )
+            .otherwise(None)
+            .alias(output_column)
+        ).filter(pl.col(output_column).is_in(required_identifiers))
+    else:
+        for component, source_column in zip(
+            construction.components,
+            construction.source_columns,
+            strict=True,
+        ):
+            invalid_rows = result.filter(
+                pl.col(source_column).is_null() | pl.col(source_column).eq("")
+            )
+            if not invalid_rows.is_empty():
+                value = invalid_rows.get_column(source_column)[0]
+                raise PparError(
+                    error_message(
+                        f"security_id component {component!r}, mapped to source column "
+                        f"{source_column!r}, contains a blank or null value "
+                        f"{value!r} after surrounding whitespace is removed in "
+                        f"{str(source_path)!r} "
+                        f"for {dataset_name}."
+                    ),
+                )
+        result = result.with_columns(
+            pl.concat_str(
+                [pl.col(source_column) for source_column in construction.source_columns],
+                separator=construction.separator,
+            ).alias(output_column)
+        )
     collisions = (
         result.select((*construction.source_columns, output_column))
         .unique()

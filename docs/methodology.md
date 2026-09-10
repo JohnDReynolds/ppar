@@ -74,6 +74,11 @@ it can be annualized. Direct NumPy integer and floating inputs are converted to
 `float64` before subtraction or any other calculation, preventing signed or unsigned
 integer arithmetic from changing a risk result.
 
+Finite inputs must also produce risk statistics representable in `float64`. If a
+derived calculation such as variance, downside deviation, or value at risk overflows,
+ppar raises `PparError` before exposing a partial table. This is a representability
+check, not a fixed upper limit on positive periodic returns.
+
 Beta uses sample covariance divided by sample benchmark variance with matching
 degrees of freedom. A genuinely constant benchmark, or variation no larger than the
 floating-point resolution at the scale of its values, has undefined beta. A

@@ -164,16 +164,29 @@ class AxysSupportingSourceLoader:
         unique_security_ids = (
             portfolio.security_performance[cols.IDENTIFIER].unique().to_list()
         )
-        classification = self._loader.load(
-            "classification", classification_name, unique_security_ids
-        )
         if classification_name == "Security":
+            classification = self._loader.load(
+                "classification",
+                classification_name,
+                unique_security_ids,
+                require_complete=True,
+            )
             mapping_data_sources = None
         else:
             mapping = self._loader.load(
                 "mapping",
                 classification_name,
                 unique_security_ids,
+                require_complete=True,
+            )
+            classification_identifiers = (
+                mapping[cols.NAME].unique(maintain_order=True).to_list()
+            )
+            classification = self._loader.load(
+                "classification",
+                classification_name,
+                classification_identifiers,
+                require_complete=True,
             )
             mapping_data_sources = (mapping, mapping)
         return AxysClassificationSources(

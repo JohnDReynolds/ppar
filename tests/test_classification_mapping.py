@@ -4,11 +4,13 @@ import datetime as dt
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import polars as pl
 
 from ppar import Analytics
-from ppar.attribution import Chart, View
+from ppar.attribution import Attribution, Chart, View
+from ppar.frequency import Frequency
 import ppar.schema as cols
 from ppar.errors import PparError
 
@@ -112,6 +114,71 @@ class ClassificationTests(unittest.TestCase):
                 cols.CLASSIFICATION_IDENTIFIER: ["A", "B"],
                 cols.CLASSIFICATION_NAME: ["Alpha", "Beta"],
             },
+        )
+
+    def test_common_classification_name_survives_without_item_names(self) -> None:
+        """A known source classification labels output without optional names."""
+        analytics = Analytics(
+            _narrow_performance(),
+            _narrow_performance(),
+            portfolio_classification_name="Security",
+            benchmark_classification_name="Security",
+        )
+
+        attribution = analytics.attribution()
+        detail = attribution.to_polars(View.SUBPERIOD_ATTRIBUTION)
+
+        self.assertEqual(
+            detail[cols.CLASSIFICATION_NAME].sort().to_list(),
+            ["A", "B"],
+        )
+        self.assertIn(
+            "Overall Attribution by Security",
+            attribution.to_html(View.OVERALL_ATTRIBUTION),
+        )
+        with mock.patch(
+            "ppar.charts.overall_attribution",
+            return_value=b"chart",
+        ) as render_chart:
+            self.assertEqual(
+                attribution.to_chart(Chart.OVERALL_ATTRIBUTION),
+                b"chart",
+            )
+        self.assertIn(
+            "Overall Attribution by Security",
+            render_chart.call_args.args[1][1],
+        )
+
+    def test_explicit_classification_label_overrides_inferred_source_name(self) -> None:
+        """A presentation label remains authoritative over the source name."""
+        attribution = Analytics(
+            _narrow_performance(),
+            portfolio_classification_name="Security",
+        ).attribution(classification_label="Holdings")
+
+        html = attribution.to_html(View.OVERALL_ATTRIBUTION)
+
+        self.assertIn("Overall Attribution by Holdings", html)
+        self.assertNotIn("Overall Attribution by Security", html)
+
+    def test_direct_attribution_infers_name_without_item_metadata(self) -> None:
+        """Direct construction retains a common Performance classification name."""
+        analytics = Analytics(
+            _narrow_performance(),
+            _narrow_performance(),
+            portfolio_classification_name="Security",
+            benchmark_classification_name="Security",
+        )
+        attribution = Attribution(
+            analytics._performances,  # pylint: disable=protected-access
+            None,
+            None,
+            Frequency.AS_OFTEN_AS_POSSIBLE,
+        )
+
+        self.assertIn(
+            "Sub-Period Attribution by Security",
+            attribution.to_html(View.SUBPERIOD_ATTRIBUTION),
         )
 
     def test_inferred_classification_rejects_conflicting_names(self) -> None:
